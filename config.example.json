@@ -1,0 +1,20 @@
+{
+  "port": 8090,
+  "stall_after_sec": 600,
+  "stall_after_tool_sec": 1800,
+  "auto_idle_after_sec": 43200,
+  "offline_after_sec": 120,
+  "ingest_token": "",
+  "summary_token": "",
+  "hub_urls": [],
+  "hub_token": "",
+  "webhooks": [
+    "http://127.0.0.1:8080/api/push"
+  ],
+  "adapters": {
+    "antigravity": {"enabled": true, "root": "~/.gemini/antigravity"},
+    "dsh": {"enabled": true, "root": "~/.dsh"},
+    "codex": {"enabled": false, "root": "~/.codex"}
+  },
+  "summary_max_items": 8
+}

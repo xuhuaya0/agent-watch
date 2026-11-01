@@ -1,0 +1,232 @@
+# 原会话交互
+
+此分支增加了面板回复、问题选项和单次批准/拒绝的交互链路。没有启动
+`control_worker.py`、没有设备专用凭据、没有原应用实时能力时，页面不会
+显示可操作的回复框或审批按钮。普通采集、Push 和 Get 继续独立工作。
+
+## 当前完成度
+
+| Harness | 已编写的适配 | 实机验证结果 / 尚缺条件 |
+| --- | --- | --- |
+| Antigravity | 官方 agentapi 文字消息、受管本机 RPC 原生选择题和单次命令审批 | Windows 测试机 专用测试会话已通过真实网页发送、原生回复和选择题回答验收，同 UUID 重复提交未重复发送。独立测试项目已通过网页拒绝和单次批准固定命令的实机验收；其余权限请求仍留在原应用。 |
+| Codex | 现有桌面 IPC 的文字回复、普通选择题、命令单次批准/拒绝；保留共享 app-server 适配 | 专用会话已通过真实网页文字回复、异步选择题回答、固定命令拒绝和单次批准；再次请求同一命令仍需审批。macOS 未加载历史会话通过安装版原生 queue 命令与桌面 wake 入口继续在同一会话执行；历史正文支持按需分页读取。 |
+| DeepSeek Harness | 原生 Connection/Gateway 文字回复、问题事件流、单次工具审批 | 0.2.0-rc.2 专用会话已通过真实网页文字回复、选择题回答、固定命令拒绝和单次批准；再次请求同一命令仍需审批。 |
+
+Codex 的文件变更审批（请求中缺少完整 diff）、扩展权限、敏感输入等留在
+原应用处理。Antigravity 暂不接受以 `-` 开头的消息，以免原生 CLI 将消息
+解释成参数。没有自动批准、权限模式切换或任意 shell 命令入口。
+
+Antigravity 的 `send-message` 使用原生系统通知通道，记录类型为
+`SYSTEM_MESSAGE`，不是 `USER_INPUT`。桥接固定传入 `--title=Agent Watch`，
+原应用中显示的来源标题为 **Agent Watch**；面板能力说明也明确告知这一点。
+它可以触发原会话继续回复，但不等同于普通用户消息，也不能用来代替原生审批。
+
+## 数据流与确认语义
+
+1. 用户通过现有网页登录和 CSRF 提交操作，操作绑定设备 ID、Harness、原生会话 ID。
+2. 设备上的 worker 向一个明确的 Hub 轮询，上传原应用实时能力和回执；不开放入站控制端口。
+3. Hub 与 worker 分别校验问题 ID、版本、选项；过期或已处理的问题拒绝执行。
+4. Hub 在返回命令前持久化派发状态，worker 在调用原应用前持久化执行标记。
+5. `delivered` 仅表示原应用接收；`resolved` 表示原请求结束，可能由其他客户端处理。
+   超时、断线或崩溃后的不确定结果显示 `unknown`，不会自动重发。
+
+命令 UUID 在保留期内去重；队列 60 秒过期、派发结果等待 120 秒，能力
+快照 15 秒失效。回执保留 7 天，正文在完成、撤销或超时后清除。浏览器草稿
+只存在当前页面内存，轮询及切换会话保留，刷新或退出页面不保留。
+点击发送后，正文立即以本地消息显示，并区分发送中、已送达、失败和结果未知；
+不等待日志采集。收到更新且内容匹配的原生记录后合并显示，不重复一条消息。
+本地消息同样只保留在当前页面内存，不作为原应用已接收的证明。
+
+控制凭据按设备单独签发，只保存在 worker 的私有配置中，Hub 仅存哈希。
+**它不等于 Push 接收令牌或 Get 只读令牌，也不要求各电脑填写相同值。**
+该凭据允许该设备领取面板发给自己的命令；实际权限仍由原应用控制。
+当前 Hub 仅支持一个进程（可多线程），不能让多个进程共享此队列。
+
+## 开发环境接入步骤
+
+本节是开发者接入说明，不代表已安装。全会话范围必须由设备所有者明确选择。每份配置只能有一个活跃 control worker；
+同一设备的不同 Harness 使用不同配置目录和回执文件，Hub 按原生会话隔离连接。
+Antigravity 会按窗口启动多个 sidecar；候选进程先核对原生会话，再竞争配置目录
+中的系统文件锁。只有持锁进程读写回执、轮询 Hub 或发送消息，其余进程等待。
+原生上下文失去全部允许会话时释放锁，其他有能力的窗口可接管；不重放已派发操作。
+
+1. 运行此分支 Hub，正常登录；通过管理员会话调用
+   `POST /api/control/devices/<machine_id>`，携带 `X-CSRF-Token`。
+   返回的 `token` 是该设备控制凭据；每次 POST 会撤销原凭据和待发命令。
+   `DELETE` 同一路径可撤销。设备须已有采集记录。
+2. 在该设备的私有目录保存 `control.json`，结构参见 `control.example.json`；
+   `device_id` 必须是采集器的稳定 `machine_id`，`session_ids` 是允许交互的
+   原生会话 ID。配置文件限定当前用户可读，Windows 使用当前用户私有目录。
+3. `hub_url` 只填一个明确的 Hub，不把多 IP 自动切换用于控制队列；用受信任
+   网络或加密隧道连接。worker 拒绝 HTTP 重定向，不把凭据转发给其他地址。
+4. 选择原生连接方式：
+   - Antigravity：运行 `prepare_control_sidecar.py --config <私有配置绝对路径>
+     --output <暂存的sidecar.json>`，可用 `--python`、`--worker` 指定目标设备路径。
+     此命令只生成清单，不安装或启用。审核后，将清单放入
+     `~/.gemini/config/sidecars/agent-watch/sidecar.json`，在原配置中合并
+     `sidecars.agent-watch.enabled: true`。保留其他配置；禁用同一项即可停止。
+     不在清单里放凭据，不手工伪造 `ANTIGRAVITY_LS_ADDRESS`。
+   - Codex 桌面（当前为 macOS/Unix）：配置 `codex.transport: desktop-ipc`、
+     `socket_path: ~/.codex/ipc/ipc.sock` 和 `scope: all`。连接采用真实客户端名
+     `agent-watch`，只接受当前用户所有的私有 socket；不冒充原生窗口。
+     桌面原会话所有者由 IPC 确认；保留当前请求及异步问题所需的最小历史投影，丢弃实时快照中的普通聊天正文和工具输出。历史正文通过独立只读通道按需读取。没有所有者时，仅在检测到兼容的 macOS 原生 queue CLI 后提供回复。
+     共享 app-server 仍可使用旧配置 `codex: {executable, socket_path, session_ids}`。
+   - DeepSeek 0.2.0-rc.2：在桌面 profile 中加载 `native/deepseek-connection.mjs`，
+     `config.output` 指向当前用户私有的连接文件。插件调用原应用公开的
+     `connection.authenticatedUrl()`，不读取签名密钥、不伪造 Cookie、不另开端口。
+     安装 `requirements-control.txt`；独立 worker 配置 `dsh: {scope: all, connection_file: ...}`。
+     插件可通过 `python`、`worker`、`controlConfig`、`log` 四个绝对路径管理此 worker。
+     对外只连既有 Hub，原生登录 URL 和 Cookie 始终留在本机。
+     连接文件超过 15 秒未刷新或原生进程变化即撤回能力。
+     当前安装版采用 `_request` 目录参数；不得直接套用上游新版的 `/connect` 协议。
+5. worker 的 `control-worker-state.json` 与配置同目录；配置换设备、换 Hub
+   或换凭据时使用新的私有目录，保留旧回执用于检查不确定结果。
+
+三个 Harness 的上述交互已在专用会话实机验证；当前仍没有面向普通用户的一键控制接入设置，需要按安装版本配置桥接。
+
+### 多会话与连接管理
+
+`antigravity.scope` 默认 `selected`，继续使用原来的 `session_ids`。明确选择
+`all` 后，从 `data_root/brain` 中发现具有真实日志的 UUID 会话，新会话自动加入；
+不会根据目录名创建会话，也不会发消息或启动 Agent。移除允许的会话后立即停止
+为其提供控制。配置损坏、未知模式和越出数据目录的链接均不授予控制。
+
+原生会话探测移到后台，最多同时四项，避免某个历史会话不可达阻塞心跳或回执。
+每次实际派发仍对目标会话进行一次实时原生检查，缓存不替代执行前验证。
+原生调用完成后立即进入下一轮上传回执，不再固定等待两秒。
+
+设置页的“会话交互”展示各设备是否配置、是否连接以及可交互会话数，可暂停和
+恢复既有连接。暂停会取消未派发操作并阻止新操作；已经派发的操作仍按实际结果
+显示，不谎称已撤回。暂停状态跨 Hub 重启保留，不撤销设备凭据或原应用权限。
+
+2026-10-30 12:45，Windows 测试机 专用会话通过真实 测试 Hub 网页回答原生选择题：
+面板提交 Blue，原生问题关闭，Antigravity 输出 `Blue AW-QUESTION-3-DONE`，
+面板回执为 delivered，随后问题控件消失并恢复回复框。
+
+安装包包含两个同名 `HandleCascadeUserInteractionRequest`：Google GCA 的
+请求使用 `conversationId`，本机 `exa.language_server_pb.LanguageServerService`
+使用 `cascadeId`。桥接明确采用后者，并发送 Cortex 的 `trajectoryId`、
+`stepIndex`、`askQuestion.responses`，将选项标签映射为 `selectedOptionIds`。
+此前 HTTP 400 源于误用了另一套协议，不是大小写或认证问题。
+
+`native_questions` 默认关闭；Windows 测试机 已经用户授权扩展到所有可连接的普通会话。每次回答前重新读取原生
+轨迹，校验会话、完整步骤、问题版本及选项。不确定的请求不自动重发；未知审批
+结构留给原应用处理。前两道题由原界面结束，不计作面板成功。
+
+### 原生命令审批
+
+`native_approvals` 默认关闭，需要同时启用 `native_questions`。2026-10-30，
+独立项目 Agent Watch Approval Test 采用项目级 Request Review，全局 Auto
+保持不变。真实 测试 Hub 网页先拒绝 `Write-Output 'AW-APPROVAL-TEST'`，原应用
+返回 `AW-DENIED`；随后从面板再次请求同一命令，点击“仅批准这一次”，原生
+执行记录显示该命令和输出 `AW-APPROVAL-TEST`。
+
+适配只接收已核实的 `permission.resource.action=command`、默认审批来源和
+允许一次性决策的请求。提交使用 `permission.allow` 与
+`scope=PERMISSION_SCOPE_ONCE`；不发送持久授权、命令编辑或 sandboxOverride。
+实际提交前重新校验完整原生请求的哈希。未知来源、未知字段和不允许一次性
+授权的请求不提供按钮。超时仍为 unknown，不重试。
+
+新鲜的原生待审批/待回答状态同步用于列表、详情和 Get API 分组及计数；
+不会改写采集历史，连接超过 15 秒失效后恢复采集状态。原生快照没有可靠的
+请求起始时间，因此等待时长显示“-”，不拿运行时长冒充。暂停交互仍显示
+已观察到的待处理状态，但不允许提交操作。
+
+## 验证边界
+
+运行 Python 回归测试及 `node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs`。
+`test_control_roundtrip.py` 使用真实回环 HTTP、认证、队列和 worker，但最后一跳
+是模拟 Harness；它不等于真实会话发送成功。UI 预览也标记为模拟数据。
+
+2026-10-29 在 Windows 测试机 完成 Antigravity 实机验收：独立回环 Hub、单会话允许列表、
+网页登录会话与 CSRF 保护的实际 HTTP 接口、原生托管 sidecar 和已安装 agentapi。
+两个不同请求分别收到原生回复标记；第二个请求以同 UUID 和正文重复提交，
+返回既有 delivered 回执，原生记录仍只有对应的一次通知和一次回复。
+原应用界面确认 Agent Watch 来源标题，测试会话工具调用数为零。
+此次实际提交通过 HTTP 测试脚本完成；浏览器交互测试仍使用模拟数据。
+测试不涉及现有项目，未部署到生产 Hub；验收后撤销测试凭据并禁用 sidecar。
+
+同日随后完成 测试 Hub CasaOS Hub 的真实网页验收：管理员在第三栏发送专用
+测试消息，经 Windows 测试机 原生桥接执行，采集器将对应回复重新推送并自动显示。
+仅测试会话在允许列表内。外部通知单独显示，保留原用户消息；等待新通知的回复
+时不显示上一轮答案。多窗口桥接竞争问题由配置级文件锁协调。
+更新后的网页往返和导航草稿保留已通过实测，原生工具调用数为零。
+外部输入只识别 agentapi 使用的 HIGH 消息；LOW 生命周期通知不会覆盖它。
+
+仍需扩大实机验收：断网后的不重发、在原应用先处理后面板拒绝旧请求，
+以及其他设备和 Harness 版本的兼容性；回归测试不替代这些实机检查。
+
+## 核实的原生协议
+
+- [Codex app-server](https://learn.chatgpt.com/docs/app-server)
+- [Antigravity sidecars / agentapi](https://antigravity.google/docs/sidecars)
+- [DeepSeek desktop carrier](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md)
+- [DeepSeek connection authentication](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/connection/README.md)
+- [DeepSeek Gateway](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/api-gateway.md)
+
+核对日期：2026-10-31。已安装版本可能与上游文档不同，以实机验收为准。
+
+### 同一设备运行多个 Harness
+
+Hub 为每个 worker 保存独立的 15 秒租约。同一个 `(Harness, 原生会话 ID)`
+只允许一个有效所有者；不同 Harness 或不同会话可以并存。提交时就绑定领取者，
+另一进程的心跳不会覆盖能力、领取命令或拒绝其队列。某个 Harness 退出只让它自己的
+会话离线。任何进程接管旧会话都不能重发原进程已经派发的操作。
+
+DeepSeek 回复使用原生 `session/prompt` 的 `queue` 模式，保留命令 UUID 作为
+`requestId`，不改模型或审批策略。问题由实时 `$events` 关联 `clientId`、`eventId`
+和原生 Agent ID；原界面处理或取消后立即撤回按钮。工具审批必须在原生当前日志页
+找到相同 call ID、工具名及完整参数；否则只交由原应用处理。只有 `allowed-once`
+与 `rejected`，没有持久批准。已超时转为 continued 的问题通过原生
+`userQuestions/answer` 提交结构化回答；原生服务重新验证是否仍可回答，
+面板仅报告已接收，不伪造已结束工具调用的结果。
+
+### 异步问题与 DeepSeek 回执
+
+Codex 桌面的异步问题来自 canonical turnHistory 的 agentMessage.questions，
+与 app-server 的 requestUserInput 请求分别处理。只发布当前运行轮次尚未回答的问题，
+以原生消息 ID 和问题索引生成 questionItemId；通过原会话的 steer 接口提交原生
+回答封套，不新建引擎或修改权限。完成、取消、已接受回答或丢失补丁连续性时撤回操作。
+
+DeepSeek Gateway 接受事件答案后，只向其他客户端发 cancel，不向答题客户端回发。
+桥接在原生 HTTP 确认后移除本地问题并报告 delivered，避免旧题残留及无谓等待。
+该确认不保证在多个客户端同时回答的情况下本面板的答案获采用，最终结果以原应用为准。
+
+2026-10-31，DeepSeek 专用会话的原生审计依次记录 `rejected`、`allowed-once`、
+`rejected`；仅中间一条固定命令产生预期输出，第三次仍出现审批。原有策略未改变。
+
+同日，Codex 专用会话通过真实网页对固定命令 `printf 'AW-APPROVAL-TEST\n'`
+依次执行拒绝、单次批准、再次拒绝。原生执行记录分别显示用户拒绝、退出码 0
+及预期输出、用户拒绝；第三次重新出现审批，证明单次批准没有形成持续授权。
+经用户明确允许，仅该测试会话临时将审批者从 `auto_review` 改为 `user`；
+验收后恢复 `auto_review`，并通过一轮不调用工具的回复确认原生最新设置和
+实际轮次权限均已恢复。审批策略始终为 `on-request`，未改变沙盒或全局设置。
+
+
+### Codex 历史与原生归档
+
+第三栏从设备读取原始 `.jsonl` 或 `.jsonl.zst` 会话文件，默认返回最近 30 项，
+可以逐页加载更早的用户消息、助手正文和工具记录。只读历史不会启动 Agent；
+只允许读取原生索引中、授权范围内且未归档的会话路径。系统指令与分析内容不展示。
+图片以附件提示显示，每项最多 48 KB 并标注截断；异常大文件明确报错。
+历史查询与写操作分离，正文仅暂存于内存，不写入 Hub 控制数据库或 worker 回执。
+
+未加载会话的回复由安装版 `codex queue` 接收，再通过桌面的
+`codex://threads/wake/<id>` 唤醒原会话。普通会话链接只打开历史页面，不能替代
+此入口。桥接不启动第二个 Agent 引擎，不直接修改原生数据库，也不覆盖模型、
+沙盒或审批设置。该路径目前在 macOS 桌面上完成验收；桌面需已运行并登录，
+其他平台没有兼容入口时只提供查看，不虚报可回复。
+
+回执区分原生队列接收和 Agent 执行完成。队列命令超时后的结果为 unknown，
+不自动重发；入队成功但唤醒失败会明确提示在原应用查看，不要求重复发送。
+已经加载的会话继续使用桌面 IPC 的回复、选择题和单次审批。
+
+Codex 与 DeepSeek 的原生归档状态会从采集结果中排除；Hub 也过滤旧快照中
+明确标记已归档的记录，列表、计数、详情和控制入口保持一致。取消原生归档后
+随下一轮采集恢复。没有新增面板自己的归档状态或按钮。
+
+2026-10-31 实机验收：原生专用会话归档后网页搜索结果为零，取消归档后恢复；
+确认会话状态为 notLoaded 后，从生产网页发送测试消息，由原生队列唤醒同一个
+会话并返回 `AW-COLD-PANEL-OK`。历史分页可读取更早记录，原生设置保持不变。
+本机 218 项 Python 和 39 项前端回归通过。此版本 GitHub Actions 因账号账单或
+支出限制未启动任务，因此不能声称云端多系统 CI 通过。

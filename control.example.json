@@ -1,0 +1,13 @@
+{
+  "hub_url": "http://127.0.0.1:8090",
+  "device_id": "REPLACE_WITH_COLLECTOR_MACHINE_ID",
+  "token": "REPLACE_WITH_DEVICE_CONTROL_CREDENTIAL",
+  "antigravity": {
+    "executable": "C:\\Users\\USERNAME\\AppData\\Local\\Programs\\antigravity\\resources\\bin\\language_server.exe",
+    "scope": "selected",
+    "native_questions": false,
+    "native_approvals": false,
+    "data_root": "~/.gemini/antigravity",
+    "session_ids": []
+  }
+}

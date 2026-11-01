@@ -1,0 +1,6 @@
+{"timestamp":"2026-10-27T12:00:00Z","type":"session_meta","payload":{"id":"sample-session","cwd":"/Users/example/projects/parser","source":"vscode","cli_version":"0.164.0-alpha.11.1"}}
+{"timestamp":"2026-10-27T12:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"sample-turn"}}
+{"timestamp":"2026-10-27T12:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the parser"}]}}
+{"timestamp":"2026-10-27T12:00:03Z","type":"response_item","payload":{"type":"function_call","name":"functions.request_user_input","call_id":"question-1","arguments":"{}"}}
+{"timestamp":"2026-10-27T12:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"question-1","output":"Use strict parsing"}}
+{"timestamp":"2026-10-27T12:00:05Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"sample-turn","last_agent_message":"Parser fixed"}}

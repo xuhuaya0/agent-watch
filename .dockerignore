@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.git/
+data/
+tests/
+*.machine-id
+config.json
+control.json
+control-worker-state*.json
+.private/
+.env
+*.log
+*.bundle
+*.pem
+*.key
+auth.json
+admin-access.json

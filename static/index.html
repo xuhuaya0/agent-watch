@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Watch</title>
+
+<link rel="stylesheet" href="/static/workspace.css">
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><symbol id="icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol><symbol id="icon-conversations" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16m4-11h4m-4 4h4"/></symbol><symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol><symbol id="icon-device" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/></symbol><symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></symbol><symbol id="icon-pin" viewBox="0 0 24 24"><path d="m9 3 6 0-1 6 4 4v2H6v-2l4-4Zm3 12v6"/></symbol><symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol><symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol><symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol><symbol id="icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol><symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol><symbol id="icon-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></symbol></svg>
+<header>
+  <h1><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#icon-activity"></use></svg></span>Agent Watch</h1>
+  <span class="pill" id="p-att" style="display:none">需介入 <b id="c-att">0</b></span>
+  <span class="pill" id="p-run" style="display:none">进行中 <b id="c-run">0</b></span>
+  <span class="pill" id="p-done" style="display:none">刚完成 <b id="c-done">0</b></span>
+  <span class="sp"></span>
+  <span id="hdr-authed" style="display:none;align-items:center;gap:12px">
+    <span id="connection-status" role="status"></span>
+    <button class="btn-top" onclick="doLogout()">退出</button>
+    <span id="updated" ></span>
+  </span>
+</header>
+
+<!-- Built-in Login / Initial Setup View -->
+<div id="auth-wrap" class="auth-wrap">
+  <form class="auth-card" onsubmit="submitAuth(event)">
+    <h2 id="auth-title">管理员登录</h2>
+    <p id="auth-desc">请输入管理员密码进入监控面板</p>
+    <div id="auth-err" class="auth-err"></div>
+    <div class="field">
+      <label>管理员密码</label>
+      <input type="password" id="auth-pw" required autocomplete="current-password">
+    </div>
+    <div class="field" id="auth-confirm-box" style="display:none">
+      <label>确认密码</label>
+      <input type="password" id="auth-pw2" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label style="font-weight:400;display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="auth-remember" checked> 记住登录（30 天免密）
+      </label>
+    </div>
+    <button type="submit" class="btn-pri" style="width:100%;padding:8px 0;font-size:14px" id="auth-btn">进入面板</button>
+  </form>
+</div>
+
+<!-- Responsive workspace: list pane exists only on the conversations page. -->
+<main id="dash-main" style="display:none">
+  <nav class="app-nav" aria-label="主导航">
+    <div class="nav-caption">工作空间</div>
+    <button data-page="sessions" onclick="navigate('sessions')"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg> 会话</button>
+    <button data-page="projects" onclick="navigate('projects')"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg> 项目</button>
+    <button data-page="devices" onclick="navigate('devices')"><svg class="icon" aria-hidden="true"><use href="#icon-device"></use></svg> 设备</button>
+    <div class="nav-spacer"></div>
+    <button data-page="settings" onclick="openSettings()"><svg class="icon" aria-hidden="true"><use href="#icon-settings"></use></svg> 设置</button>
+    <div class="nav-foot">Agent Watch<br><small>会话与结果工作台</small></div>
+  </nav>
+  <section id="sessions-view" class="page-view sessions-view">
+    <aside id="session-list" class="session-list" aria-label="会话列表">
+      <div class="list-heading"><h2>会话 <small id="list-count"></small></h2><button onclick="toggleList()" aria-label="收起会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button></div>
+      <div class="list-filters">
+        <div class="search-controls"><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg><input id="session-search" type="search" placeholder="搜索会话…" aria-label="搜索会话" oninput="setFilter('query',this.value)"></div>
+        <details class="filter-menu"><summary id="filter-toggle">筛选</summary><div class="filter-panel">
+        <select id="filter-project" aria-label="筛选项目" onchange="setFilter('project',this.value)"><option value="">全部项目</option></select>
+        <div class="filter-pair"><select id="filter-device" aria-label="筛选设备" onchange="setFilter('device',this.value)"><option value="">全部设备</option></select><select id="filter-tool" aria-label="筛选 Agent" onchange="setFilter('tool',this.value)"><option value="">全部 Agent</option><option value="codex">Codex</option><option value="antigravity">Antigravity</option><option value="dsh">DeepSeek Harness</option></select></div>
+        <select id="filter-state" aria-label="筛选状态和时间" onchange="setFilter('state',this.value)"><option value="">全部状态</option><option value="attention">需要介入</option><option value="running">进行中</option><option value="done">刚完成 · 2h 内</option><option value="recent">近期会话 · 2–12h</option><option value="other">其他 · 12h 以上</option><option value="unread">未读</option></select>
+        <button class="clear-filters" onclick="clearFilters()">清除筛选</button>
+        </div></details></div>
+      </div>
+      <div id="session-items" class="session-items"></div>
+    </aside>
+    <section class="detail-pane" aria-label="会话详情">
+      <div class="detail-toolbar"><button onclick="showList()" aria-label="显示会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg> 会话列表</button><span id="detail-location"></span></div>
+      <div id="session-detail" class="session-detail"><div class="blank-state"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg><h2>选择一个会话</h2><p>从左侧列表查看最近消息与结果。</p></div></div>
+    </section>
+  </section>
+  <section id="projects-view" class="page-view overview-view" hidden></section>
+  <section id="devices-view" class="page-view overview-view" hidden></section>
+  <section id="settings-view" class="page-view overview-view" hidden>
+  <div class="settings-page">
+    <h3>Agent Watch 设置</h3>
+    <div class="settings-section">
+      <h4>会话交互</h4>
+      <p>查看各设备的原应用连接。暂停后不再接收新的回复或处理操作，尚未派发的操作会取消；已经交给原应用的操作不会撤回。</p>
+      <div id="control-devices" aria-live="polite">正在读取连接状态…</div>
+      <button type="button" onclick="loadControlDevices()">刷新连接状态</button>
+    </div>
+    <div class="field">
+      <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
+        <input type="checkbox" id="s-autostart"> 开机自动启动（驻留任务栏/菜单栏）
+      </label>
+      <small>勾选后登录系统时自动在后台启动托盘图标，无需手动运行。</small>
+    </div>
+    <div class="field">
+      <label>本机名称</label>
+      <input type="text" id="s-machine">
+      <small id="s-local-ips"></small>
+    </div>
+    <div class="field">
+      <label>本机监控的 AI 工具</label>
+      <div class="checks">
+        <label><input type="checkbox" id="s-ag"> Antigravity</label>
+        <label><input type="checkbox" id="s-dsh"> DeepSeek Harness</label>
+        <label><input type="checkbox" id="s-codex"> Codex CLI</label>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Push 上报 · 本机 → 主控</h4>
+      <div class="field">
+        <label for="s-hubs">主控地址</label>
+        <textarea id="s-hubs" rows="2" placeholder="例如：http://192.0.2.20:8090"></textarea>
+        <small>采集电脑填写 目标主控的地址；主控自身无需再上报时留空。多个地址须指向同一主控，每行一个。这里不填采集电脑自己的 IP。</small>
+      </div>
+      <div class="field">
+        <label for="s-hub-token">上报令牌</label>
+        <input type="password" id="s-hub-token" autocomplete="off" placeholder="粘贴目标主控的“本机接收令牌”">
+        <small>先打开目标主控的设置，复制它的“本机接收令牌”，粘贴到这里并保存。连接同一主控的电脑在这里填写相同的值。</small>
+      </div>
+      <small id="s-push-status"></small>
+    </div>
+    <div class="settings-section">
+      <h4>Push 接收 · 其他电脑 → 本机</h4>
+      <div class="field">
+        <label for="s-token">本机接收令牌</label>
+        <div class="row-inline">
+          <input type="text" id="s-token" readonly>
+          <button type="button" onclick="copyReceiveToken()">复制</button>
+          <button type="button" onclick="rotateToken('ingest_token')">重新生成</button>
+        </div>
+        <small id="s-token-help">本机作为主控时，将此值填到各采集电脑的“上报令牌”。仅用于本机接收数据，不影响本机向主控上报。</small>
+      </div>
+    </div>
+    <div class="field">
+      <label for="s-summary-token">Get 只读令牌</label>
+      <div class="row-inline">
+        <input type="text" id="s-summary-token" readonly>
+        <button type="button" onclick="rotateToken('summary_token')">重新生成</button>
+      </div>
+      <small>外部程序使用 GET /api/get 读取任务摘要。此令牌只能读取，不能推送数据或修改设置。</small>
+      <small id="s-summary-url"></small>
+    </div>
+    <div class="field">
+      <label>Webhook 通知地址（一行一个，出现新需介入/刚完成任务时 POST）</label>
+      <textarea id="s-webhooks" rows="2" placeholder="http://127.0.0.1:8080/api/push"></textarea>
+    </div>
+
+    <div class="sep"></div>
+    <div class="field">
+      <label>修改管理员密码（留空则不修改；修改后所有旧会话立即失效）</label>
+      <div class="row-inline" style="margin-bottom:6px">
+        <input type="password" id="s-old-pw" placeholder="当前密码">
+        <input type="password" id="s-new-pw" placeholder="新密码（至少 4 位）">
+        <button type="button" onclick="changePassword()">修改密码</button>
+      </div>
+      <small id="s-pw-msg"></small>
+    </div>
+
+    <div class="modal-foot">
+      <span id="settings-status" role="status"></span>
+      <button onclick="closeSettings()">返回会话</button>
+      <button class="btn-pri" onclick="saveSettings()">保存设置</button>
+    </div>
+  </div>
+  </section>
+  <div id="workspace-toast" role="status"></div>
+</main>
+
+<script src="/static/workspace.js"></script>
+<script src="/static/control.js"></script>
+<script src="/static/history.js"></script>
+<script>
+let CSRF_TOKEN = "";
+let NEEDS_SETUP = false;
+let POLL_TIMER = null;
+
+function activityAt(t) {
+  return Number(t.activity_at || (["done","idle"].includes(t.state) ? t.state_since || t.last_event_at : t.last_event_at || t.state_since)) || 0;
+}
+function taskGroup(t) {
+  if (t.group) return t.group;
+  if (t.state === "running") return "running";
+  if (["waiting_approval","waiting_input","error","stalled"].includes(t.state) && !t.acked) return "attention";
+  const at = activityAt(t);
+  const age = at ? Math.max(0, Date.now()/1000 - at) : Infinity;
+  return age < 7200 ? "done" : age < 43200 ? "recent" : "other";
+}
+function newestFirst(tasks) {
+  return [...tasks].sort((a,b) => activityAt(b)-activityAt(a) || String(a.key).localeCompare(String(b.key)));
+}
+const ZH = {running:"进行中", waiting_approval:"等待批准", waiting_input:"等待回复", done:"已完成", error:"出错", stalled:"疑似卡住", idle:"空闲", unknown:"未知"};
+const fmt = s => { if (s == null) return "-"; if (s < 60) return s + "s"; let m = Math.floor(s/60);
+  if (m < 60) return m + "m"; let h = Math.floor(m/60); m %= 60; if (h < 24) return h + "h" + String(m).padStart(2,"0") + "m";
+  return Math.floor(h/24) + "d" + (h%24) + "h"; };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function apiFetch(url, opts = {}) {
+  opts.headers = Object.assign({"X-CSRF-Token": CSRF_TOKEN}, opts.headers || {});
+  return fetch(url, opts);
+}
+
+function showAuthView(needsSetup, errMsg = "") {
+  NEEDS_SETUP = !!needsSetup;
+  if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+  document.getElementById("dash-main").style.display = "none";
+  document.getElementById("hdr-authed").style.display = "none";
+  for (const id of ["p-att","p-done","p-run"]) document.getElementById(id).style.display = "none";
+  document.getElementById("auth-wrap").classList.add("open");
+  document.getElementById("auth-title").textContent = NEEDS_SETUP ? "首次使用 · 设置管理员密码" : "管理员登录";
+  document.getElementById("auth-desc").textContent = NEEDS_SETUP ? "请设置至少 4 位的管理员密码以保护监控面板与接口" : "请输入管理员密码进入监控面板";
+  document.getElementById("auth-confirm-box").style.display = NEEDS_SETUP ? "block" : "none";
+  document.getElementById("auth-btn").textContent = NEEDS_SETUP ? "设置密码并进入" : "进入面板";
+  const errEl = document.getElementById("auth-err");
+  if (errMsg) { errEl.textContent = errMsg; errEl.style.display = "block"; }
+  else { errEl.style.display = "none"; }
+}
+
+function showDashView() {
+  document.getElementById("auth-wrap").classList.remove("open");
+  document.getElementById("dash-main").style.display = "flex";
+  document.getElementById("hdr-authed").style.display = "inline-flex";
+  for (const id of ["p-att","p-done","p-run"]) document.getElementById(id).style.display = "inline-block";
+  load();
+  if (!POLL_TIMER) POLL_TIMER = setInterval(load, 5000);
+}
+
+async function checkAuth() {
+  const r = await fetch("/api/auth/status").then(r => r.json());
+  if (r.authenticated) {
+    CSRF_TOKEN = r.csrf_token || "";
+    showDashView();
+  } else {
+    showAuthView(r.needs_setup);
+  }
+}
+
+async function submitAuth(ev) {
+  ev.preventDefault();
+  const pw = document.getElementById("auth-pw").value;
+  const remember = document.getElementById("auth-remember").checked;
+  if (NEEDS_SETUP) {
+    const pw2 = document.getElementById("auth-pw2").value;
+    if (pw !== pw2) { showAuthView(true, "两次输入的密码不一致"); return; }
+  }
+  const url = NEEDS_SETUP ? "/api/auth/setup" : "/api/auth/login";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({password: pw, remember}),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) {
+    showAuthView(NEEDS_SETUP, data.error || "验证失败");
+    return;
+  }
+  CSRF_TOKEN = data.csrf_token || "";
+  document.getElementById("auth-pw").value = "";
+  document.getElementById("auth-pw2").value = "";
+  showDashView();
+}
+
+async function doLogout() {
+  await apiFetch("/api/auth/logout", {method: "POST"});
+  CSRF_TOKEN = "";
+  showAuthView(false);
+}
+
+async function ack(key) {
+  const res = await apiFetch("/api/tasks/" + encodeURIComponent(key) + "/ack", {method: "POST"});
+  if (res.status === 401) return showAuthView(false);
+  load();
+}
+
+async function deleteMachine(name) {
+  if (!confirm(`确定要移除机器「${name}」及其缓存的任务记录吗？`)) return;
+  const res = await apiFetch("/api/machines/" + encodeURIComponent(name), {method: "DELETE"});
+  if (res.status === 401) return showAuthView(false);
+  load();
+}
+
+function renderSubagents(subs, key, depth = 0) {
+  if (!Array.isArray(subs) || !subs.length || depth >= 32) return "";
+  const sorted = [...subs].sort((a,b) => (b.activity_at || 0)-(a.activity_at || 0));
+  return `<details class="subagents" data-task-key="${esc(key)}"><summary>子 Agent（${subs.length}）</summary>${sorted.map((s,i) =>
+    `<div class="subagent"><span class="subagent-state">${esc(ZH[s.state] || s.state)}</span><b>${esc(s.label || "子 Agent")}</b>
+      ${s.detail ? `<div>${esc(s.detail)}</div>` : ""}
+      ${s.activity_at ? `<div class="meta">最近活动：${esc(new Date(s.activity_at*1000).toLocaleString())}</div>` : ""}
+      ${renderSubagents(s.subagents, JSON.stringify([key,s.id || i]), depth+1)}</div>`).join("")}</details>`;
+}
+
+function updateSummaryUrlHint(token) {
+  const url = `${location.origin}/api/get?token=${encodeURIComponent(token || "")}`;
+  document.getElementById("s-summary-url").textContent = `Get 读取地址：${url}`;
+}
+
+async function openSettings() {
+  const res = await fetch("/api/settings");
+  if (res.status === 401) return showAuthView(false);
+  if (!res.ok) return toast("设置暂时不可用，请重试");
+  const s = await res.json();
+  document.getElementById("s-autostart").checked = !!s.autostart;
+  document.getElementById("s-machine").value = s.machine || "";
+  document.getElementById("s-local-ips").textContent = "本机可用 IP（含局域网/WireGuard）：" + ((s.local_ips || []).map(ip => `http://${ip}:${s.port}`).join(" , ") || "未检测到");
+  document.getElementById("s-ag").checked = !!(s.adapters?.antigravity?.enabled);
+  document.getElementById("s-dsh").checked = !!(s.adapters?.dsh?.enabled);
+  document.getElementById("s-codex").checked = !!(s.adapters?.codex?.enabled);
+  document.getElementById("s-hubs").value = (s.hub_urls || []).join("\n");
+  document.getElementById("s-token").value = s.ingest_token || "";
+  document.getElementById("s-hub-token").value = s.hub_token || "";
+  document.getElementById("s-summary-token").value = s.summary_token || "";
+  updateSummaryUrlHint(s.summary_token || "");
+  document.getElementById("s-webhooks").value = (s.webhooks || []).join("\n");
+  document.getElementById("s-old-pw").value = "";
+  document.getElementById("s-new-pw").value = "";
+  document.getElementById("s-pw-msg").textContent = "";
+  const p = s.pusher || {};
+  document.getElementById("s-push-status").textContent = (s.hub_urls || []).length ? "等待上报结果" : "未启用向主控上报";
+  if (p.last_error) {
+    document.getElementById("s-push-status").textContent = `⚠️ 上报失败：${p.last_error}`;
+  } else if (p.last_ok_url) {
+    document.getElementById("s-push-status").textContent = `✅ 最近上报成功：${p.last_ok_url}`;
+  }
+  navigate('settings');
+  loadControlDevices();
+  document.getElementById("settings-status").textContent = "";
+}
+
+function closeSettings() {
+  navigate('sessions');
+}
+
+async function copyReceiveToken() {
+  const input = document.getElementById("s-token");
+  input.select();
+  try {
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(input.value);
+    else if (!document.execCommand("copy")) throw new Error("copy unavailable");
+    document.getElementById("s-token-help").textContent = "已复制，请粘贴到采集电脑的“上报令牌”。";
+  } catch (_) {
+    document.getElementById("s-token-help").textContent = "已选中令牌，请按 Ctrl+C / ⌘C 复制。";
+  }
+}
+
+async function rotateToken(kind) {
+  if (kind === "ingest_token" && !confirm("重新生成后，向本机上报的所有电脑都需要更新“上报令牌”。继续吗？")) return;
+  const res = await apiFetch("/api/auth/rotate-token", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({kind}),
+  });
+  if (res.status === 401) return showAuthView(false);
+  const d = await res.json();
+  if (d.ok) {
+    if (kind === "ingest_token") document.getElementById("s-token").value = d.token;
+    if (kind === "summary_token") {
+      document.getElementById("s-summary-token").value = d.token;
+      updateSummaryUrlHint(d.token);
+    }
+  }
+}
+
+async function changePassword() {
+  const old_password = document.getElementById("s-old-pw").value;
+  const new_password = document.getElementById("s-new-pw").value;
+  const msgEl = document.getElementById("s-pw-msg");
+  const res = await apiFetch("/api/auth/password", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({old_password, new_password, remember: true}),
+  });
+  const d = await res.json();
+  if (!res.ok || !d.ok) {
+    msgEl.style.color = "#dc2626";
+    msgEl.textContent = d.error || "修改失败";
+    return;
+  }
+  CSRF_TOKEN = d.csrf_token || CSRF_TOKEN;
+  document.getElementById("s-old-pw").value = "";
+  document.getElementById("s-new-pw").value = "";
+  msgEl.style.color = "#16a34a";
+  msgEl.textContent = "✅ 密码已修改，其他设备上的旧登录会话已全部失效";
+}
+
+async function saveSettings() {
+  const body = {
+    autostart: document.getElementById("s-autostart").checked,
+    machine: document.getElementById("s-machine").value.trim(),
+    hub_urls: document.getElementById("s-hubs").value,
+    hub_token: document.getElementById("s-hub-token").value.trim(),
+    summary_token: document.getElementById("s-summary-token").value.trim(),
+    webhooks: document.getElementById("s-webhooks").value,
+    adapters: {
+      antigravity: document.getElementById("s-ag").checked,
+      dsh: document.getElementById("s-dsh").checked,
+      codex: document.getElementById("s-codex").checked,
+    },
+  };
+  const res = await apiFetch("/api/settings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) return showAuthView(false);
+  if (!res.ok) { document.getElementById("settings-status").textContent = "保存失败，请重试"; return; }
+  document.getElementById("settings-status").textContent = "已保存";
+  load();
+}
+
+checkAuth();
+</script>
+</body>
+</html>

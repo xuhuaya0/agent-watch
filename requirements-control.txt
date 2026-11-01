@@ -1,0 +1,5 @@
+# Needed only by a DeepSeek control worker, not the monitor or Hub.
+websocket-client==1.8.0
+
+# Read compressed Codex history on the device without modifying native files.
+zstandard==0.25.0

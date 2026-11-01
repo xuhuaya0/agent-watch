@@ -1,0 +1,20 @@
+__pycache__/
+.venv/
+Agent Watch.app/Contents/MacOS/AgentWatch
+Agent Watch.app/Contents/_CodeSignature/
+*.py[cod]
+data/
+config.json
+*.machine-id
+.env
+*.log
+control.json
+control-worker-state*.json
+
+.DS_Store
+.private/
+*.bundle
+*.pem
+*.key
+auth.json
+admin-access.json

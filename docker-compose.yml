@@ -1,0 +1,12 @@
+services:
+  agent-watch:
+    build: .
+    container_name: agent-watch
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - AGENT_WATCH_CONFIG=/app/data/config.json
