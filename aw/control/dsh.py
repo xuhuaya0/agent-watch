@@ -214,8 +214,8 @@ class DeepSeek:
             with self.condition:self.rows.clear();self.continued.clear()
             return
         allowed = set(self.config.get('session_ids', [])) if mode == 'selected' else None
-        rows = {r['sessionId']:{'tool':'dsh','session_id':r['sessionId'],'reply':True,'requests':[]}
-                for r in catalog if r.get('origin') != 'subagent' and not r.get('blank',False)
+        rows = {r['sessionId']:{'tool':'dsh','session_id':r['sessionId'],'reply':True,'history':True,'requests':[]}
+                for r in catalog if r.get('origin') != 'subagent' and not r.get('blank',False) and not r.get('archived', False)
                 and r.get('sessionId','').startswith('session-') and (allowed is None or r['sessionId'] in allowed)}
         continued = {}
         for native_row in catalog:
@@ -279,6 +279,10 @@ class DeepSeek:
     def session_snapshot(self, sid):
         self.refresh()
         return [r for r in self.snapshot() if r['session_id']==sid]
+
+    def read_history(self, sid, cursor=None):
+        from .dsh_history import read_history
+        return read_history(self, sid, cursor)
 
     def execute(self, command):
         sid, action = command['session_id'], command['action']

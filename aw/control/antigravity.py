@@ -12,7 +12,7 @@ from .broker import ControlError
 
 
 class Antigravity:
-    def __init__(self, executable, session_ids, run=subprocess.run, environ=None, background=False, interactions=None):
+    def __init__(self, executable, session_ids, run=subprocess.run, environ=None, background=False, interactions=None, history=None):
         self.executable = str(Path(executable).expanduser().resolve())
         if Path(self.executable).suffix.lower() in ('.bat','.cmd','.ps1'):
             raise ValueError('Use the native language_server executable, not a shell wrapper')
@@ -20,6 +20,7 @@ class Antigravity:
         self.environ = dict(os.environ if environ is None else environ)
         self.background = background
         self.interactions = interactions
+        self.history = history
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._cache = {}
@@ -52,6 +53,17 @@ class Antigravity:
         return payload
 
     def session_snapshot(self, sid):
+        rows = self._session_snapshot(sid)
+        for row in rows:
+            row['history'] = self.history is not None
+        return rows
+
+    def read_history(self, sid, cursor=None):
+        if self.history is None:
+            raise ControlError('history_unavailable')
+        return self.history.read(sid, cursor)
+
+    def _session_snapshot(self, sid):
         """Fresh native check for ONE target immediately before dispatch."""
         if sid not in self.session_ids():
             return []

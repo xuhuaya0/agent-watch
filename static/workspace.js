@@ -245,7 +245,7 @@ function renderDetail() {
     <div class="conversation-actions">${t.state!=='running'&&t.state!=='idle'&&!t.acked?`<button onclick="ack(${jsArg(t.key)})">知道了</button>`:''}</div></div>
     ${live?`<div class="conversation-facts" style="margin-bottom:20px">已运行 <span id="detail-duration">${duration}</span></div>`:''}
     ${t.detail&&live?`<div class="activity-note ${t.state==='stalled'?'warning':''}">${esc(t.detail)}</div>`:''}
-    ${t.tool==='codex'?'<section id="session-history" aria-label="会话记录"></section>':''}
+    ${['codex','antigravity','dsh'].includes(t.tool)?'<section id="session-history" aria-label="会话记录"></section>':''}
     <section id="latest-messages">
     <article class="message user-message"><div class="message-label">${icon('user')}最近用户消息</div><div class="message-body">${user?markdown(user):'<p>未采集到用户消息</p>'}</div></article>
     ${turn?.notification?`<article class="message user-message"><div class="message-label">${icon('activity')}最近外部消息 · 原生系统通知</div><div class="message-body">${markdown(turn.notification)}</div></article>`:''}

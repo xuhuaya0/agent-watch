@@ -24,3 +24,12 @@ test('unavailable history leaves the latest captured messages visible',async()=>
  const {ctx,elements,run}=setup();ctx.apiFetch=async()=>({ok:false,json:async()=>({error:'history_unavailable'})});
  await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,false);assert.match(elements['session-history'].innerHTML,/无法读取历史/);
 });
+test('all three harnesses load older history through the same reader',async()=>{
+ for(const tool of ['codex','antigravity','dsh']) {
+  const {ctx,elements,run}=setup();run(`workspace.tasks[0].tool=${JSON.stringify(tool)}`);
+  ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'1',role:'assistant',text:'Earlier answer'}],next_cursor:'older'})});
+  await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,true);
+  assert.match(elements['session-history'].innerHTML,/Earlier answer/);
+  assert.match(elements['session-history'].innerHTML,/加载更早的记录/);
+ }
+});

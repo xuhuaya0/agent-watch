@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 from aw.control.antigravity import Antigravity
-from aw.control.history import CodexHistory
+from aw.control.history import AntigravityHistory, CodexHistory
 from aw.control.codex import Codex
 from aw.control.codex_ipc import CodexDesktop
 from aw.control.codex_queue import native_queue_sender
@@ -35,7 +35,9 @@ def main():
         # A one-shot check must wait for its snapshot instead of exiting before
         # the background discovery thread has returned its first result.
         interactions=NativeInteractions(NativeRpc(os.environ), approvals=ag.get('native_approvals') is True) if ag.get('native_questions') is True else None
-        providers['antigravity']=Antigravity(ag['executable'], SessionScope(path), background=not args.once, interactions=interactions)
+        scope = SessionScope(path)
+        history = AntigravityHistory(ag.get('data_root', '~/.gemini/antigravity'), scope)
+        providers['antigravity']=Antigravity(ag['executable'], scope, background=not args.once, interactions=interactions, history=history)
     if 'codex' in cfg:
         cx=cfg['codex']
         if cx.get('transport') == 'desktop-ipc':

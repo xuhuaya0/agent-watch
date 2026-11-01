@@ -16,10 +16,10 @@ a material native protocol change.
 | Codex, another Mac | Implemented; not verified on a second installation | Implemented; needs matching desktop IPC and queue/wake entry points; not verified | Implemented; not verified on a second installation | Implemented; not verified on a second installation |
 | Codex, Windows desktop | Format adapters implemented; native acceptance pending | Desktop IPC / cold wake unavailable in current adapter | Reader implemented; Windows native acceptance pending | Format adapters implemented; native acceptance pending |
 | Codex, Linux desktop / CLI | Format adapters implemented; native acceptance pending | Unix IPC or existing shared app-server may be compatible; native acceptance pending; macOS cold wake unavailable | Reader implemented; native acceptance pending | Depends on native catalog; desktop pins cannot be assumed for CLI |
-| Antigravity, current Windows installation | Verified | Verified against dedicated sessions; command decisions only | Not implemented beyond latest captured turn | Verified |
-| Antigravity, macOS / Linux | Format/path adapters implemented; native acceptance pending | Sidecar/RPC implemented; native acceptance pending | Not implemented | Format/path adapters implemented; native acceptance pending |
-| DeepSeek Harness 0.2.0-rc.2, Windows | Verified | Verified against dedicated sessions | Not implemented beyond latest captured turn | Native metadata implemented; pins observed; archive filtering covered by regression tests, native archive/restore UI acceptance still pending |
-| DeepSeek Harness, macOS / Linux or other versions | Format/path adapters implemented; native acceptance pending | Connection plugin implemented for the validated protocol; native acceptance pending | Not implemented | Format/path adapters implemented; native acceptance pending |
+| Antigravity, current Windows installation | Verified | Verified against dedicated sessions; command decisions only | Implemented; bounded on-demand pages, native acceptance pending | Verified |
+| Antigravity, macOS / Linux | Format/path adapters implemented; native acceptance pending | Sidecar/RPC implemented; native acceptance pending | Implemented; native acceptance pending | Format/path adapters implemented; native acceptance pending |
+| DeepSeek Harness 0.2.0-rc.2, Windows | Verified | Verified against dedicated sessions | Implemented; bounded on-demand pages, native acceptance pending | Native metadata implemented; pins observed; archive filtering covered by regression tests, native archive/restore UI acceptance still pending |
+| DeepSeek Harness, macOS / Linux or other versions | Format/path adapters implemented; native acceptance pending | Connection plugin implemented for the validated protocol; native acceptance pending | Implemented; native acceptance pending | Format/path adapters implemented; native acceptance pending |
 
 The deployment notes kept outside this repository hold the private device/session
 identifiers and screenshots. The exact Codex and Antigravity build numbers were
@@ -56,7 +56,7 @@ operation succeeded.
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
-| Full Antigravity / DeepSeek history | Latest turn only | Add bounded, on-demand pagination using native read interfaces; avoid copying entire history into Hub storage |
+| Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Native acceptance pending; verify actual page boundaries, reconnection and archived-session revocation on installed versions. Attachments remain placeholders |
 
 No permanent approval, automatic approval or arbitrary shell execution endpoint
 is provided by Agent Watch. A message may still cause the native Agent to act

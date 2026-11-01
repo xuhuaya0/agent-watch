@@ -106,6 +106,9 @@ def open_rollout(path):
 
 
 class CodexHistory:
+    source = 'codex_rollout'
+    message = staticmethod(message)
+
     def __init__(self, root, scope):
         self.root = Path(root).expanduser().resolve()
         self.scope = scope
@@ -149,7 +152,7 @@ class CodexHistory:
             for offset, raw in reverse_lines(stream, end):
                 try:
                     row = json.loads(raw)
-                    item = message(row, offset) if isinstance(row, dict) else None
+                    item = self.message(row, offset) if isinstance(row, dict) else None
                 except (ValueError, TypeError):
                     item = None
                 cost = len(json.dumps(item, ensure_ascii=False).encode()) if item else 0
@@ -165,4 +168,53 @@ class CodexHistory:
             self.path(sid)
             return {'messages': list(reversed(items)),
                     'next_cursor': f'{stamp}:{next_offset}' if next_offset else None,
-                    'source': 'codex_rollout'}
+                    'source': self.source}
+
+
+def bounded_message(identity, role, label, body, timestamp=''):
+    if not isinstance(body, str) or not body.strip():
+        return None
+    raw = body.encode('utf-8')
+    return {'id': str(identity), 'role': role, 'label': label,
+            'text': raw[:48000].decode('utf-8', errors='ignore'),
+            'timestamp': str(timestamp or '')[:80], 'truncated': len(raw) > 48000}
+
+
+class AntigravityHistory(CodexHistory):
+    """Read existing transcript pages, never request native rehydration."""
+    source = 'antigravity_transcript'
+
+    def path(self, sid):
+        from .sessions import canonical_id
+        if not canonical_id(sid) or sid not in self.scope():
+            raise ControlError('native_session_unavailable')
+        target = (self.root/'brain'/sid/'.system_generated/logs/transcript.jsonl').resolve()
+        if not target.is_relative_to(self.root/'brain'/sid):
+            raise ControlError('history_path_unavailable')
+        if not target.is_file():
+            raise ControlError('history_unavailable')
+        return target
+
+    @staticmethod
+    def message(row, offset):
+        from ..adapters.antigravity import _user_text, _NOTIFICATION
+        kind, body = row.get('type'), row.get('content', '')
+        if kind == 'USER_INPUT':
+            role, label, body = 'user', '你', _user_text(body) if isinstance(body, str) else ''
+        elif kind == 'PLANNER_RESPONSE':
+            role, label = 'assistant', 'Antigravity'
+            calls = row.get('tool_calls')
+            if calls:
+                # Keep a tool-bearing step together without inventing events.
+                role, label = 'tool', '工具调用'
+                body = ((body + '\n\n') if isinstance(body, str) and body else '') + json.dumps(calls, ensure_ascii=False, indent=2)
+        elif kind in ('GENERIC', 'ERROR_MESSAGE'):
+            role, label = 'tool', '工具结果' if kind == 'GENERIC' else '错误'
+        elif kind == 'SYSTEM_MESSAGE' and isinstance(body, str):
+            notification = _NOTIFICATION.search(body)
+            if not notification:
+                return None
+            role, label, body = 'user', '外部通知', notification.group(1)
+        else:
+            return None
+        return bounded_message(offset, role, label, body, row.get('created_at'))
