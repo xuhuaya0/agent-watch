@@ -58,11 +58,16 @@ def normalize_sessions(rows):
             clean['create'] = dict(create)
         if 'policy' in row:
             from .codex_policy import OPTIONS
+            from .dsh_permissions import valid_capability
             policy = row['policy']
-            if (row['tool'] != 'codex' or not isinstance(policy, dict)
-                    or set(policy) != {'current','revision','scope','options'}
-                    or policy.get('scope') != 'session-next-turn' or policy.get('options') != OPTIONS
-                    or policy.get('current') not in ('on-request','never') or not text(policy.get('revision'))):
+            if row['tool'] == 'dsh':
+                valid = valid_capability(policy)
+            else:
+                valid = (row['tool'] == 'codex' and isinstance(policy, dict)
+                         and set(policy) == {'current','revision','scope','options'}
+                         and policy.get('scope') == 'session-next-turn' and policy.get('options') == OPTIONS
+                         and policy.get('current') in ('on-request','never') and text(policy.get('revision')))
+            if not valid:
                 raise ControlError('invalid_policy_capability',400)
             clean['policy'] = dict(policy)
         seen = set()

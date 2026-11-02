@@ -53,14 +53,17 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Verified through the Windows provider; browser submission remains pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
-| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | Full sandbox/profile selection and other Harness policy endpoints need validation. No project/global policy writes |
+| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | DeepSeek: native session permission presets implemented, including sandbox and approval changes; catalog/command ownership verified read-only on Windows, write-and-restore acceptance pending. Antigravity and full Codex profile switches still need validation. No project/global policy writes |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
 | Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; reconnection, archived-session revocation and full Hub/browser history delivery still need acceptance. Attachments remain placeholders |
 
-No permanent approval, automatic approval or arbitrary shell execution endpoint
-is provided by Agent Watch. A message may still cause the native Agent to act
+Agent Watch does not invent permanent-approval or automatic-approval actions,
+and provides no arbitrary shell execution endpoint. DeepSeek permission choices
+come from its native catalog: selecting a native full-access or Auto preset can
+change sandbox and approval behavior for that session, as in its own UI. The
+panel labels this separately from Codex approval-only changes. A message may still cause the native Agent to act
 according to its existing policy. “Native application received” is not “Agent
 finished”, and uncertain delivery is not retried automatically.
 
@@ -109,3 +112,18 @@ on the device and is fetched in bounded pages; frontend labels use local CSS/SVG
 Do not add a UI framework, browser automation runtime, second model engine or a
 full transcript mirror just to normalize the three integrations. Optional control
 dependencies are separate from basic collection.
+
+### DeepSeek permission presets
+
+The adapter reads `permissionPresets/catalog`, verifies the session's
+`commands/list` entry belongs to the native permission-preset package, and uses
+only `/permission <advertised-value>` through `commands/execute`. It never sends
+this command as a model prompt or updates default settings. Controls require an
+available, idle native agent with no queued prompts or pending questions.
+Native metadata is checked again before dispatch; the current session projection
+must confirm the choice before success is reported. An unknown result is never
+retried automatically. The native API has no atomic compare-and-set for changes
+made simultaneously in another client, so avoid concurrent permission editing.
+
+Read-only catalog and command ownership checks passed on Windows on 2026-11-03.
+Actual preset switching/restoration and browser acceptance are still pending.

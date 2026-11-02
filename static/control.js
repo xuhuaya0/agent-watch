@@ -6,7 +6,7 @@ CONTROL_ERRORS.codex_resume_timeout='Codex 未能及时加载原会话，消息�
 CONTROL_ERRORS.native_session_archived='会话已在原应用中归档，消息未发送';
 CONTROL_ERRORS.control_paused='此设备的面板交互已暂停，可在设置中恢复';
 CONTROL_ERRORS.policy_changed='原生权限或运行状态已变化，请刷新后重试';
-CONTROL_ERRORS.invalid_policy='原应用不支持此审批策略';
+CONTROL_ERRORS.invalid_policy='原应用不支持此权限选项';
 CONTROL_ERRORS.create_unavailable='新建入口已变更或不可用，请刷新后重试';
 let controlDeviceLoad=0;
 async function loadControlDevices() {
@@ -95,7 +95,11 @@ function interactionHtml(id) {
    body+='</form>';
   }
   if(cap.reply)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()"><label for="native-reply">回复原会话</label><textarea id="native-reply" rows="3" maxlength="16000" placeholder="给这个会话发送后续消息…" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea><div class="composer-footer"><span>发送到上方标明的设备与 Harness</span><button class="primary"${disabled}>发送</button></div></form>`;
-  if(cap.policy)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(cap.policy.revision)})"><label for="native-policy">审批策略</label><p class="capture-note">仅此会话的后续轮次 · 不改变沙盒权限或审批者</p><select id="native-policy" name="policy"${disabled}>${cap.policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===cap.policy.current?' selected':''}>${esc(o.label)}</option>`).join('')}</select><button type="submit"${disabled}>应用到此会话</button></form>`;
+  if(cap.policy){
+    const presets=cap.policy.scope==='session-permissions';
+    const custom=presets&&cap.policy.current==='custom';
+    body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(cap.policy.revision)})"><label for="native-policy">${presets?'会话权限预设':'审批策略'}</label><p class="capture-note">${presets?'仅此会话 · 同时切换沙盒与审批设置；不修改新会话默认值':'仅此会话的后续轮次 · 不改变沙盒权限或审批者'}</p><select id="native-policy" name="policy"${disabled}>${custom?'<option value="custom" selected disabled>当前：自定义组合</option>':''}${cap.policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===cap.policy.current?' selected':''}>${esc(o.label)}</option>`).join('')}</select>${presets?cap.policy.options.map(o=>`<p class="capture-note">${esc(o.label)}${o.description?'：'+esc(o.description):''}</p>`).join(''):''}<button type="submit"${disabled}>应用到此会话</button></form>`;
+  }
   if(cap.create)body+=`<details class="new-session"><summary>新建 DeepSeek 会话</summary><form class="reply-composer" onsubmit="event.preventDefault();sendCreate(${jsArg(cap.create.revision)})"><p class="capture-note">设备：${esc(workspace.detail?.machine||'当前设备')} · DeepSeek Harness<br>工作目录：${esc(cap.create.cwd)}<br>使用原应用默认 Agent 与权限配置。</p><label for="native-create">新会话的首条消息</label><textarea id="native-create" rows="3" maxlength="16000" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><button class="primary"${disabled}>新建并发送</button></form></details>`;
   if(cap.reason)body+=`<p class="capture-note">${esc(cap.reason)}</p>`;
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
@@ -209,6 +213,6 @@ function sendPolicy(form,revision) {
  if(!data?.connected||!policy||policy.revision!==revision){toast(CONTROL_ERRORS.policy_changed);return;}
  const value=form.elements.policy.value;
  if(!policy.options.some(o=>o.value===value)){toast(CONTROL_ERRORS.invalid_policy);return;}
- if(value===policy.current){toast('已使用该审批策略');return;}
+ if(value===policy.current){toast('已使用该权限选项');return;}
  return submitNative({kind:'policy',revision,value});
 }

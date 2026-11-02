@@ -136,6 +136,8 @@ def question_request(frame):
 
 class DeepSeek:
     def __init__(self, config, gateway_factory=Gateway, background=True):
+        from .dsh_permissions import Permissions
+        self.permissions = Permissions()
         self.config, self.gateway_factory = config, gateway_factory
         self.gateway = None
         self.refresh_lock = threading.RLock()
@@ -226,6 +228,15 @@ class DeepSeek:
                 create = capability(native_row)
                 if sid in rows and create:
                     rows[sid]['create'] = create
+        # Optional native permission API failures must not disable replies/history.
+        for native_row in catalog:
+            sid = native_row.get('sessionId')
+            if sid not in rows:continue
+            try:
+                policy = self.permissions.read(self.gateway, native_row)
+                if policy:rows[sid]['policy'] = policy
+            except Exception:
+                pass
         continued = {}
         for native_row in catalog:
             sid = native_row['sessionId']
@@ -256,6 +267,7 @@ class DeepSeek:
                     with self.condition:
                         if event_id in self.pending:self.pending[event_id]['request'] = request
                 rows[sid]['requests'].append(request)
+                rows[sid].pop('policy', None)
             except (ControlError,ValueError,KeyError,TypeError):
                 rows[sid]['reason'] = '此请求的完整内容不可用，请在 DeepSeek 原应用处理'
                 self.delegate(event_id)
@@ -282,7 +294,9 @@ class DeepSeek:
             if not self.gateway or not self.gateway.live() or time.monotonic()-self.refreshed > 15:
                 return []
             rows = copy.deepcopy(list(self.rows.values()))
-            for row in rows:row['requests'] = [r for r in row['requests'] if r['id'] in self.pending or (row['session_id'],r['id']) in self.continued]
+            for row in rows:
+                row['requests'] = [r for r in row['requests'] if r['id'] in self.pending or (row['session_id'],r['id']) in self.continued]
+                if row['requests'] or any(p['frame']['agentId']==row['session_id'] for p in self.pending.values()):row.pop('policy', None)
             return rows
 
     def session_snapshot(self, sid):
@@ -298,6 +312,9 @@ class DeepSeek:
         rows = self.session_snapshot(sid)
         if not rows:raise ControlError('native_session_unavailable')
         validate_action(rows[0],action)
+        if action['kind'] == 'policy':
+            from .dsh_permissions import execute
+            return execute(self, command)
         if action['kind'] == 'create':
             from .dsh_create import create_session
             return create_session(self, command, rows[0])

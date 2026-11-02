@@ -145,3 +145,12 @@ test('new conversation links never cross devices',()=>{
  run(ctx,`workspace.tasks.push({ui_key:'new-chat',machine_id:'one',tool:'dsh',session_id:'new'})`);
  assert.match(run(ctx,'createdSessionHtml("a",receipt)'),/打开新会话/);
 });
+
+test('DeepSeek presets disclose sandbox changes and keep custom display-only',()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'custom',revision:'preset-v1',scope:'session-permissions',options:[{value:'workspace-write',label:'Workspace',description:'<native description>'}]}}};
+ run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'interactionHtml("a")');
+ assert.match(html,/同时切换沙盒与审批设置/);
+ assert.match(html,/value="custom" selected disabled/);
+ assert.match(html,/&lt;native description>/);
+ assert.doesNotMatch(html,/不改变沙盒权限或审批者/);
+});
