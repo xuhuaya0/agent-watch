@@ -419,6 +419,7 @@ class CodexDesktop:
         if action['kind'] == 'policy':
             from .codex_policy import unchanged_permissions
             with self.condition:
+                validate_action(self.row(sid, self.states[sid]), action)
                 before = copy.deepcopy(self.states[sid])
             response = self.rpc.call('thread-follower-update-thread-settings',
                 {**params, 'threadSettings':{'approvalPolicy':action['value']}, 'activeTurnId':None},

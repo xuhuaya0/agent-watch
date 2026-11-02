@@ -64,6 +64,18 @@ class CreateTests(unittest.TestCase):
         prompts=[args['request'] for method,args in self.p.gateway.calls if method=='session/prompt']
         self.assertEqual(len(prompts),1);self.assertEqual(prompts[0]['sessionId'],result['created_session_id'])
 
+    def test_lost_create_response_keeps_destination_without_sending_or_retrying(self):
+        call=self.p.gateway.call
+        def lost(endpoint,args):
+            result=call(endpoint,args)
+            if endpoint=='session/create':raise TimeoutError()
+            return result
+        self.p.gateway.call=lost
+        result=self.p.execute({'id':'c','session_id':DSH_SID,'action':self.action()})
+        self.assertEqual(result,{'state':'unknown','created_session_id':self.p.gateway.created[0]})
+        self.assertEqual(len(self.p.gateway.created),1)
+        self.assertFalse(any(method=='session/prompt' for method,_ in self.p.gateway.calls))
+
     def test_broker_worker_receipt_deduplicates_and_keeps_new_destination(self):
         root=Path(self.enterContext(tempfile.TemporaryDirectory()))
         broker=Broker(root/'hub')
@@ -72,7 +84,11 @@ class CreateTests(unittest.TestCase):
         worker.exchange=lambda body:{'ok':True,**broker.exchange('d',body['worker_id'],body['sessions'],body['receipts'],body['read_results'])}
         worker.step();action=self.action();cid=str(uuid.uuid4())
         broker.submit('d','dsh',DSH_SID,cid,action)
-        worker.step();worker.step()
+        worker.step()
+        # A center restart clears the message body but must not lose the
+        # command type needed to accept the destination receipt afterward.
+        broker=Broker(root/'hub')
+        worker.step()
         receipt=broker.status('d','dsh',DSH_SID)['commands'][0]
         self.assertEqual(receipt['state'],'delivered')
         self.assertEqual(receipt['result'],{'tool':'dsh','session_id':self.p.gateway.created[0]})

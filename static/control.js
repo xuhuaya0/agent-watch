@@ -61,7 +61,7 @@ function createdSessionHtml(id,receipt) {
  const result=receipt?.result;if(!result)return '';
  const source=workspace.tasks?.find(t=>(t.ui_key||t.key)===id);
  const target=source&&workspace.tasks.find(t=>(t.machine_id?`id:${t.machine_id}`:`name:${t.machine}`)===(source.machine_id?`id:${source.machine_id}`:`name:${source.machine}`) && t.tool===result.tool && t.session_id===result.session_id);
- return target?`<button type="button" onclick="selectSession(${jsArg(target.ui_key||target.key)})">打开新会话 →</button>`:`<p class="capture-note">新会话 ID：${esc(result.session_id)} · 等待设备同步，可在原应用查看。</p>`;
+ return target?`<button type="button" onclick="selectSession(${jsArg(target.ui_key||target.key)})">打开新会话 →</button>`:`<p class="capture-note">目标会话 ID：${esc(result.session_id)} · 等待设备同步，可在原应用核实。</p>`;
 }
 function interactionFeedbackHtml(id) {
  const data=interaction.byTask.get(id),local=interaction.pending.get(id);

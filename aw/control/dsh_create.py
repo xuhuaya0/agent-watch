@@ -21,11 +21,11 @@ def create_session(provider, command, session):
     # Generated on the device, never accepted from a browser. No accidental
     # adoption of a caller-selected existing session and no native retry.
     sid = 'session-' + str(uuid.uuid4())
-    result = gateway.call('session/create', {'request': {'sessionId': sid, 'cwd': session['create']['cwd']}})
-    if not isinstance(result, dict) or result.get('sessionId') != sid:
-        return 'unknown'
     outcome = {'state': 'unknown', 'created_session_id': sid}
     try:
+        result = gateway.call('session/create', {'request': {'sessionId': sid, 'cwd': session['create']['cwd']}})
+        if not isinstance(result, dict) or result.get('sessionId') != sid:
+            return outcome
         # The source context may have been archived or moved while creating.
         rows = provider.session_snapshot(command['session_id'])
         if gateway is not provider.gateway or not rows:
@@ -37,7 +37,7 @@ def create_session(provider, command, session):
         if isinstance(result, dict) and result.get('accepted') is True:
             outcome['state'] = 'delivered'
     except Exception:
-        # Creation has already happened. Never label a partial outcome rejected
-        # or send the text into the source conversation as a fallback.
+        # Creation may have happened even when its response was lost. Preserve
+        # the generated destination and never label this safe to retry.
         pass
     return outcome

@@ -122,7 +122,7 @@ class Worker:
                     raise ValueError('invalid creation receipt')
                 receipt.update(state=result['state'], result={'tool':'dsh', 'session_id':sid},
                     detail='新会话已创建，首条消息已接收；不代表 Agent 已完成执行' if result['state']=='delivered'
-                    else '新会话已创建，首条消息的送达情况待确认；请检查原应用，勿重复新建')
+                    else '创建或首条消息送达情况待确认；请按目标会话 ID 检查原应用，勿重复新建')
                 self.save()
                 return True
             if result in ('queued_native', 'queued_unwoken'):

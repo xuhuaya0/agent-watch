@@ -184,6 +184,10 @@ class Broker:
             ''')
             if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(commands)')}:
                 db.execute('ALTER TABLE commands ADD COLUMN result TEXT')
+            if 'kind' not in {r[1] for r in db.execute('PRAGMA table_info(commands)')}:
+                db.execute("ALTER TABLE commands ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+                for row in db.execute('SELECT id,action FROM commands WHERE action IS NOT NULL').fetchall():
+                    db.execute('UPDATE commands SET kind=? WHERE id=?', (json.loads(row['action']).get('kind',''),row['id']))
             # Never replay anything that might already have reached the native app.
             db.execute("UPDATE commands SET state='unknown',action=NULL,detail='服务重启，操作结果未知，请检查原应用' WHERE state='dispatched'")
         os.chmod(self.path, 0o600)
@@ -314,8 +318,8 @@ class Broker:
             if db.execute("SELECT 1 FROM commands WHERE device=? AND tool=? AND session=? AND state IN ('queued','dispatched')", (device, tool, session)).fetchone():
                 raise ControlError('operation_in_progress')
             now = self.clock()
-            db.execute('INSERT INTO commands(id,device,tool,session,fingerprint,action,state,created,deadline,worker) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                       (command_id, device, tool, session, fingerprint, encoded(action), 'queued', now, now+60, worker))
+            db.execute('INSERT INTO commands(id,device,tool,session,fingerprint,action,state,created,deadline,worker,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (command_id, device, tool, session, fingerprint, encoded(action), 'queued', now, now+60, worker, action['kind']))
             return {'id': command_id, 'state': 'queued', 'detail': ''}
 
     def history(self, device, tool, session, cursor=None):
@@ -357,9 +361,11 @@ class Broker:
             self.live[device] = workers
             accepted = []
             for r in receipts:
-                row = db.execute('SELECT state,tool,action,result FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                row = db.execute('SELECT state,tool,kind,result FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
                 if row and row['state'] in ('dispatched', 'delivered', 'resolved', 'rejected', 'unknown'):
-                    if 'result' in r and row['tool'] == 'dsh' and row['action'] and json.loads(row['action']).get('kind') == 'create':
+                    if 'result' in r and row['tool'] == 'dsh' and row['kind'] == 'create' and row['state'] in ('dispatched','unknown'):
+                        if row['result'] and row['result'] != encoded(r['result']):
+                            raise ControlError('creation_result_conflict',400)
                         db.execute('UPDATE commands SET result=? WHERE id=?', (encoded(r['result']),r['id']))
                     db.execute("UPDATE commands SET state=?,action=NULL,detail=? WHERE id=? AND state IN ('dispatched','unknown')", (r['state'], r.get('detail', '')[:1000], r['id']))
                     accepted.append(r['id'])
