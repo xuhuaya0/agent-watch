@@ -1,6 +1,6 @@
 # Compatibility and acceptance matrix
 
-Updated: 2026-11-02. This is a record of observed support, not a promise that
+Updated: 2026-11-03. This is a record of observed support, not a promise that
 every desktop release implements the same protocol. A passing CI test exercises
 fixtures and simulated transports; it is not native application acceptance.
 
@@ -16,16 +16,16 @@ a material native protocol change.
 | Codex, another Mac | Implemented; not verified on a second installation | Implemented; needs matching desktop IPC and queue/wake entry points; not verified | Implemented; not verified on a second installation | Implemented; not verified on a second installation |
 | Codex, Windows desktop | Format adapters implemented; native acceptance pending | Named-pipe IPC and queue/wake implemented; native Windows acceptance pending | Reader implemented; Windows native acceptance pending | Format adapters implemented; native acceptance pending |
 | Codex, Linux desktop / CLI | Format adapters implemented; native acceptance pending | Unix IPC or existing shared app-server may be compatible; native acceptance pending; macOS cold wake unavailable | Reader implemented; native acceptance pending | Depends on native catalog; desktop pins cannot be assumed for CLI |
-| Antigravity, current Windows installation | Verified | Verified against dedicated sessions; command decisions only | Implemented; bounded on-demand pages, native acceptance pending | Verified |
+| Antigravity 2.28.2.0, Windows | Verified | Verified against dedicated sessions; command decisions only | Verified, two bounded pages from a dedicated native transcript | Verified |
 | Antigravity, macOS / Linux | Format/path adapters implemented; native acceptance pending | Sidecar/RPC implemented; native acceptance pending | Implemented; native acceptance pending | Format/path adapters implemented; native acceptance pending |
-| DeepSeek Harness 0.2.0-rc.2, Windows | Verified | Verified against dedicated sessions | Implemented; bounded on-demand pages, native acceptance pending | Native metadata implemented; pins observed; archive filtering covered by regression tests, native archive/restore UI acceptance still pending |
+| DeepSeek Harness 0.2.0-rc.2, Windows | Verified | Verified against dedicated sessions; same-directory creation verified | Verified, two bounded pages through the native API | Native metadata implemented; pins observed; archive filtering covered by regression tests, native archive/restore UI acceptance still pending |
 | DeepSeek Harness, macOS / Linux or other versions | Format/path adapters implemented; native acceptance pending | Connection plugin implemented for the validated protocol; native acceptance pending | Implemented; native acceptance pending | Format/path adapters implemented; native acceptance pending |
 
 The deployment notes kept outside this repository hold the private device/session
-identifiers and screenshots. The exact Codex and Antigravity build numbers were
-not retained in the existing acceptance record; the next validation must record
-them. Fixture provenance records a Codex format version, not proof that every
-interaction was tested on that version.
+identifiers and screenshots. Earlier acceptance did not retain every native
+build number. The versioned checks below identify which actions were exercised on later recorded builds;
+they do not retroactively establish versions for earlier tests. Fixture
+provenance alone does not prove native interaction support.
 
 ## Connections and lifecycle
 
@@ -52,12 +52,12 @@ operation succeeded.
 
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
-| New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Implemented, native acceptance pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
+| New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Verified through the Windows provider; browser submission remains pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
 | Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | Full sandbox/profile selection and other Harness policy endpoints need validation. No project/global policy writes |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
-| Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Native acceptance pending; verify actual page boundaries, reconnection and archived-session revocation on installed versions. Attachments remain placeholders |
+| Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; reconnection, archived-session revocation and full Hub/browser history delivery still need acceptance. Attachments remain placeholders |
 
 No permanent approval, automatic approval or arbitrary shell execution endpoint
 is provided by Agent Watch. A message may still cause the native Agent to act
@@ -71,6 +71,18 @@ other permission fields remained unchanged; no message or command was submitted.
 This exercised the provider action path, not a browser interaction. The native
 transport returns the policy acknowledgement as `result.applied`; the adapter
 also waits for the corresponding state update before reporting success.
+
+On 2026-11-03, Windows clients running Antigravity 2.28.2.0 and DeepSeek
+Harness (executable product version 0.2.0.0) were updated to revision `8682747`.
+Both native-managed workers resumed successful Hub exchanges. Dedicated history
+reads returned two non-overlapping pages: 30/10 messages for Antigravity and
+17/6 for DeepSeek. A DeepSeek conversation was created in its dedicated test
+directory, the fixed test prompt was accepted, and its matching assistant reply
+was observed through the native history API. These exercised deployed provider
+paths; browser submission and end-to-end Hub history reads remain unverified.
+No Windows Codex app, process, CLI or user profile was found on the inspected
+client, so Windows native Codex acceptance remains pending, independently of
+passing named-pipe CI tests.
 
 ## Next native acceptance opportunities
 
