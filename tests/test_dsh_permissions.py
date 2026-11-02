@@ -1,5 +1,8 @@
 import copy
 import unittest
+import tempfile
+from pathlib import Path
+from aw.control.worker import Worker
 from aw.control.broker import ControlError, normalize_sessions
 from aw.control.dsh import DeepSeek
 from aw.control.dsh_permissions import DEFINITION, options
@@ -38,6 +41,18 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(p.execute(self.command(p)),'policy_updated')
         self.assertEqual(self.writes(p),[('commands/execute',{'agentId':SID,'line':'/permission danger-full-access','submittedAttachments':[]})])
         self.assertFalse(any(c[0]=='session/prompt' for c in p.gateway.calls))
+    def test_worker_receipt_does_not_claim_sandbox_is_unchanged(self):
+        p=self.provider();command={**self.command(p),'tool':'dsh'}
+        with tempfile.TemporaryDirectory() as tmp:
+            w=Worker({'device_id':'test','hub_url':'http://localhost:1','token':'fake'},
+                     {'dsh':p},Path(tmp)/'state.json')
+            w.exchange=lambda body:{'ok':True,'receipts':[],'command':command}
+            self.assertTrue(w.step());w.step()
+            receipt=w.state['receipts'][0]
+            self.assertEqual(receipt['state'],'resolved')
+            self.assertIn('沙盒与审批设置',receipt['detail'])
+            self.assertNotIn('保持原值',receipt['detail'])
+            self.assertEqual(len(self.writes(p)),1)
     def test_bad_or_changed_native_command_and_catalog_prevent_write(self):
         for change in ('owner','option','state','running','queue','archive','unavailable','question'):
             with self.subTest(change=change):

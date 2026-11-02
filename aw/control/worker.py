@@ -111,7 +111,10 @@ class Worker:
             validate_action(current, command['action'])
             result = provider.execute(command)
             if result == 'policy_updated' and command['action']['kind'] == 'policy':
-                receipt.update(state='resolved', detail='原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值')
+                detail = ('原应用已确认此会话的权限预设（沙盒与审批设置）；新会话默认值未修改'
+                          if command['tool'] == 'dsh' else
+                          '原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值')
+                receipt.update(state='resolved', detail=detail)
                 self.save()
                 return True
             if isinstance(result, dict) and command['tool'] == 'dsh' and command['action']['kind'] == 'create':
