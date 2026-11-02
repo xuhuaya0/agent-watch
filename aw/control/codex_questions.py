@@ -17,6 +17,9 @@ ITEM = {'type': True, 'id': True, 'status': True,
         'content': [TEXT], 'input': [TEXT]}
 TURN = {'turnId': True, 'status': True, 'items': [ITEM]}
 SCHEMA = {'turns': [TURN], 'turnHistory': {'kind': True, 'history': {'entitiesByKey': {'*': TURN}}}}
+SCHEMA.update(latestThreadSettings={'approvalPolicy':True, 'approvalsReviewer':True,
+              'sandboxPolicy':True, 'permissions':True, 'activePermissionProfile':True},
+              threadRuntimeStatus={'type':True})
 
 
 def project(value, schema=SCHEMA):

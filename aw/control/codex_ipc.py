@@ -27,6 +27,7 @@ VERSIONS = {'initialize': 0, 'thread-owner-discovery': 1,
             'thread-follower-command-approval-decision': 1,
             'thread-follower-submit-user-input': 1}
 VERSIONS['thread-follower-steer-turn'] = 1
+VERSIONS['thread-follower-update-thread-settings'] = 2
 # The desktop's native framing limit; long histories can exceed 90 MiB. A
 # snapshot is transient: only requests and a minimal question projection survive.
 MAX_FRAME = 256 * 1024 * 1024
@@ -34,6 +35,25 @@ MAX_FRAME = 256 * 1024 * 1024
 
 class DesktopRpc:
     def __init__(self, path, on_event):
+        self.sock = self.connect(path)
+        self.callback = on_event
+        self.pending = {}
+        self.lock = threading.RLock()
+        self.write_lock = threading.Lock()
+        self.client_id = 'initializing-client'
+        self.connected = True
+        threading.Thread(target=self.read, daemon=True).start()
+        try:
+            self.client_id = self.call('initialize', {'clientType': 'agent-watch'})['result']['clientId']
+        except Exception:
+            self.close()
+            raise
+
+    @staticmethod
+    def connect(path):
+        if os.name == 'nt':
+            from .windows_pipe import NamedPipe
+            return NamedPipe(path)
         path = Path(path).expanduser()
         # Never fall back to a global temporary socket, start a router, or chmod
         # another application's files. Only a socket owned by this user is valid.
@@ -43,21 +63,14 @@ class DesktopRpc:
             st = p.lstat()
             if st.st_uid != os.getuid() or st.st_mode & 0o022 or not (stat.S_ISDIR(st.st_mode) if directory else stat.S_ISSOCK(st.st_mode)):
                 raise ControlError('codex_unsafe_socket')
-        self.callback = on_event
-        self.pending = {}
-        self.lock = threading.RLock()
-        self.write_lock = threading.Lock()
-        self.client_id = 'initializing-client'
-        self.connected = True
-        self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(5)
-        self.sock.connect(str(path))
-        self.sock.settimeout(None)
-        threading.Thread(target=self.read, daemon=True).start()
+        sock = socket.socket(socket.AF_UNIX)
         try:
-            self.client_id = self.call('initialize', {'clientType': 'agent-watch'})['result']['clientId']
+            sock.settimeout(5)
+            sock.connect(str(path))
+            sock.settimeout(None)
+            return sock
         except Exception:
-            self.close()
+            sock.close()
             raise
 
     def send(self, message):
@@ -321,7 +334,10 @@ class CodexDesktop:
         requests = [entry['request'] for entry in mapper.requests.values()]
         unsupported = len(requests) != len(state['requests'])
         requests.extend(pending(state.get('history', {})))
+        from .codex_policy import capability
+        policy = capability(state) if not requests else None
         return normalize_sessions([{'tool': 'codex', 'session_id': sid, 'history': self.history_reader is not None,
+                                    **({'policy':policy} if policy else {}),
                                     'reply': not state['requests'] and not requests, 'requests': requests,
                                     'reason': '此请求请在 Codex 原应用处理' if unsupported else ''}])[('codex', sid)]
 
@@ -400,6 +416,19 @@ class CodexDesktop:
             asynchronous = next((r for r in pending(self.states[sid].get('history', {}))
                                  if r['id'] == action.get('request_id')), None)
         params = {'conversationId': sid}
+        if action['kind'] == 'policy':
+            from .codex_policy import unchanged_permissions
+            with self.condition:
+                before = copy.deepcopy(self.states[sid])
+            response = self.rpc.call('thread-follower-update-thread-settings',
+                {**params, 'threadSettings':{'approvalPolicy':action['value']}, 'activeTurnId':None},
+                owner=owner)['result']
+            if not isinstance(response, dict) or response.get('result',{}).get('applied') is not True:
+                return 'unknown'
+            with self.condition:
+                confirmed = self.condition.wait_for(lambda: sid not in self.states or
+                    ((self.states[sid].get('history') or {}).get('latestThreadSettings') or {}).get('approvalPolicy') == action['value'], timeout=8)
+                return 'policy_updated' if confirmed and sid in self.states and unchanged_permissions(before,self.states[sid]) else 'unknown'
         if action['kind'] == 'reply':
             method = 'thread-follower-start-turn'
             params['turnStart'] = {'request': {'threadId': sid, 'input': [{'type': 'text', 'text': action['text']}],

@@ -14,8 +14,9 @@ from .sessions import canonical_id
 
 
 class NativeQueue:
-    def __init__(self, executable, root, runner=subprocess.run):
+    def __init__(self, executable, root, runner=subprocess.run, wake=None):
         self.executable, self.root, self.run = str(executable), str(root), runner
+        self.wake = wake
 
     def __call__(self, sid, text):
         if not canonical_id(sid):
@@ -32,29 +33,34 @@ class NativeQueue:
         try:
             # Opening a normal conversation URL only displays history. The wake
             # route explicitly resumes an existing queue in the original app.
-            self.run(['/usr/bin/open', '-g', 'codex://threads/wake/'+sid],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     timeout=10, check=True)
+            if self.wake is not None:
+                self.wake('codex://threads/wake/'+sid)
+            else:
+                self.run(['/usr/bin/open', '-g', 'codex://threads/wake/'+sid],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         timeout=10, check=True)
         except (OSError, subprocess.SubprocessError):
             return 'queued_unwoken'  # Already queued: never offer a blind retry.
         return 'queued_native'
 
 
 def native_queue_sender(root, executable=None):
-    if sys.platform != 'darwin':
+    if sys.platform not in ('darwin','win32'):
         return None
-    candidates = [Path(executable).expanduser()] if executable else [
+    candidates = [Path(executable).expanduser()] if executable else [] if sys.platform=='win32' else [
         base/app/'Contents/Resources/codex-cli/bin/codex'
         for base in (Path('/Applications'), Path.home()/'Applications')
         for app in ('ChatGPT.app', 'Codex.app')]
     for path in candidates:
+        if sys.platform == 'win32' and path.suffix.lower() != '.exe':
+            continue  # Never invoke a cmd/PowerShell wrapper with message text.
         if not path.is_file() or not os.access(path, os.X_OK):
             continue
         try:
             help_text = subprocess.run([str(path), 'queue', '--help'], capture_output=True,
                                        text=True, timeout=5, check=True).stdout
             if '--thread' in help_text and '--message' in help_text:
-                return NativeQueue(path, root)
+                return NativeQueue(path, root, wake=os.startfile if sys.platform=='win32' else None)
         except (OSError, subprocess.SubprocessError):
             continue
     return None

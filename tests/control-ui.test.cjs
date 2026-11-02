@@ -122,3 +122,26 @@ test('resolved question leaves no stale controls even while its form has focus',
  await run(ctx,'refreshInteraction()');
  assert.doesNotMatch(node.innerHTML,/sendAnswer|Color\?/);assert.match(node.innerHTML,/Saved next message/);
 });
+test('creation shows device directory and submits a distinct action with revision',async()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,create:{cwd:'C:/Example/<project>',revision:'v1'}}};
+ run(ctx,'interaction.byTask.set("a",data);interactionDraft("a").createText="New chat"');
+ const html=run(ctx,'interactionHtml("a")');assert.match(html,/新建并发送/);assert.match(html,/&lt;project>/);assert.doesNotMatch(html,/<project>/);
+ let body;ctx.apiFetch=async(u,o)=>{body=JSON.parse(o.body);return {ok:true,json:async()=>({command:{id:body.id,state:'queued'}})}};
+ ctx.fetch=async()=>({ok:true,json:async()=>({...ctx.data,commands:[{id:body.id,state:'queued'}]})});
+ await run(ctx,'sendCreate("v1")');assert.deepEqual(body.action,{kind:'create',revision:'v1',text:'New chat'});
+ assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);
+});
+test('policy only exposes native choices and rejects a changed revision',async()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'on-request',revision:'v2',scope:'session-next-turn',options:[{value:'on-request',label:'Ask'},{value:'never',label:'Reject required approvals'}]}}};
+ run(ctx,'interaction.byTask.set("a",data)');assert.match(run(ctx,'interactionHtml("a")'),/后续轮次/);
+ let calls=0;ctx.apiFetch=async()=>{calls++};ctx.form={elements:{policy:{value:'never'}}};
+ await run(ctx,'sendPolicy(form,"v1")');assert.equal(calls,0);
+ ctx.form.elements.policy.value='full-access';await run(ctx,'sendPolicy(form,"v2")');assert.equal(calls,0);
+});
+test('new conversation links never cross devices',()=>{
+ const {ctx}=setup();run(ctx,`workspace.tasks=[{ui_key:'a',machine_id:'one'},{ui_key:'other',machine_id:'two',tool:'dsh',session_id:'new'}]`);
+ const receipt={result:{tool:'dsh',session_id:'new'}};ctx.receipt=receipt;
+ assert.doesNotMatch(run(ctx,'createdSessionHtml("a",receipt)'),/selectSession/);
+ run(ctx,`workspace.tasks.push({ui_key:'new-chat',machine_id:'one',tool:'dsh',session_id:'new'})`);
+ assert.match(run(ctx,'createdSessionHtml("a",receipt)'),/打开新会话/);
+});

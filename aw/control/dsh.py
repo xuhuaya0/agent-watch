@@ -217,6 +217,15 @@ class DeepSeek:
         rows = {r['sessionId']:{'tool':'dsh','session_id':r['sessionId'],'reply':True,'history':True,'requests':[]}
                 for r in catalog if r.get('origin') != 'subagent' and not r.get('blank',False) and not r.get('archived', False)
                 and r.get('sessionId','').startswith('session-') and (allowed is None or r['sessionId'] in allowed)}
+        # Creation stays within an explicitly authorized all-session profile,
+        # using the selected native session's current directory as its context.
+        if mode == 'all':
+            from .dsh_create import capability
+            for native_row in catalog:
+                sid = native_row.get('sessionId')
+                create = capability(native_row)
+                if sid in rows and create:
+                    rows[sid]['create'] = create
         continued = {}
         for native_row in catalog:
             sid = native_row['sessionId']
@@ -289,6 +298,9 @@ class DeepSeek:
         rows = self.session_snapshot(sid)
         if not rows:raise ControlError('native_session_unavailable')
         validate_action(rows[0],action)
+        if action['kind'] == 'create':
+            from .dsh_create import create_session
+            return create_session(self, command, rows[0])
         if action['kind']=='reply':
             result = self.gateway.call('session/prompt',{'request':{'sessionId':sid,'requestId':command['id'],
                 'mode':'queue','content':[{'type':'text','text':action['text']}]}})

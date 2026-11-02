@@ -49,6 +49,22 @@ def normalize_sessions(rows):
             if type(row['history']) is not bool:
                 raise ControlError('invalid_capability', 400)
             clean['history'] = row['history']
+        if 'create' in row:
+            create = row['create']
+            if (row['tool'] != 'dsh' or not isinstance(create, dict)
+                    or set(create) != {'cwd', 'revision'}
+                    or not text(create.get('cwd'), 2000) or not text(create.get('revision'))):
+                raise ControlError('invalid_create_capability', 400)
+            clean['create'] = dict(create)
+        if 'policy' in row:
+            from .codex_policy import OPTIONS
+            policy = row['policy']
+            if (row['tool'] != 'codex' or not isinstance(policy, dict)
+                    or set(policy) != {'current','revision','scope','options'}
+                    or policy.get('scope') != 'session-next-turn' or policy.get('options') != OPTIONS
+                    or policy.get('current') not in ('on-request','never') or not text(policy.get('revision'))):
+                raise ControlError('invalid_policy_capability',400)
+            clean['policy'] = dict(policy)
         seen = set()
         for req in requests:
             if not isinstance(req, dict) or not text(req.get('id')) or req['id'] in seen:
@@ -98,6 +114,22 @@ def validate_action(session, action):
     if not isinstance(action, dict):
         raise ControlError('invalid_action', 400)
     kind = action.get('kind')
+    if kind == 'policy':
+        policy = session.get('policy')
+        if not policy or action.get('revision') != policy['revision']:
+            raise ControlError('policy_changed')
+        if (set(action) != {'kind','revision','value'}
+                or action.get('value') not in [o['value'] for o in policy['options']]):
+            raise ControlError('invalid_policy',400)
+        return
+    if kind == 'create':
+        if (set(action) != {'kind', 'text', 'revision'} or not text(action.get('text'), 16000)
+                or not action['text'].strip()):
+            raise ControlError('invalid_message', 400)
+        capability = session.get('create')
+        if not capability or action.get('revision') != capability['revision']:
+            raise ControlError('create_unavailable')
+        return
     if kind == 'reply':
         if set(action) != {'kind', 'text'} or not text(action.get('text'), 16000) or not action['text'].strip():
             raise ControlError('invalid_message', 400)
@@ -150,6 +182,8 @@ class Broker:
                     fingerprint TEXT NOT NULL, action TEXT, state TEXT NOT NULL, worker TEXT,
                     created REAL NOT NULL, deadline REAL NOT NULL, detail TEXT NOT NULL DEFAULT '');
             ''')
+            if 'result' not in {r[1] for r in db.execute('PRAGMA table_info(commands)')}:
+                db.execute('ALTER TABLE commands ADD COLUMN result TEXT')
             # Never replay anything that might already have reached the native app.
             db.execute("UPDATE commands SET state='unknown',action=NULL,detail='服务重启，操作结果未知，请检查原应用' WHERE state='dispatched'")
         os.chmod(self.path, 0o600)
@@ -246,9 +280,16 @@ class Broker:
             self._expire(db)
             _, cap = self._owner(device, (tool, session))
             enabled = self._enabled(db, device)
-            rows = db.execute('SELECT id,state,detail,created FROM commands WHERE device=? AND tool=? AND session=? ORDER BY created DESC LIMIT 5', (device, tool, session)).fetchall()
+            rows = db.execute('SELECT id,state,detail,created,result FROM commands WHERE device=? AND tool=? AND session=? ORDER BY created DESC LIMIT 5', (device, tool, session)).fetchall()
+            commands = []
+            for row in rows:
+                item = dict(row)
+                result = item.pop('result')
+                if result:
+                    item['result'] = json.loads(result)
+                commands.append(item)
             return {'connected': bool(cap) and enabled, 'capability': cap if enabled else None,
-                    'reason': '此设备的面板交互已暂停，可在设置中恢复' if not enabled else '' if cap else '此会话尚未连接原应用的交互接口', 'commands': [dict(r) for r in rows]}
+                    'reason': '此设备的面板交互已暂停，可在设置中恢复' if not enabled else '' if cap else '此会话尚未连接原应用的交互接口', 'commands': commands}
 
     def submit(self, device, tool, session, command_id, action):
         try:
@@ -293,6 +334,15 @@ class Broker:
         for r in receipts:
             if not isinstance(r, dict) or not text(r.get('id')) or r.get('state') not in ('delivered', 'resolved', 'rejected', 'unknown') or not isinstance(r.get('detail', ''), str):
                 raise ControlError('invalid_receipt', 400)
+            if 'result' in r:
+                result = r['result']
+                try:
+                    if (not isinstance(result, dict) or set(result) != {'tool', 'session_id'}
+                            or result['tool'] != 'dsh' or not result['session_id'].startswith('session-')
+                            or str(uuid.UUID(result['session_id'][8:])) != result['session_id'][8:]):
+                        raise ValueError()
+                except (ValueError, TypeError, AttributeError):
+                    raise ControlError('invalid_receipt', 400) from None
         with self.lock, self.db() as db:
             self._expire(db)
             workers = self._active_workers(device)
@@ -307,8 +357,10 @@ class Broker:
             self.live[device] = workers
             accepted = []
             for r in receipts:
-                row = db.execute('SELECT state FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                row = db.execute('SELECT state,tool,action,result FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
                 if row and row['state'] in ('dispatched', 'delivered', 'resolved', 'rejected', 'unknown'):
+                    if 'result' in r and row['tool'] == 'dsh' and row['action'] and json.loads(row['action']).get('kind') == 'create':
+                        db.execute('UPDATE commands SET result=? WHERE id=?', (encoded(r['result']),r['id']))
                     db.execute("UPDATE commands SET state=?,action=NULL,detail=? WHERE id=? AND state IN ('dispatched','unknown')", (r['state'], r.get('detail', '')[:1000], r['id']))
                     accepted.append(r['id'])
                 elif not row:

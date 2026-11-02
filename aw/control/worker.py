@@ -110,6 +110,21 @@ class Worker:
                 raise ControlError('native_session_unavailable')
             validate_action(current, command['action'])
             result = provider.execute(command)
+            if result == 'policy_updated' and command['action']['kind'] == 'policy':
+                receipt.update(state='resolved', detail='原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值')
+                self.save()
+                return True
+            if isinstance(result, dict) and command['tool'] == 'dsh' and command['action']['kind'] == 'create':
+                sid = result.get('created_session_id', '')
+                if (set(result) != {'state', 'created_session_id'} or not isinstance(sid, str)
+                        or not sid.startswith('session-') or str(uuid.UUID(sid[8:])) != sid[8:]
+                        or result['state'] not in ('delivered', 'unknown')):
+                    raise ValueError('invalid creation receipt')
+                receipt.update(state=result['state'], result={'tool':'dsh', 'session_id':sid},
+                    detail='新会话已创建，首条消息已接收；不代表 Agent 已完成执行' if result['state']=='delivered'
+                    else '新会话已创建，首条消息的送达情况待确认；请检查原应用，勿重复新建')
+                self.save()
+                return True
             if result in ('queued_native', 'queued_unwoken'):
                 receipt.update(state='delivered', detail='已进入 Codex 原生队列；桌面已收到唤醒请求，尚不代表执行完成' if result=='queued_native' else '已进入 Codex 原生队列，但桌面唤醒失败；请在原应用查看，勿重复发送')
                 self.save()

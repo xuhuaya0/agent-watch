@@ -14,7 +14,7 @@
 
 Codex 的文件变更审批（请求中缺少完整 diff）、扩展权限、敏感输入等留在
 原应用处理。Antigravity 暂不接受以 `-` 开头的消息，以免原生 CLI 将消息
-解释成参数。没有自动批准、权限模式切换或任意 shell 命令入口。
+解释成参数。没有自动批准或任意 shell 命令入口。审批策略切换的范围见下文。
 
 Antigravity 的 `send-message` 使用原生系统通知通道，记录类型为
 `SYSTEM_MESSAGE`，不是 `USER_INPUT`。桥接固定传入 `--title=Agent Watch`，
@@ -66,10 +66,10 @@ Antigravity 会按窗口启动多个 sidecar；候选进程先核对原生会话
      `~/.gemini/config/sidecars/agent-watch/sidecar.json`，在原配置中合并
      `sidecars.agent-watch.enabled: true`。保留其他配置；禁用同一项即可停止。
      不在清单里放凭据，不手工伪造 `ANTIGRAVITY_LS_ADDRESS`。
-   - Codex 桌面（当前为 macOS/Unix）：配置 `codex.transport: desktop-ipc`、
+   - Codex 桌面（macOS/Unix）：配置 `codex.transport: desktop-ipc`、
      `socket_path: ~/.codex/ipc/ipc.sock` 和 `scope: all`。连接采用真实客户端名
      `agent-watch`，只接受当前用户所有的私有 socket；不冒充原生窗口。
-     桌面原会话所有者由 IPC 确认；保留当前请求及异步问题所需的最小历史投影，丢弃实时快照中的普通聊天正文和工具输出。历史正文通过独立只读通道按需读取。没有所有者时，仅在检测到兼容的 macOS 原生 queue CLI 后提供回复。
+     桌面原会话所有者由 IPC 确认；保留当前请求及异步问题所需的最小历史投影，丢弃实时快照中的普通聊天正文和工具输出。历史正文通过独立只读通道按需读取。没有所有者时，仅在检测到兼容的原生 queue CLI 后提供回复。
      共享 app-server 仍可使用旧配置 `codex: {executable, socket_path, session_ids}`。
    - DeepSeek 0.2.0-rc.2：在桌面 profile 中加载 `native/deepseek-connection.mjs`，
      `config.output` 指向当前用户私有的连接文件。插件调用原应用公开的
@@ -246,3 +246,26 @@ DeepSeek 展示按时间追加的消息记录，不将内部压缩摘要显示�
 
 合成回归测试覆盖分页追加、超长消息、归档撤回、越界路径和失效游标。
 这些测试不代替 Windows 上两个原生应用的验收，详见兼容性矩阵。
+
+
+### 新建会话、审批策略与 Windows Codex（实现完成，实机验收待完成）
+
+- **DeepSeek 新建会话**：选择对应设备的已有 DeepSeek 会话，在详情中展开
+  “新建 DeepSeek 会话”。页面显示目标设备、Harness、工作目录，输入首条消息后
+  点击“新建并发送”。仅 `scope: all` 支持；使用原应用默认 Agent 与权限配置，
+  不复制原会话的上下文、权限或原生项目归属。设备在执行前重新核对目录，
+  通过 `session/create` 生成独立会话并发送首条消息。创建成功但送达不确定时
+  保留新会话 ID，不自动重试、不向原会话回退发送；同步后可点击“打开新会话”。
+- **Codex 审批策略**：当前只为已连接且空闲的会话提供后续轮次的
+  `on-request` / `never` 切换。`never` 表示需要审批的操作拒绝，不是自动批准。
+  写入后核对原生快照，确认沙盒、权限配置及审批者未变化才报告成功。
+  运行中、等待审批、原生状态未知或版本不兼容时不显示此入口。
+- **Windows Codex**：使用同一 `desktop-ipc` 适配器；JSON 配置中的
+  `socket_path` 写为 `"\\\\.\\pipe\\codex-ipc"`。连接检查管道服务端与当前用户的
+  SID 一致，禁止远程管道，并限制服务端只能识别客户端、不能模拟客户端身份。
+  冷会话回复还需配置当前安装的原生 `codex.exe` 为 `executable`；只在该程序的
+  `queue --help` 确认参数支持后启用，再使用 Windows 注册的 `codex:` 协议唤醒。
+  不运行 `.cmd` / PowerShell 包装，不创建或替换原应用的管道，不启动第二个 Agent。
+
+上述新增能力的代码测试与真实 Harness 验收分开记录。Windows CI 中的命名管道
+测试只验证 Windows 传输与握手，不代表 Windows Codex 应用本身已验收。

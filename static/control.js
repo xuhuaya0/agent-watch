@@ -5,6 +5,9 @@ const CONTROL_ERRORS={control_offline:'设备交互连接已断开',request_expi
 CONTROL_ERRORS.codex_resume_timeout='Codex 未能及时加载原会话，消息尚未发送；请确认桌面应用已登录后重试';
 CONTROL_ERRORS.native_session_archived='会话已在原应用中归档，消息未发送';
 CONTROL_ERRORS.control_paused='此设备的面板交互已暂停，可在设置中恢复';
+CONTROL_ERRORS.policy_changed='原生权限或运行状态已变化，请刷新后重试';
+CONTROL_ERRORS.invalid_policy='原应用不支持此审批策略';
+CONTROL_ERRORS.create_unavailable='新建入口已变更或不可用，请刷新后重试';
 let controlDeviceLoad=0;
 async function loadControlDevices() {
  const el=document.getElementById('control-devices');if(!el)return;
@@ -25,7 +28,7 @@ async function setControlEnabled(device,enabled,button) {
   await loadControlDevices();
  } catch (_) {button.disabled=false;toast('未能更新交互设置，请刷新状态确认');}
 }
-function interactionDraft(id) {if(!interaction.drafts.has(id))interaction.drafts.set(id,{text:'',answers:{}});return interaction.drafts.get(id);}
+function interactionDraft(id) {if(!interaction.drafts.has(id))interaction.drafts.set(id,{text:'',createText:'',answers:{}});return interaction.drafts.get(id);}
 function setReplyDraft(value) {interactionDraft(workspace.selected).text=value;}
 function setAnswerDraft(requestId,questionId,field,value) {
  const d=interactionDraft(workspace.selected);const key=requestId+'\n'+questionId;
@@ -54,12 +57,18 @@ function updateOutgoing(id,receipt) {
  const message=interaction.outgoing.get(id);
  if(message&&receipt?.id===message.id)Object.assign(message,{state:receipt.state,detail:receipt.detail||''});
 }
+function createdSessionHtml(id,receipt) {
+ const result=receipt?.result;if(!result)return '';
+ const source=workspace.tasks?.find(t=>(t.ui_key||t.key)===id);
+ const target=source&&workspace.tasks.find(t=>(t.machine_id?`id:${t.machine_id}`:`name:${t.machine}`)===(source.machine_id?`id:${source.machine_id}`:`name:${source.machine}`) && t.tool===result.tool && t.session_id===result.session_id);
+ return target?`<button type="button" onclick="selectSession(${jsArg(target.ui_key||target.key)})">打开新会话 →</button>`:`<p class="capture-note">新会话 ID：${esc(result.session_id)} · 等待设备同步，可在原应用查看。</p>`;
+}
 function interactionFeedbackHtml(id) {
  const data=interaction.byTask.get(id),local=interaction.pending.get(id);
  const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.[0];
  if(local?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
- return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>`:'';
+ return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
 }
 function interactionHtml(id) {
  const data=interaction.byTask.get(id),cap=data?.capability,draft=interactionDraft(id);
@@ -86,6 +95,8 @@ function interactionHtml(id) {
    body+='</form>';
   }
   if(cap.reply)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()"><label for="native-reply">回复原会话</label><textarea id="native-reply" rows="3" maxlength="16000" placeholder="给这个会话发送后续消息…" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea><div class="composer-footer"><span>发送到上方标明的设备与 Harness</span><button class="primary"${disabled}>发送</button></div></form>`;
+  if(cap.policy)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(cap.policy.revision)})"><label for="native-policy">审批策略</label><p class="capture-note">仅此会话的后续轮次 · 不改变沙盒权限或审批者</p><select id="native-policy" name="policy"${disabled}>${cap.policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===cap.policy.current?' selected':''}>${esc(o.label)}</option>`).join('')}</select><button type="submit"${disabled}>应用到此会话</button></form>`;
+  if(cap.create)body+=`<details class="new-session"><summary>新建 DeepSeek 会话</summary><form class="reply-composer" onsubmit="event.preventDefault();sendCreate(${jsArg(cap.create.revision)})"><p class="capture-note">设备：${esc(workspace.detail?.machine||'当前设备')} · DeepSeek Harness<br>工作目录：${esc(cap.create.cwd)}<br>使用原应用默认 Agent 与权限配置。</p><label for="native-create">新会话的首条消息</label><textarea id="native-create" rows="3" maxlength="16000" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><button class="primary"${disabled}>新建并发送</button></form></details>`;
   if(cap.reason)body+=`<p class="capture-note">${esc(cap.reason)}</p>`;
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
  return body+`<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
@@ -94,7 +105,7 @@ function renderInteraction(force=false) {
  const id=workspace.selected,el=document.getElementById('session-control');if(!id||!el)return;
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
- const structure=JSON.stringify([id,data?.connected,data?.capability?.reply,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
+ const structure=JSON.stringify([id,data?.connected,data?.capability?.reply,data?.capability?.create,data?.capability?.policy,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;
  // Keep focused drafts and selection on ordinary polls. A resolved approval may
  // still remove its card; submission revalidates every ID at both Hub and worker.
@@ -142,6 +153,10 @@ async function refreshInteraction() {
     if(workspace.selected===id&&input?.value===local.action.text)input.value='';
    }
   }
+  if(receipt?.state==='delivered'&&local?.action.kind==='create'&&interactionDraft(id).createText===local.action.text) {
+   interactionDraft(id).createText='';const input=document.getElementById('native-create');
+   if(workspace.selected===id&&input?.value===local.action.text)input.value='';
+  }
   renderInteraction();
  }catch(_){if(workspace.selected===id){interaction.byTask.set(id,{connected:false,reason:'交互连接暂时不可用，草稿已保留',commands:interaction.byTask.get(id)?.commands||[]});renderInteraction();}}
 }
@@ -181,3 +196,19 @@ function sendAnswer(id,revision){
 }
 
 function releaseUncertain(){const id=workspace.selected;if(interaction.pending.get(id)?.uncertain){interaction.pending.delete(id);renderInteraction(true);}}
+
+function sendCreate(revision) {
+ const id=workspace.selected,data=interaction.byTask.get(id),value=interactionDraft(id).createText;
+ if(!data?.connected||data.capability?.create?.revision!==revision){toast(CONTROL_ERRORS.create_unavailable);return;}
+ if(!value.trim()){toast('请输入新会话的首条消息');return;}
+ return submitNative({kind:'create',revision,text:value});
+}
+
+function sendPolicy(form,revision) {
+ const data=interaction.byTask.get(workspace.selected),policy=data?.capability?.policy;
+ if(!data?.connected||!policy||policy.revision!==revision){toast(CONTROL_ERRORS.policy_changed);return;}
+ const value=form.elements.policy.value;
+ if(!policy.options.some(o=>o.value===value)){toast(CONTROL_ERRORS.invalid_policy);return;}
+ if(value===policy.current){toast('已使用该审批策略');return;}
+ return submitNative({kind:'policy',revision,value});
+}

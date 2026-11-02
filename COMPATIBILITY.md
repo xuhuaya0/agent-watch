@@ -1,6 +1,6 @@
 # Compatibility and acceptance matrix
 
-Updated: 2026-11-01. This is a record of observed support, not a promise that
+Updated: 2026-11-02. This is a record of observed support, not a promise that
 every desktop release implements the same protocol. A passing CI test exercises
 fixtures and simulated transports; it is not native application acceptance.
 
@@ -14,7 +14,7 @@ a material native protocol change.
 | --- | --- | --- | --- | --- |
 | Codex, current macOS desktop | Verified | Verified, including an unloaded historical conversation | Verified, paginated JSONL/Zstandard | Verified; pin editing remains in native app |
 | Codex, another Mac | Implemented; not verified on a second installation | Implemented; needs matching desktop IPC and queue/wake entry points; not verified | Implemented; not verified on a second installation | Implemented; not verified on a second installation |
-| Codex, Windows desktop | Format adapters implemented; native acceptance pending | Desktop IPC / cold wake unavailable in current adapter | Reader implemented; Windows native acceptance pending | Format adapters implemented; native acceptance pending |
+| Codex, Windows desktop | Format adapters implemented; native acceptance pending | Named-pipe IPC and queue/wake implemented; native Windows acceptance pending | Reader implemented; Windows native acceptance pending | Format adapters implemented; native acceptance pending |
 | Codex, Linux desktop / CLI | Format adapters implemented; native acceptance pending | Unix IPC or existing shared app-server may be compatible; native acceptance pending; macOS cold wake unavailable | Reader implemented; native acceptance pending | Depends on native catalog; desktop pins cannot be assumed for CLI |
 | Antigravity, current Windows installation | Verified | Verified against dedicated sessions; command decisions only | Implemented; bounded on-demand pages, native acceptance pending | Verified |
 | Antigravity, macOS / Linux | Format/path adapters implemented; native acceptance pending | Sidecar/RPC implemented; native acceptance pending | Implemented; native acceptance pending | Format/path adapters implemented; native acceptance pending |
@@ -36,6 +36,7 @@ interaction was tested on that version.
   the installed native queue CLI and wake link, with the signed-in desktop
   already running. A second machine requires its own collector, worker and
   device credential; the Hub cannot read another machine's native files itself.
+- Windows Codex uses a local named pipe owned by the same Windows user, with identification-only client security. Cold replies need an explicitly configured native `.exe` supporting `queue`, and the registered `codex:` wake URI. Shell wrappers are rejected.
 - DeepSeek control uses the local connection plugin and an outbound worker.
 - A remote Hub with the tested Mac/Windows clients was verified. This does not
   establish compatibility with a second client installation or a different OS.
@@ -51,8 +52,8 @@ operation succeeded.
 
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
-| New conversation | Not implemented; current control commands require an existing native session ID | Validate the native create API, explicit device/Harness/project selection, resulting ID and first-message delivery; do not create a parallel engine or fall back silently to another session |
-| Permission-policy changes | Not implemented; native policy remains authoritative | Distinguish conversation/project/global scope and temporary/persistent effects per Harness; expose only validated native options with visible scope and read-back verification |
+| New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Implemented, native acceptance pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
+| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Implemented, native acceptance pending | Full sandbox/profile selection and other Harness policy endpoints need validation. No project/global policy writes |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
