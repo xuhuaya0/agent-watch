@@ -53,7 +53,7 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Implemented, native acceptance pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
-| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Implemented, native acceptance pending | Full sandbox/profile selection and other Harness policy endpoints need validation. No project/global policy writes |
+| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | Full sandbox/profile selection and other Harness policy endpoints need validation. No project/global policy writes |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
@@ -63,6 +63,14 @@ No permanent approval, automatic approval or arbitrary shell execution endpoint
 is provided by Agent Watch. A message may still cause the native Agent to act
 according to its existing policy. “Native application received” is not “Agent
 finished”, and uncertain delivery is not retried automatically.
+
+On 2026-11-02, a dedicated idle Codex chat on macOS desktop 26.1027.51404
+(build 23880) was switched from `on-request` to `never` and immediately restored.
+Both changes were confirmed through native IPC state. Sandbox, reviewer and
+other permission fields remained unchanged; no message or command was submitted.
+This exercised the provider action path, not a browser interaction. The native
+transport returns the policy acknowledgement as `result.applied`; the adapter
+also waits for the corresponding state update before reporting success.
 
 ## Next native acceptance opportunities
 

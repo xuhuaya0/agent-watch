@@ -110,7 +110,8 @@ class PolicyDesktop(FakeDesktop):
             self.calls.append((method,copy.deepcopy(params),owner))
             self.history['latestThreadSettings'].update(params['threadSettings'])
             self.follow(SID,self.owner)
-            return {'handledByClientId':self.owner,'result':{'method':method,'result':{'applied':True}}}
+            # The desktop transport unwraps the handler's method/result envelope.
+            return {'handledByClientId':self.owner,'result':{'applied':True}}
         return super().call(method,params,owner,timeout)
 
 
@@ -151,8 +152,18 @@ class PolicyTests(unittest.TestCase):
     def test_rpc_acceptance_without_native_readback_stays_unknown(self):
         original=self.p.rpc.call
         def call(method,*args,**kwargs):
-            if method=='thread-follower-update-thread-settings':return {'result':{'result':{'applied':True}}}
+            if method=='thread-follower-update-thread-settings':return {'result':{'applied':True}}
             return original(method,*args,**kwargs)
         self.p.rpc.call=call
         with patch.object(self.p.condition,'wait_for',return_value=False):
             self.assertEqual(self.p.execute({'id':'c','session_id':SID,'action':self.action()}),'unknown')
+
+    def test_negative_or_unrecognized_ack_never_reports_success(self):
+        original=self.p.rpc.call
+        for response in ({'applied':False}, {'result':{'applied':True}}, None):
+            with self.subTest(response=response):
+                def call(method,*args,**kwargs):
+                    if method=='thread-follower-update-thread-settings':return {'result':response}
+                    return original(method,*args,**kwargs)
+                self.p.rpc.call=call
+                self.assertEqual(self.p.execute({'id':'c','session_id':SID,'action':self.action()}),'unknown')

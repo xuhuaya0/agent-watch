@@ -424,7 +424,7 @@ class CodexDesktop:
             response = self.rpc.call('thread-follower-update-thread-settings',
                 {**params, 'threadSettings':{'approvalPolicy':action['value']}, 'activeTurnId':None},
                 owner=owner)['result']
-            if not isinstance(response, dict) or response.get('result',{}).get('applied') is not True:
+            if not isinstance(response, dict) or response.get('applied') is not True:
                 return 'unknown'
             with self.condition:
                 confirmed = self.condition.wait_for(lambda: sid not in self.states or
