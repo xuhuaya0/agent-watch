@@ -53,7 +53,7 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Verified through the Windows provider; browser submission remains pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
-| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | DeepSeek: native session permission presets implemented, including sandbox and approval changes; catalog/command ownership verified read-only on Windows, write-and-restore acceptance pending. Antigravity and full Codex profile switches still need validation. No project/global policy writes |
+| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | DeepSeek: native session permission presets implemented, including sandbox and approval changes; catalog, command ownership and write-and-restore verified on Windows; browser acceptance pending. Antigravity and full Codex profile switches still need validation. No project/global policy writes |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
@@ -125,5 +125,9 @@ must confirm the choice before success is reported. An unknown result is never
 retried automatically. The native API has no atomic compare-and-set for changes
 made simultaneously in another client, so avoid concurrent permission editing.
 
-Read-only catalog and command ownership checks passed on Windows on 2026-11-03.
-Actual preset switching/restoration and browser acceptance are still pending.
+On 2026-11-03, the deployed Windows provider at revision `995e7be` switched a
+dedicated idle DeepSeek session from `workspace-write` to `read-only`, confirmed
+the native projection, and restored `workspace-write` with another confirmed
+read. The native new-session default remained unchanged. No model prompt or
+tool execution was submitted. This verifies the provider action and restoration;
+browser submission and concurrent-client behavior remain pending.
