@@ -57,7 +57,7 @@ operation succeeded.
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
-| Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; reconnection, archived-session revocation and full Hub/browser history delivery still need acceptance. Attachments remain placeholders |
+| Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; Hub history delivery verified; archived-session revocation and browser rendering still need acceptance. Attachments remain placeholders |
 
 Agent Watch does not invent permanent-approval or automatic-approval actions,
 and provides no arbitrary shell execution endpoint. DeepSeek permission choices
@@ -82,7 +82,8 @@ reads returned two non-overlapping pages: 30/10 messages for Antigravity and
 17/6 for DeepSeek. A DeepSeek conversation was created in its dedicated test
 directory, the fixed test prompt was accepted, and its matching assistant reply
 was observed through the native history API. These exercised deployed provider
-paths; browser submission and end-to-end Hub history reads remain unverified.
+paths; browser submission remains unverified. End-to-end Hub history reads were
+subsequently verified below.
 No Windows Codex app, process, CLI or user profile was found on the inspected
 client, so Windows native Codex acceptance remains pending, independently of
 passing named-pipe CI tests.
@@ -131,3 +132,11 @@ the native projection, and restored `workspace-write` with another confirmed
 read. The native new-session default remained unchanged. No model prompt or
 tool execution was submitted. This verifies the provider action and restoration;
 browser submission and concurrent-client behavior remain pending.
+
+On 2026-11-03, authenticated Hub API checks also verified the deployed device-to-Hub
+history path for dedicated Antigravity and DeepSeek sessions. Both returned two
+non-overlapping pages, and the previously created DeepSeek session exposed its
+test assistant reply through the same API. Reads completed in approximately
+1.2–2.3 seconds per page. Both native workers reconnected after a Hub restart.
+This verifies normal login, API routing and history delivery; it does not claim
+browser rendering or another native permission/create action was exercised.
