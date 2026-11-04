@@ -204,3 +204,18 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(self.c.get('/api/tasks?all=1').get_json()['tasks'][0]['state'],'waiting_input')
         self.h.CONTROL.exchange(self.device,'w',[cap()],[])
         self.assertEqual(self.c.get('/api/tasks?all=1').get_json()['tasks'][0]['state'],'done')
+
+
+class NativeSettingsContractTests(unittest.TestCase):
+    def test_native_metadata_is_bounded_and_has_no_arbitrary_state(self):
+        from aw.control.broker import normalize_sessions
+        settings = {'model': 'Example Model', 'permission': 'Workspace', 'scope': 'session'}
+        row = {**cap(), 'settings': settings}
+        self.assertEqual(normalize_sessions([row])[('codex', 's')]['settings'], settings)
+        unknown = {'model': 'Example Model', 'note': 'Scope unavailable'}
+        self.assertEqual(normalize_sessions([{**row, 'settings': unknown}])[('codex', 's')]['settings'], unknown)
+        for bad in ({**settings, 'raw_config': 'secret'}, {**settings, 'model': ['bad']},
+                    {**settings, 'scope': 'global'}, {**settings, 'note': 'x' * 501}):
+            with self.subTest(bad=list(bad)):
+                with self.assertRaisesRegex(ControlError, 'invalid_settings_capability'):
+                    normalize_sessions([{**row, 'settings': bad}])

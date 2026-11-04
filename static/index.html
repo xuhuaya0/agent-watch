@@ -71,7 +71,7 @@
       <div id="session-items" class="session-items"></div>
     </aside>
     <section class="detail-pane" aria-label="会话详情">
-      <div class="detail-toolbar"><button onclick="showList()" aria-label="显示会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg> 会话列表</button><span id="detail-location"></span></div>
+      <div class="detail-toolbar"><button onclick="showList()" aria-label="显示会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg> 会话列表</button><span id="detail-location"></span><div id="session-actions" class="session-actions"></div></div>
       <div id="session-detail" class="session-detail"><div class="blank-state"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg><h2>选择一个会话</h2><p>从左侧列表查看最近消息与结果。</p></div></div>
     </section>
   </section>
@@ -166,9 +166,11 @@
   <div id="workspace-toast" role="status"></div>
 </main>
 
+<dialog id="session-options" class="session-options" aria-labelledby="session-options-title" onclose="sessionOptionsClosed()"><div id="session-options-body"></div></dialog>
 <script src="/static/workspace.js"></script>
 <script src="/static/control.js"></script>
 <script src="/static/history.js"></script>
+<script src="/static/session-options.js"></script>
 <script>
 let CSRF_TOKEN = "";
 let NEEDS_SETUP = false;
@@ -200,6 +202,7 @@ function apiFetch(url, opts = {}) {
 }
 
 function showAuthView(needsSetup, errMsg = "") {
+  if(typeof closeSessionOptions==='function')closeSessionOptions();
   NEEDS_SETUP = !!needsSetup;
   if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
   document.getElementById("dash-main").style.display = "none";

@@ -6,7 +6,7 @@ const inline=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/checkAuth\(\
 const app=fs.readFileSync(path.join(__dirname,'../static/workspace.js'),'utf8');
 function context(){
  const nodes={};
- const node=()=>({value:'',checked:false,hidden:false,style:{},dataset:{},scrollTop:0,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},contains(){return false},setAttribute(){},focus(){},scrollIntoView(){}});
+ const node=()=>({value:'',checked:false,hidden:false,style:{},dataset:{},scrollTop:0,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},contains(){return false},setAttribute(){},focus(){},scrollIntoView(){}});
  const document={activeElement:null,getElementById(id){return nodes[id] ||=node()},querySelectorAll(){return []},querySelector(){return null}};
  const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,window:{},navigator:{}});
  vm.runInContext(app,ctx);vm.runInContext(inline,ctx);return {ctx,nodes};

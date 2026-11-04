@@ -75,6 +75,14 @@ def normalize_sessions(rows):
             if type(row['history']) is not bool:
                 raise ControlError('invalid_capability', 400)
             clean['history'] = row['history']
+        if 'settings' in row:
+            settings = row['settings']
+            allowed = {'model', 'reasoning', 'permission', 'scope', 'project_name', 'note'}
+            if (not isinstance(settings, dict) or not set(settings) <= allowed
+                    or any(not text(v, 500) for v in settings.values())
+                    or ('scope' in settings and settings['scope'] not in ('session', 'project'))):
+                raise ControlError('invalid_settings_capability', 400)
+            clean['settings'] = dict(settings)
         if 'create' in row:
             create = row['create']
             if not valid_create_capability(row['tool'], create):

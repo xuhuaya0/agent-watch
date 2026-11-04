@@ -62,15 +62,20 @@ class Permissions:
         self.checked = -100
         self.commands = {}
 
-    def read(self, gateway, row, fresh=False):
-        if not eligible(row):return None
+    def catalog_for(self, gateway, fresh=False):
         if self.gateway is not gateway:
             self.gateway, self.catalog, self.checked, self.commands = gateway, None, -100, {}
         now = time.monotonic()
         if fresh or now-self.checked > 15:
             self.checked, self.catalog = now, None
             self.catalog = options(gateway.call('permissionPresets/catalog', {}))
+        return self.catalog
+
+    def read(self, gateway, row, fresh=False):
+        if not eligible(row):return None
+        self.catalog_for(gateway, fresh)
         if not self.catalog:return None
+        now = time.monotonic()
         sid = row['sessionId']
         self.commands = {s:v for s,v in self.commands.items() if now-v[0] < 15}
         if fresh or sid not in self.commands:

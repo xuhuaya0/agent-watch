@@ -137,7 +137,9 @@ def question_request(frame):
 class DeepSeek:
     def __init__(self, config, gateway_factory=Gateway, background=True):
         from .dsh_permissions import Permissions
+        from .dsh_settings import SessionSettings
         self.permissions = Permissions()
+        self.settings = SessionSettings(self.permissions)
         self.config, self.gateway_factory = config, gateway_factory
         self.gateway = None
         self.refresh_lock = threading.RLock()
@@ -237,6 +239,7 @@ class DeepSeek:
                 if policy:rows[sid]['policy'] = policy
             except Exception:
                 pass
+            rows[sid]['settings'] = self.settings.read(self.gateway, native_row)
         continued = {}
         for native_row in catalog:
             sid = native_row['sessionId']

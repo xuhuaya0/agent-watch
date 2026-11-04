@@ -98,6 +98,20 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(row['requests'], [])
         self.assertTrue(row['reason'])
 
+    def test_settings_follow_native_snapshot_without_extra_rpc_or_writes(self):
+        self.p.rpc.history = {'latestThreadSettings': {
+            'model': 'model-a', 'effort': 'medium',
+            'sandboxPolicy': {'type': 'readOnly'}, 'approvalPolicy': 'never'}}
+        self.p.rpc.follow(SID, self.p.rpc.owner)
+        count = len(self.p.rpc.calls)
+        settings = self.p.snapshot()[0]['settings']
+        self.assertEqual(settings['model'], 'model-a')
+        self.assertEqual(settings['permission'], '只读 · 需要批准时拒绝')
+        self.assertEqual(len(self.p.rpc.calls), count)
+        self.p.rpc.history = {}
+        self.p.rpc.follow(SID, self.p.rpc.owner)
+        self.assertNotIn('settings', self.p.snapshot()[0])
+
     def test_questions_use_native_options_and_ids(self):
         self.p.rpc.requests = [{'id': 'q1', 'method': 'item/tool/requestUserInput', 'params': {
             'threadId': SID, 'questions': [{'id': 'color', 'question': 'Color?', 'options': [{'label': 'Blue'}], 'isOther': True}]}}]

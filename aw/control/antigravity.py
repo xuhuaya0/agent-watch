@@ -23,6 +23,10 @@ class Antigravity:
         self.project_permissions = project_permissions
         self.creation = creation
         self.history = history
+        from .antigravity_settings import NativeSettings
+        rpc = next((getattr(source, 'rpc', None) for source in
+                    (interactions, project_permissions, creation) if getattr(source, 'rpc', None) is not None), None)
+        self.settings = NativeSettings(rpc)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._cache = {}
@@ -78,16 +82,17 @@ class Antigravity:
             if isinstance(body, dict):
                 native_metadata = body.get('metadata')
                 context['project_id'] = native_metadata.get('projectId') if isinstance(native_metadata,dict) else None
+                context['metadata'] = native_metadata
             row = {'tool':'antigravity', 'session_id':sid, 'reply':True, 'requests':[],
                    'reason':'文字消息以 Agent Watch 系统通知发送；此原生接口尚不支持回答选项或批准执行'}
         create = self.creation.capability(sid, context.get('project_id')) if self.creation else None
-        if (self.project_permissions and self.session_ids.allows_project_permissions()
+        policy = self.project_permissions.capability(sid, context.get('project_id')) if self.project_permissions else None
+        if (policy and self.session_ids.allows_project_permissions()
                 and row['reply'] and not row.get('requests')):
-            policy = self.project_permissions.capability(sid, context.get('project_id'))
-            if policy:
-                row['policy'] = policy
+            row['policy'] = policy
         if create:
             row['create'] = create
+        row['settings'] = self.settings.read(context, policy, create)
         return [row]
 
     def _refresh(self):

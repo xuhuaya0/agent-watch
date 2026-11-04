@@ -18,7 +18,9 @@ ITEM = {'type': True, 'id': True, 'status': True,
 TURN = {'turnId': True, 'status': True, 'items': [ITEM]}
 SCHEMA = {'turns': [TURN], 'turnHistory': {'kind': True, 'history': {'entitiesByKey': {'*': TURN}}}}
 SCHEMA.update(latestThreadSettings={'approvalPolicy':True, 'approvalsReviewer':True,
-              'sandboxPolicy':True, 'permissions':True, 'activePermissionProfile':True},
+              'sandboxPolicy':True, 'permissions':True, 'activePermissionProfile':True,
+              'model':True, 'effort':True},
+              latestModel=True, latestReasoningEffort=True,
               threadRuntimeStatus={'type':True})
 
 

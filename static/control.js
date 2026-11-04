@@ -70,31 +70,6 @@ function interactionFeedbackHtml(id) {
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
  return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
 }
-function policyForm(policy,disabled) {
- const project=policy.scope==='project-permissions', presets=policy.scope==='session-permissions';
- const target=project?esc(policy.project_name||policy.project_id):'';
- const title=project?'项目权限':presets?'会话权限预设':'审批策略';
- const note=project?`应用到项目「${target}」，影响该项目中的会话。`:
-   presets?'仅此会话 · 同时切换沙盒与审批设置；不修改新会话默认值':'仅此会话的后续轮次 · 不改变沙盒权限或审批者';
- const missing=!policy.options.some(option=>option.value===policy.current);
- const currentLabel=policy.current==='custom'?'自定义组合':esc(policy.current);
- const custom=missing?`<option value="${esc(policy.current)}" selected disabled>当前：${currentLabel}</option>`:'';
- const choices=policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===policy.current?' selected':''}>${esc(o.label)}</option>`).join('');
- const descriptions=policy.options.filter(o=>o.description).map(o=>`<p class="capture-note">${esc(o.label)}：${esc(o.description)}</p>`).join('');
- const confirmation=project?`<label><input type="checkbox" name="confirmProject" required> 确认更改项目「${target}」的权限</label>`:'';
- return `<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(policy.revision)})"><label for="native-policy">${title}</label><p class="capture-note">${note}</p><select id="native-policy" name="policy"${disabled}>${custom}${choices}</select>${descriptions}${confirmation}<button type="submit"${disabled}>${project?'应用到整个项目':'应用到此会话'}</button></form>`;
-}
-function creationForm(cap,draft,disabled) {
- const harness=({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap.tool||workspace.detail?.tool]||'Harness';
- const create=cap.create, openDraft=create.mode==='draft';
- const destination=create.location==='native-project'
-   ? `目标项目：${esc(create.project_name||create.project_id)}`
-   : `工作目录：${esc(create.cwd)}`;
- const title=openDraft?'在 Codex 打开新会话草稿':`新建 ${harness} 会话`;
- const description=openDraft?'在这台 Mac 的 Codex 窗口中预填内容，按发送后创建会话。':
-   create.location==='native-project'?'沿用当前会话的模型，权限使用目标项目设置。':'使用原应用默认模型与权限，新会话会在此位置接收首条消息。';
- return `<details class="new-session"><summary>${title}</summary><form class="reply-composer" onsubmit="event.preventDefault();sendCreate(${jsArg(create.revision)})"><p class="capture-note">设备：${esc(workspace.detail?.machine||'当前设备')} · ${harness}<br>${destination}<br>${description}</p><label for="native-create">新会话的首条消息</label><textarea id="native-create" rows="3" maxlength="16000" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><button class="primary"${disabled}>${openDraft?'在 Codex 打开草稿':'新建并发送'}</button></form></details>`;
-}
 function interactionHtml(id) {
  const data=interaction.byTask.get(id),cap=data?.capability,draft=interactionDraft(id);
  const outgoing=`<div class="outgoing-message">${outgoingHtml(id)}</div>`;
@@ -120,13 +95,13 @@ function interactionHtml(id) {
    body+='</form>';
   }
   if(cap.reply)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()"><label for="native-reply">回复原会话</label><textarea id="native-reply" rows="3" maxlength="16000" placeholder="给这个会话发送后续消息…" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea><div class="composer-footer"><span>发送到上方标明的设备与 Harness</span><button class="primary"${disabled}>发送</button></div></form>`;
-  if(cap.policy)body+=policyForm(cap.policy,disabled);
-  if(cap.create)body+=creationForm(cap,draft,disabled);
+  if(typeof settingsSummaryHtml==='function')body+=`<div class="settings-summary-slot">${settingsSummaryHtml(cap)}</div>`;
   if(cap.reason)body+=`<p class="capture-note">${esc(cap.reason)}</p>`;
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
  return body+`<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
 }
 function renderInteraction(force=false) {
+ if(typeof renderSessionActions==='function')renderSessionActions();
  const id=workspace.selected,el=document.getElementById('session-control');if(!id||!el)return;
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
@@ -139,6 +114,8 @@ function renderInteraction(force=false) {
   // Update controls in place so newer text and its caret are not replaced.
   const feedback=el.querySelector('.interaction-feedback');
   if(feedback)feedback.innerHTML=interactionFeedbackHtml(id);
+  const summary=el.querySelector('.settings-summary-slot');
+  if(summary&&typeof settingsSummaryHtml==='function')summary.innerHTML=settingsSummaryHtml(data.capability||{});
   const outgoing=el.querySelector('.outgoing-message');
   if(outgoing)outgoing.innerHTML=outgoingHtml(id);
   for(const control of el.querySelectorAll('form button, form fieldset'))control.disabled=Boolean(interactionBusy(id));
@@ -163,6 +140,7 @@ async function refreshInteraction() {
  const id=workspace.selected,serial=++interaction.serial;
  try {
   const r=await fetch('/api/control/tasks/'+encodeURIComponent(id));
+  if(serial!==interaction.serial||workspace.selected!==id)return;
   if(r.status===401){showAuthView(false);return;}
   if(!r.ok)throw new Error('connection');
   const data=await r.json();if(serial!==interaction.serial||workspace.selected!==id)return;
@@ -183,7 +161,7 @@ async function refreshInteraction() {
    if(workspace.selected===id&&input?.value===local.action.text)input.value='';
   }
   renderInteraction();
- }catch(_){if(workspace.selected===id){interaction.byTask.set(id,{connected:false,reason:'交互连接暂时不可用，草稿已保留',commands:interaction.byTask.get(id)?.commands||[]});renderInteraction();}}
+ }catch(_){if(serial===interaction.serial&&workspace.selected===id){interaction.byTask.set(id,{connected:false,reason:'交互连接暂时不可用，草稿已保留',commands:interaction.byTask.get(id)?.commands||[]});renderInteraction();}}
 }
 function nativeRequest(id,kind) {
  const data=interaction.byTask.get(workspace.selected);

@@ -261,3 +261,30 @@ assistant reply, and Request Review on both source and destination. No tool reco
 was present and no command was resubmitted. This verifies the authenticated Hub
 queue, native worker, collection and history path; it does not claim a browser
 click or a cross-preset permission transition was exercised.
+
+
+## Native settings display and browser checks
+
+The web reader separates replies and one-shot requests from session settings
+and new-conversation actions. Settings and creation use independent dialogs.
+Native labels and scope are retained; the UI does not invent permission presets
+or an available model catalog.
+
+- Codex desktop: read-only model, reasoning effort, sandbox, reviewer and
+  approval-policy facts come from the native owner snapshot/patch. This path was
+  checked against a running macOS desktop session. The two editable approval
+  rules are advanced controls, not the desktop permission preset picker. Native
+  model selection and complete permission preset parity are still pending.
+- Antigravity: model labels come from native configuration mapped to recorded
+  conversation model selections. They do not represent unsent UI changes.
+  Project permission state remains visible while a write action is unavailable.
+- DeepSeek: the next model selection and native catalog provide labels when that
+  projection is present. A missing projection does not imply the global default.
+  Permission labels remain visible while the session is busy.
+
+A local synthetic browser fixture verified desktop and narrow-screen layout,
+separate creation destinations, project confirmation, and preservation of reply
+text, focus/caret and unapplied settings during live detail refreshes. No native
+message or permission change was submitted for these UI checks. Regression tests
+cover late failed polls, stale revisions, disabled controls and bounded metadata.
+These checks do not establish native model switching or full permission parity.

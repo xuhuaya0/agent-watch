@@ -336,9 +336,12 @@ class CodexDesktop:
         unsupported = len(requests) != len(state['requests'])
         requests.extend(pending(state.get('history', {})))
         from .codex_policy import capability
+        from .codex_settings import summary
         policy = capability(state) if not requests else None
+        settings = summary(state)
         return normalize_sessions([{'tool': 'codex', 'session_id': sid, 'history': self.history_reader is not None,
                                     **({'policy':policy} if policy else {}),
+                                    **({'settings':settings} if settings else {}),
                                     'reply': not state['requests'] and not requests, 'requests': requests,
                                     'reason': '此请求请在 Codex 原应用处理' if unsupported else ''}])[('codex', sid)]
 

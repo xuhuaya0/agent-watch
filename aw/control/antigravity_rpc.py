@@ -14,7 +14,7 @@ from .worker import NoRedirect
 
 class NativeRpc:
     READ_METHODS = frozenset({'GetConversationMetadata', 'GetCascadeTrajectory', 'ReadProject',
-                              'FetchAdminControls', 'GetServerConfiguration', 'GetMendelFlags'})
+                              'FetchAdminControls', 'GetServerConfiguration', 'GetMendelFlags', 'GetUserStatus'})
     WRITE_METHODS = frozenset({'HandleCascadeUserInteraction', 'UpdateProject', 'StartCascade', 'SendUserCascadeMessage'})
 
     def __init__(self, environ, opener=None):

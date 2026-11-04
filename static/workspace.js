@@ -95,6 +95,7 @@ function saveScroll() {
   if (workspace.selected) workspace.scroll.set(workspace.selected,document.getElementById('session-detail').scrollTop);
 }
 function navigate(page) {
+  if(page!=='sessions'&&typeof closeSessionOptions==='function')closeSessionOptions();
   saveScroll();workspace.page=page;
   for (const name of ['sessions','projects','devices','settings']) document.getElementById(name+'-view').hidden=name!==page;
   document.querySelectorAll('.app-nav button').forEach(b=>{
@@ -154,6 +155,7 @@ function applyListState() {
 function toggleList() {workspace.listCollapsed=!workspace.listCollapsed;applyListState();}
 function showList() {workspace.listCollapsed=false;workspace.mobileDetail=false;applyListState();}
 function selectSession(id) {
+  if(typeof closeSessionOptions==='function')closeSessionOptions();
   saveScroll();workspace.selected=id;workspace.detail=null;workspace.detailSignature='';workspace.renderedSignature='';
   workspace.mobileDetail=true;applyListState();navigate('sessions');
   renderDetail();refreshDetail();if(typeof refreshInteraction==='function')refreshInteraction();
@@ -228,7 +230,7 @@ function renderDetail() {
   document.getElementById('detail-location').textContent=brief?[brief.project,brief.machine].filter(Boolean).join(' / '):'';
   if(!brief){
     el.innerHTML='<div class="blank-state">'+icon('conversations')+'<h2>'+ (workspace.selected?'会话当前未上报':'选择一个会话')+'</h2><p>'+(workspace.selected?'选择仍保留，等待该设备下次上报，或从列表打开其他会话。':'从列表查看最近消息与结果。')+'</p></div>';
-    workspace.renderedSignature='';return;
+    workspace.renderedSignature='';if(typeof renderSessionActions==='function')renderSessionActions();return;
   }
   const t=workspace.detail?{...workspace.detail,...brief,extra:{...workspace.detail.extra,...brief.extra}}:brief;
   const signature=JSON.stringify([workspace.selected,workspace.detailSignature,brief.extra?.native_pin,brief.acked,brief.machine_online]);
@@ -239,6 +241,9 @@ function renderDetail() {
   const pin=t.extra?.native_pin;
   const turn=t.extra?.latest_turn;const user=turn?.user ?? t.prompt;const reply=turn?.assistant ?? t.detail;
   const live=['running','stalled'].includes(t.state);
+  const retainedControl=el.querySelector('#session-control');
+  const focused=retainedControl?.contains(document.activeElement)?document.activeElement:null;
+  const caret=focused&&typeof focused.selectionStart==='number'?[focused.selectionStart,focused.selectionEnd]:null;
   el.innerHTML=`<div class="conversation-head"><h1>${esc(t.title)}</h1>
     <div class="conversation-facts"><span class="status-tag ${esc(t.state)}">${esc(ZH[t.state] || t.state)}</span><span class="fact">${esc(t.machine)}</span><span class="fact">${esc(t.tool_short || t.tool)}</span><span>${t.machine_online===false?'设备离线':'设备在线'} · ${esc((t.machine_ips || []).join(' / '))}</span></div>
     <div class="conversation-facts" style="margin-top:9px"><span>${activityAt(t)?'最近活动 '+esc(new Date(activityAt(t)*1000).toLocaleString()):'活动时间未知'}</span>${t.extra?.cwd?`<span title="${esc(t.extra.cwd)}">· ${esc(t.extra.cwd)}</span>`:''}</div>
@@ -254,10 +259,12 @@ function renderDetail() {
     <p class="native-pin-note">${pin?.known?(pin.pinned?'已在原 Harness 中置顶 · 修改请前往原应用':'未在原 Harness 中置顶'):'此采集端尚未提供原 Harness 的置顶状态'}</p>
     ${renderSubagents(t.extra?.subagents,taskId(t))}
     <section id="session-control" class="session-control" aria-label="原会话交互"></section>
-    <p class="capture-note">${workspace.detail?'':'正在读取详情… '}${t.extra?.metadata_only?'仅有原应用的会话索引，本机暂时没有正文日志。':turn?(turn.truncated?'内容较长，当前显示已采集的部分。':'显示当前采集到的最近一轮内容。'):'该采集端提供摘要，更新采集端后可查看较完整的回复。'} ${t.tool==='codex'?'历史记录按需读取；图片以附件提示显示，工具记录可展开。':'完整历史对话尚未接入。'}</p>`;
+    <p class="capture-note">${workspace.detail?'':'正在读取详情… '}${t.extra?.metadata_only?'仅有原应用的会话索引，本机暂时没有正文日志。':turn?(turn.truncated?'内容较长，当前显示已采集的部分。':'显示当前采集到的最近一轮内容。'):'该采集端提供摘要，更新采集端后可查看较完整的回复。'} ${['codex','antigravity','dsh'].includes(t.tool)?'历史记录通过原应用按需读取；连接状态和可用内容见会话记录。':''}</p>`;
   for(const n of el.querySelectorAll('.subagents'))n.open=opened.has(n.dataset.taskKey);
   el.scrollTop=top;workspace.renderedSignature=signature;
-  if(typeof renderInteraction==='function')renderInteraction(true);
+  if(retainedControl?.dataset.task===workspace.selected)el.querySelector('#session-control').replaceWith(retainedControl);
+  if(focused?.isConnected){focused.focus({preventScroll:true});if(caret)focused.setSelectionRange(...caret);}
+  if(typeof renderInteraction==='function')renderInteraction();
   if(typeof ensureHistory==='function')ensureHistory();
 }
 function openProject(key) {workspace.project=key;workspace.device='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}

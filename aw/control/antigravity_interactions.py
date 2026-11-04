@@ -64,6 +64,9 @@ class NativeInteractions:
         if (not valid_id or trajectory.get('cascadeId') != sid or meta.get('trajectoryId') != tid or
             not isinstance(steps,list) or result.get('numTotalSteps') != len(steps)):
             raise ControlError('native_session_unavailable')
+        if context is not None:
+            context['metadata'] = meta.get('metadata')
+            context['trajectory'] = trajectory
         row = {'tool':'antigravity','session_id':sid,'reply':True,'requests':[],
                'reason':'文字回复通过原生系统通知发送；问题回答直接提交给原生请求'}
         bindings = {}
