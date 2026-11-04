@@ -58,7 +58,7 @@ class CreationReceiptTests(unittest.TestCase):
         self.assertNotIn('result',receipt)
         self.assertIn('确认并发送',receipt['detail'])
         self.assertEqual(calls,[command['id']])
-        self.assertNotIn('Only a draft',(root/'worker.json').read_text())
+        self.assertNotIn('Only a draft',(root/'worker.json').read_text(encoding='utf-8'))
 
     def test_project_permissions_require_live_explicit_device_opt_in(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
