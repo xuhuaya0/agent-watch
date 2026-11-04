@@ -138,10 +138,14 @@ function renderList() {
   const priority=[['attention','需介入','activity'],['running','运行中','activity'],['done','刚完成 · 2h 内','clock']]
     .filter(([key])=>parts[key].length)
     .map(([key,label,glyph])=>`<div class="list-label"><span>${icon(glyph)} ${label}</span><span>${parts[key].length}</span></div>`+parts[key].map(rowHtml).join('')).join('');
-  const html=priority+`<div class="list-label"><span>${icon('pin')} Pinned</span><span title="原生置顶；活跃会话显示在上方状态分组">${parts.pinned.length}</span></div>`+
+  let html=priority+`<div class="list-label"><span>${icon('pin')} Pinned</span><span title="原生置顶；活跃会话显示在上方状态分组">${parts.pinned.length}</span></div>`+
     (parts.pinned.length?parts.pinned.map(rowHtml).join(''):`<div class="pinned-empty">${visible.some(isPinned)?'置顶会话已在上方显示':'暂无置顶'}</div>`)+
     `<div class="list-label"><span>${icon('clock')} Recent</span><span>${parts.recent.length}</span></div>`+
     (parts.recent.length?parts.recent.map(rowHtml).join(''):visible.length?'':'<div class="list-empty">没有符合筛选条件的会话</div>');
+  if(!visible.length){
+    const filtered=Boolean(workspace.query||workspace.project||workspace.device||workspace.tool||workspace.state);
+    html=filtered?'<div class="list-empty">没有符合筛选条件的会话<br><button onclick="clearFilters()">清除筛选</button></div>':'<div class="list-empty">尚未发现会话<br>请在设备页检查采集状态。</div>';
+  }
   const el=document.getElementById('session-items');const top=el.scrollTop;
   const focused=el.contains(document.activeElement)?document.activeElement?.dataset.session:null;
   el.innerHTML=html;el.scrollTop=top;
@@ -269,19 +273,29 @@ function renderDetail() {
 }
 function openProject(key) {workspace.project=key;workspace.device='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}
 function openDeviceTasks(key) {workspace.device=key;workspace.project='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}
+function replaceOverview(el,html) {
+  if(el.innerHTML===html)return;
+  const active=el.contains(document.activeElement)?document.activeElement:null;
+  const focusKey=active?.dataset.focusKey,top=el.scrollTop;
+  el.innerHTML=html;
+  if(focusKey)for(const button of el.querySelectorAll('[data-focus-key]')) {
+    if(button.dataset.focusKey===focusKey){button.focus({preventScroll:true});break;}
+  }
+  el.scrollTop=top;
+}
 function renderProjects() {
   const groups=projectGroups();
-  document.getElementById('projects-view').innerHTML=`<div class="overview-heading"><div><h1>项目</h1><p>按设备和工作目录整理 · ${groups.length} 个项目位置</p></div></div><div class="overview-grid">${groups.map(p=>`<article class="overview-card"><h2>${esc(p.name)}</h2><p>${esc(p.machine)}</p><p>${esc(p.cwd || '采集端提供的项目名称，尚无完整路径')}</p><p>${p.tasks.length} 个会话 · ${p.tasks.filter(t=>t.state==='running').length} 个进行中</p><button onclick="openProject(${jsArg(p.key)})">查看项目会话 →</button></article>`).join('') || '<div class="list-empty">尚未发现项目</div>'}</div>`;
+  replaceOverview(document.getElementById('projects-view'),`<div class="overview-heading"><div><h1>项目</h1><p>按设备和工作目录整理 · ${groups.length} 个项目位置</p></div></div><div class="overview-grid">${groups.map(p=>`<article class="overview-card"><h2>${esc(p.name)}</h2><p>${esc(p.machine)}</p><p>${esc(p.cwd || '采集端提供的项目名称，尚无完整路径')}</p><p>${p.tasks.length} 个会话 · ${p.tasks.filter(t=>t.state==='running').length} 个进行中</p><button data-focus-key="${esc('project:'+p.key)}" onclick="openProject(${jsArg(p.key)})">查看项目会话 →</button></article>`).join('') || '<div class="list-empty">尚未发现项目</div>'}</div>`);
 }
 function renderDevices() {
   const entries=Object.entries(workspace.machines);
   const device=entries.find(([id])=>id===workspace.selectedDevice);
-  document.getElementById('devices-view').innerHTML=`<div class="overview-heading"><div><h1>设备</h1><p>${entries.length} 台已知设备 · 点击查看连接信息和会话</p></div></div><div class="overview-grid">${entries.map(([id,m])=>`<article class="overview-card"><h2><span class="state-dot ${m.online?'done':''}"></span>${esc(m.machine || id)}</h2><p>${m.online?'在线':'离线'} · ${m.tasks || 0} 个会话</p><p>${esc((m.ips || []).join(' / ') || '未上报地址')}</p><button onclick="showDevice(${jsArg(id)})">查看设备</button></article>`).join('')}</div>${device?deviceDetail(...device):''}`;
+  replaceOverview(document.getElementById('devices-view'),`<div class="overview-heading"><div><h1>设备</h1><p>${entries.length} 台已知设备 · 点击查看连接信息和会话</p></div></div><div class="overview-grid">${entries.map(([id,m])=>`<article class="overview-card"><h2><span class="state-dot ${m.online?'done':''}"></span>${esc(m.machine || id)}</h2><p>${m.online?'在线':'离线'} · ${m.tasks || 0} 个会话</p><p>${esc((m.ips || []).join(' / ') || '未上报地址')}</p><button data-focus-key="${esc('device:'+id)}" onclick="showDevice(${jsArg(id)})">查看设备</button></article>`).join('')}</div>${device?deviceDetail(...device):''}`);
 }
 function showDevice(key) {workspace.selectedDevice=key;renderDevices();document.getElementById('device-detail')?.scrollIntoView({block:'nearest',behavior:'smooth'});}
 function deviceDetail(id,m) {
   const key=m.machine_id?'id:'+m.machine_id:'legacy:'+(m.machine || id);
-  return `<section id="device-detail" class="device-detail"><h2>${esc(m.machine || id)}</h2><p>状态：${m.online?'在线':'离线'} · 最后连接：${m.last_seen?esc(new Date(m.last_seen*1000).toLocaleString()):'未知'}</p><p>设备 ID：${esc(m.machine_id || '旧版客户端')}</p><p>连接地址：${esc((m.ips || []).join(' / ') || '未上报')}</p><button onclick="openDeviceTasks(${jsArg(key)})">查看该设备会话</button>${!m.local?` <button onclick="deleteMachine(${jsArg(id)})">移除设备记录</button>`:''}</section>`;
+  return `<section id="device-detail" class="device-detail"><h2>${esc(m.machine || id)}</h2><p>状态：${m.online?'在线':'离线'} · 最后连接：${m.last_seen?esc(new Date(m.last_seen*1000).toLocaleString()):'未知'}</p><p>设备 ID：${esc(m.machine_id || '旧版客户端')}</p><p>连接地址：${esc((m.ips || []).join(' / ') || '未上报')}</p><button data-focus-key="${esc('sessions:'+key)}" onclick="openDeviceTasks(${jsArg(key)})">查看该设备会话</button>${!m.local?` <button data-focus-key="${esc('remove:'+id)}" onclick="deleteMachine(${jsArg(id)})">移除设备记录</button>`:''}</section>`;
 }
 async function load() {
   if(workspace.loading)return;workspace.loading=true;

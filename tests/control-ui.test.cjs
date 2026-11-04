@@ -11,6 +11,61 @@ function setup(){
 }
 function run(ctx,s){return vm.runInContext(s,ctx)}
 const cap={connected:true,capability:{reply:true,requests:[]},commands:[]};
+test('modal Tab wraps visible controls but leaves interior navigation and Escape native',()=>{
+ const {ctx,dialog}=setup();dialog.open=true;
+ const node=(options={})=>({tabIndex:0,type:'button',name:'',form:null,checked:false,
+  matches(){return !!this.disabled},closest(){return this.hidden?{}:null},
+  getClientRects(){return this.collapsed?[]:[{}]},focus(){ctx.document.activeElement=this},...options});
+ const close=node(),summary=node({type:'summary'}),text=node({type:'textarea'}),select=node({type:'select'});
+ const unavailable=[node({hidden:true}),node({disabled:true}),node({collapsed:true}),node({tabIndex:-1})];
+ dialog.querySelectorAll=()=>[close,summary,text,select,...unavailable];
+ const key=(active,key='Tab',shiftKey=false)=>{
+  ctx.document.activeElement=active;let prevented=false;ctx.keyEvent={key,shiftKey,preventDefault(){prevented=true}};
+  run(ctx,'trapSessionOptionsFocus(keyEvent)');return prevented;
+ };
+ assert.equal(key(close,'Tab',true),true);assert.equal(ctx.document.activeElement,select);
+ assert.equal(key(select),true);assert.equal(ctx.document.activeElement,close);
+ for(const middle of [summary,text]){assert.equal(key(middle),false);assert.equal(ctx.document.activeElement,middle);}
+ assert.equal(key(close,'Escape'),false);assert.equal(ctx.document.activeElement,close);
+ assert.equal(key(null),true);assert.equal(ctx.document.activeElement,close);
+ dialog.open=false;assert.equal(key(select),false);
+});
+test('modal Tab boundary uses the checked radio in each native group',()=>{
+ const {ctx,dialog}=setup();dialog.open=true;
+ const form={},node=options=>({tabIndex:0,type:'radio',name:'policy',form,
+  matches(){return false},closest(){return null},getClientRects(){return [{}]},
+  focus(){ctx.document.activeElement=this},...options});
+ const close=node({type:'button',name:''}),first=node({checked:true}),second=node({checked:false});
+ dialog.querySelectorAll=()=>[close,first,second];
+ let prevented=0;ctx.keyEvent={key:'Tab',shiftKey:true,preventDefault(){prevented++}};
+ ctx.document.activeElement=close;run(ctx,'trapSessionOptionsFocus(keyEvent)');
+ assert.equal(ctx.document.activeElement,first);assert.equal(prevented,1);
+ ctx.keyEvent.shiftKey=false;run(ctx,'trapSessionOptionsFocus(keyEvent)');
+ assert.equal(ctx.document.activeElement,close);assert.equal(prevented,2);
+ first.checked=false;second.checked=true;ctx.keyEvent.shiftKey=true;
+ run(ctx,'trapSessionOptionsFocus(keyEvent)');assert.equal(ctx.document.activeElement,second);
+});
+test('collapsed details excludes radios even when the browser retains layout rectangles',()=>{
+ const {ctx,dialog}=setup();dialog.open=true;
+ const node=options=>({tabIndex:0,type:'button',name:'',form:null,
+  matches(){return false},closest(){return null},getClientRects(){return [{}]},contains(){return false},
+  focus(){ctx.document.activeElement=this},...options});
+ const close=node(),details={tagName:'DETAILS',open:false,parentElement:dialog};
+ const summary=node({tagName:'SUMMARY',parentElement:details});
+ const wrapper={tagName:'FIELDSET',parentElement:details};
+ const radio=node({type:'radio',name:'policy',checked:true,parentElement:wrapper});
+ const secondSummary=node({tagName:'SUMMARY',parentElement:details});
+ const summaryLink=node({parentElement:summary});summary.contains=el=>el===summaryLink;
+ details.children=[summary,wrapper,secondSummary];
+ dialog.querySelectorAll=()=>[close,summary,summaryLink,radio,secondSummary];
+ let prevented=0;ctx.keyEvent={key:'Tab',shiftKey:true,preventDefault(){prevented++}};
+ ctx.document.activeElement=close;run(ctx,'trapSessionOptionsFocus(keyEvent)');
+ assert.equal(ctx.document.activeElement,summaryLink);assert.equal(prevented,1);
+ ctx.keyEvent.shiftKey=false;run(ctx,'trapSessionOptionsFocus(keyEvent)');
+ assert.equal(ctx.document.activeElement,close);assert.equal(prevented,2);
+ details.open=true;ctx.keyEvent.shiftKey=true;run(ctx,'trapSessionOptionsFocus(keyEvent)');
+ assert.equal(ctx.document.activeElement,secondSummary);
+});
 test('late device responses cannot restore stale pause controls',async()=>{
  const {ctx,node}=setup();let first;
  const device={name:'<img src=x>',device_id:'pc',configured:true,enabled:true,connected:true,sessions:1,harnesses:{antigravity:1}};
@@ -226,4 +281,22 @@ test('a removed native session closes its settings and hides stale actions',()=>
  const {ctx,dialog,actions}=setup();ctx.data=cap;
  run(ctx,'interaction.byTask.set("a",data);workspace.tasks=[{key:"a"}];openSessionOptions("settings");workspace.tasks=[];renderSessionActions()');
  assert.equal(dialog.open,false);assert.equal(actions.innerHTML,'');
+});
+
+
+test('settings and creation show only receipts for their own action kind',()=>{
+ const {ctx}=setup();ctx.data={...cap,commands:[{id:'reply',kind:'reply',state:'delivered',created:10},{id:'policy',kind:'policy',state:'rejected',created:9},{id:'create',kind:'create',state:'queued',created:8}]};
+ run(ctx,'interaction.byTask.set("a",data)');
+ assert.doesNotMatch(run(ctx,'interactionFeedbackHtml("a","policy")'),/原应用已接收|等待设备接收/);
+ assert.match(run(ctx,'interactionFeedbackHtml("a","policy")'),/最近权限设置.*原应用未接收/);
+ assert.match(run(ctx,'interactionFeedbackHtml("a","create")'),/最近新建会话.*等待设备接收/);
+ run(ctx,'interaction.pending.set("a",{id:"replying",action:{kind:"reply"}})');
+ assert.doesNotMatch(run(ctx,'interactionFeedbackHtml("a","policy")'),/正在发送/);
+});
+test('dialog validation errors are visible inside the modal and preserve its draft',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',create:{cwd:'/example',revision:'v',mode:'draft'}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("create");sendCreate("v")');
+ assert.match(body.innerHTML,/class="options-error" role="alert">请输入新会话/);
+ run(ctx,'interactionDraft("a").createText="Unsent draft";controlNotice("Try again","a","create")');
+ assert.match(body.innerHTML,/Unsent draft/);assert.match(body.innerHTML,/Try again/);
 });

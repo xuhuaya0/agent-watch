@@ -8,7 +8,7 @@ function context(){
  const nodes={};
  const node=()=>({value:'',checked:false,hidden:false,style:{},dataset:{},scrollTop:0,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},contains(){return false},setAttribute(){},focus(){},scrollIntoView(){}});
  const document={activeElement:null,getElementById(id){return nodes[id] ||=node()},querySelectorAll(){return []},querySelector(){return null}};
- const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,window:{},navigator:{}});
+ const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,location:{origin:'http://example.test'},window:{},navigator:{}});
  vm.runInContext(app,ctx);vm.runInContext(inline,ctx);return {ctx,nodes};
 }
 const task=(id,more={})=>({key:id,ui_key:id,title:'Task '+id,state:'done',tool:'codex',tool_short:'CX',machine:'Mac',machine_id:'mac-id',activity_at:10,extra:{},ui:{},...more});
@@ -81,7 +81,7 @@ test('full detail and older collector summaries both render honestly',()=>{
  run(ctx,'workspace.detail=null;workspace.detailSignature="";renderDetail()');assert.match(nodes['session-detail'].innerHTML,/最新结果摘要/);assert.match(nodes['session-detail'].innerHTML,/Short result/);
 });
 test('settings keep outbound and inbound tokens separate',async()=>{
- const {ctx}=context();run(ctx,'load=async()=>{}');ctx.document.getElementById('s-hub-token').value='destination';ctx.document.getElementById('s-token').value='receiver';let body;
+ const {ctx}=context();run(ctx,'load=async()=>{};settingsView.loaded=true');ctx.document.getElementById('s-hub-token').value='destination';ctx.document.getElementById('s-token').value='receiver';let body;
  ctx.fetch=async(url,opts)=>{body=JSON.parse(opts.body);return {status:200,ok:true}};
  await run(ctx,'saveSettings()');assert.equal(body.hub_token,'destination');assert.equal(Object.hasOwn(body,'ingest_token'),false);
 });
@@ -120,4 +120,72 @@ test('native system notifications are separate from the original user message',(
  const text=nodes['session-detail'].innerHTML;
  assert.match(text,/Original question/);assert.match(text,/最近外部消息 · 原生系统通知/);assert.match(text,/External &lt;script&gt; message/);assert.match(text,/New answer/);
  assert.doesNotMatch(text,/<script>/);
+});
+
+
+test('initial auth network failure is unknown and offers a retry without assuming login or setup',async()=>{
+ const {ctx,nodes}=context();ctx.fetch=async()=>{throw Error('offline')};
+ await run(ctx,'checkAuth()');
+ assert.equal(nodes['auth-fields'].hidden,true);assert.equal(nodes['auth-retry'].hidden,false);assert.equal(nodes['auth-retry'].disabled,false);
+ assert.match(nodes['auth-err'].textContent,/尚未确认登录状态/);assert.equal(run(ctx,'NEEDS_SETUP'),false);
+ ctx.load=async()=>{};ctx.fetch=async()=>({ok:true,json:async()=>({authenticated:true,csrf_token:'test-csrf'})});
+ await run(ctx,'checkAuth()');assert.equal(nodes['dash-main'].style.display,'flex');assert.equal(run(ctx,'CSRF_TOKEN'),'test-csrf');
+});
+test('late auth failure cannot hide a newer successful login state',async()=>{
+ const {ctx,nodes}=context();let reject;ctx.fetch=()=>new Promise((resolve,fail)=>reject=fail);
+ const older=run(ctx,'checkAuth()');ctx.load=async()=>{};ctx.fetch=async()=>({ok:true,json:async()=>({authenticated:true})});
+ await run(ctx,'checkAuth()');reject(Error('late'));await older;assert.equal(nodes['dash-main'].style.display,'flex');
+});
+test('login prevents duplicate submissions and retains input after network failure',async()=>{
+ const {ctx,nodes}=context();run(ctx,'showAuthView(false)');ctx.document.getElementById('auth-pw').value='synthetic password';let reject,calls=0;
+ ctx.fetch=()=>{calls++;return new Promise((resolve,fail)=>reject=fail)};
+ const pending=run(ctx,'submitAuth({preventDefault(){}})');await run(ctx,'submitAuth({preventDefault(){}})');
+ assert.equal(calls,1);assert.equal(nodes['auth-btn'].disabled,true);
+ reject(Error('network'));await pending;assert.equal(nodes['auth-btn'].disabled,false);assert.equal(nodes['auth-pw'].value,'synthetic password');assert.match(nodes['auth-err'].textContent,/未收到登录回执/);
+});
+test('late settings load does not steal navigation or overwrite a newer edited form',async()=>{
+ const {ctx,nodes}=context();let resolve;ctx.loadControlDevices=()=>{};ctx.fetch=()=>new Promise(r=>resolve=r);
+ const older=run(ctx,'openSettings()');assert.equal(run(ctx,'workspace.page'),'settings');assert.equal(nodes['settings-fields'].disabled,true);
+ run(ctx,'navigate("projects")');resolve({ok:true,json:async()=>({machine:'Late server'})});await older;
+ assert.equal(run(ctx,'workspace.page'),'projects');assert.equal(nodes['s-machine'],undefined);
+ let first;ctx.fetch=()=>new Promise(r=>first=r);const stale=run(ctx,'openSettings()');
+ run(ctx,'navigate("devices")');ctx.fetch=async()=>({ok:true,json:async()=>({machine:'Current server'})});await run(ctx,'openSettings()');
+ nodes['s-machine'].value='New edit';run(ctx,'settingsInputChanged({target:{id:"s-machine"}})');
+ first({ok:true,json:async()=>({machine:'Stale server'})});await stale;
+ assert.equal(nodes['s-machine'].value,'New edit');assert.match(nodes['settings-target'].textContent,/Current server/);
+ let calls=0;ctx.fetch=()=>{calls++;throw Error('should not reload')};await run(ctx,'openSettings()');
+ run(ctx,'navigate("projects")');await run(ctx,'openSettings()');assert.equal(calls,0);assert.equal(nodes['s-machine'].value,'New edit');
+});
+test('settings read failure offers retry and prevents saving incomplete default fields',async()=>{
+ const {ctx,nodes}=context();ctx.fetch=async()=>{throw Error('offline')};await run(ctx,'openSettings()');
+ assert.match(nodes['settings-status'].textContent,/读取失败/);assert.equal(nodes['settings-retry'].hidden,false);assert.equal(nodes['settings-save'].disabled,true);
+ ctx.loadControlDevices=()=>{};ctx.fetch=async()=>({ok:true,json:async()=>({machine:'Service device'})});await run(ctx,'openSettings(true)');
+ assert.equal(nodes['settings-fields'].disabled,false);assert.equal(nodes['settings-save'].disabled,false);assert.match(nodes['settings-target'].textContent,/Service device/);
+});
+test('settings save clears old success, blocks duplicate requests and keeps edits on failure',async()=>{
+ const {ctx,nodes}=context();run(ctx,'settingsView.loaded=true');ctx.document.getElementById('settings-status').textContent='已保存';ctx.document.getElementById('s-machine').value='Draft';let reject,calls=0;
+ ctx.fetch=()=>{calls++;return new Promise((resolve,fail)=>reject=fail)};
+ const pending=run(ctx,'saveSettings()');assert.match(nodes['settings-status'].textContent,/正在保存/);assert.equal(nodes['settings-save'].disabled,true);
+ await run(ctx,'saveSettings()');assert.equal(calls,1);reject(Error('network'));await pending;
+ assert.match(nodes['settings-status'].textContent,/未收到保存回执/);assert.equal(nodes['s-machine'].value,'Draft');assert.equal(nodes['settings-save'].disabled,false);
+});
+test('successful settings save does not mark a later edit as saved',async()=>{
+ const {ctx,nodes}=context();run(ctx,'settingsView.loaded=true');ctx.document.getElementById('s-machine').value='Submitted';let resolve,body;
+ ctx.fetch=(url,opts)=>{body=JSON.parse(opts.body);return new Promise(r=>resolve=r)};ctx.load=async()=>{};
+ const pending=run(ctx,'saveSettings()');nodes['s-machine'].value='Newer draft';run(ctx,'settingsInputChanged({target:{id:"s-machine"}})');
+ resolve({ok:true,status:200});await pending;assert.equal(body.machine,'Submitted');assert.equal(nodes['s-machine'].value,'Newer draft');assert.equal(run(ctx,'settingsView.dirty'),true);assert.match(nodes['settings-status'].textContent,/未保存的新修改/);
+});
+
+
+test('overview polls retain focus and scroll when data is unchanged or updated',()=>{
+ const {ctx}=context();let replacements=0,markup='old';
+ const active={dataset:{focusKey:'device:a'}},restored={dataset:{focusKey:'device:a'},focus(){ctx.document.activeElement=restored}};
+ const pane={scrollTop:123,contains(el){return el===active},querySelectorAll(){return [restored]},get innerHTML(){return markup},set innerHTML(value){markup=value;replacements++;ctx.document.activeElement=null}};
+ ctx.pane=pane;ctx.document.activeElement=active;
+ run(ctx,'replaceOverview(pane,"old")');assert.equal(replacements,0);assert.equal(ctx.document.activeElement,active);
+ run(ctx,'replaceOverview(pane,"new activity")');assert.equal(replacements,1);assert.equal(ctx.document.activeElement,restored);assert.equal(pane.scrollTop,123);
+});
+test('empty collection is distinct from an empty filter result and offers recovery',()=>{
+ const {ctx,nodes}=context();run(ctx,'renderList()');assert.match(nodes['session-items'].innerHTML,/尚未发现会话/);assert.doesNotMatch(nodes['session-items'].innerHTML,/筛选条件/);
+ seed(ctx,[task('a')]);run(ctx,'workspace.query="no-match";renderList()');assert.match(nodes['session-items'].innerHTML,/没有符合筛选条件/);assert.match(nodes['session-items'].innerHTML,/清除筛选/);
 });

@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Loopback-only synthetic UI fixture. Never imports Hub/native code or configuration.
+
+Run: python3 tools/preview_ui.py --port 18093
+Open /__preview to select a scenario. All product assets come from static/.
+Only demo login, read receipts and acknowledgements are simulated in memory;
+control, credential and configuration writes are refused, including replies.
+"""
+from __future__ import annotations
+
+import argparse
+import html
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+from pathlib import Path
+import threading
+import time
+from urllib.parse import parse_qs, unquote, urlsplit
+
+STATIC = Path(__file__).resolve().parents[1] / 'static'
+SCENARIOS = {
+    'normal': '完整工作台', 'attention': '问题与单次审批', 'offline': '设备与桥接离线',
+    'empty': '无会话', 'long': '长标题与长消息', 'login': '登录',
+    'setup': '首次设置', 'failure': '读取失败', 'auth_failure': '登录状态读取失败', 'pending': '操作等待与未知回执',
+    'refresh': '刷新时保留输入', 'changed': '原生权限版本变化', 'slow': '慢响应与切页',
+}
+SPECS = [
+    ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
+    ('ag-ready', 'antigravity', 'done', 600, '检查界面交互'),
+    ('ds-ready', 'dsh', 'done', 900, '梳理测试覆盖'),
+    ('cx-running', 'codex', 'running', 15, '正在检查当前修改'),
+    ('ag-question', 'antigravity', 'waiting_input', 30, '等待选择方案'),
+    ('ds-approval', 'dsh', 'waiting_approval', 60, '等待单次工具审批'),
+    ('cx-pinned', 'codex', 'done', 10800, '固定的参考会话'),
+    ('ag-recent', 'antigravity', 'done', 14400, '近期界面讨论'),
+    ('ds-older', 'dsh', 'done', 86400, '较早的结果记录'),
+]
+
+
+def choice(value, label, description=''):
+    return {'value': value, 'label': label, 'description': description}
+
+
+class Preview:
+    def __init__(self, scenario='normal', clock=time.time):
+        self.clock, self.started, self.lock = clock, clock(), threading.RLock()
+        self.select(scenario)
+
+    def select(self, scenario):
+        self.scenario = scenario if scenario in SCENARIOS else 'normal'
+        self.authenticated = self.scenario not in ('login', 'setup')
+        self.read_at, self.acked = {}, set()
+
+    def tasks(self):
+        if self.scenario == 'empty':return []
+        result = []
+        for sid, tool, state, age, title in SPECS:
+            if self.scenario == 'attention' and state not in ('waiting_input', 'waiting_approval'):continue
+            machine = 'Example Mac' if tool == 'codex' else 'Example PC'
+            device = 'demo-mac' if tool == 'codex' else 'demo-pc'
+            timestamp = self.clock() - age if state == 'running' or self.scenario == 'refresh' else self.started - age
+            if self.scenario == 'long':title += '：验证非常长的中文标题、英文标识 ExampleProjectAndModuleName 以及多设备信息的截断与换行'
+            result.append({'key':sid, 'ui_key':sid, 'session_id':sid, 'tool':tool,
+                'tool_short':{'codex':'CX','antigravity':'AG','dsh':'DS'}[tool],
+                'title':title, 'machine':machine, 'machine_id':device,
+                'machine_online':self.scenario != 'offline' or tool == 'codex',
+                'machine_ips':['192.0.2.10' if tool == 'codex' else '192.0.2.20'],
+                'project':'Example Project', 'state':state, 'state_since':self.started-age,
+                'activity_at':timestamp, 'turn_started_at':self.started-90 if state == 'running' else None,
+                'acked':sid in self.acked, 'ui':{'read_at':self.read_at.get(sid, 0)},
+                'prompt':'请检查这次修改，并给出简短结果。', 'detail':'这是一段合成结果，用于检查阅读和交互布局。',
+                'extra':{'cwd':'/example/project' if tool == 'codex' else 'C:/Example/Project',
+                         'native_pin':{'known':True,'pinned':sid == 'cx-pinned','order':0},
+                         'latest_turn':{'user':'请检查这次修改。','assistant':'合成结果：修改已检查，可继续阅读或查看设置。'}}})
+        return result
+
+    def capability(self, task):
+        tool, sid = task['tool'], task['session_id']
+        cap = {'tool':tool, 'session_id':sid, 'reply':task['state'] != 'running', 'history':True, 'requests':[]}
+        cap['settings'] = {'model':'Example Model ' + {'codex':'A','antigravity':'B','dsh':'C'}[tool],
+                           'scope':'project' if tool == 'antigravity' else 'session'}
+        if tool == 'codex':
+            cap['settings'].update(reasoning='高', permission='工作区可写 · 联网受限 · 由你审批 · 按需审批')
+            cap['policy'] = {'scope':'session-next-turn','current':'on-request','revision':'demo-policy',
+                             'options':[choice('on-request','需要时询问审批'), choice('never','不询问审批（需要批准的操作将拒绝）')]}
+            cap['create'] = {'cwd':'/example/project','revision':'demo-create','mode':'draft'}
+        elif tool == 'antigravity':
+            cap['settings'].update(permission='Request Review', project_name='Example Project',
+                note='模型来自已保存的会话记录，不含原应用中尚未发送的选择。')
+            cap['policy'] = {'scope':'project-permissions','current':'request_review','revision':'demo-policy',
+                'project_id':'demo-project','project_name':'Example Project','options':[
+                    choice('use_global','跟随全局','此项目使用全局权限设置'),
+                    choice('request_review','Request Review','命令执行需要审批；关闭终端沙盒'),
+                    choice('default','Default','在沙盒内执行；拒绝访问工作区外的文件'),
+                    choice('auto','Auto (Preview)','使用终端沙盒，由原应用决定是否执行命令'),
+                    choice('turbo','Turbo','关闭终端沙盒，允许无审批执行命令及访问工作区外的文件')]}
+            cap['create'] = {'location':'native-project','project_id':'demo-project','project_name':'Example Project','revision':'demo-create'}
+        else:
+            cap['settings'].update(permission='Workspace Write', reasoning='High')
+            cap['policy'] = {'scope':'session-permissions','current':'workspace-write','revision':'demo-policy',
+                'options':[choice('read-only','Read Only','只读访问文件'),
+                           choice('workspace-write','Workspace Write','可修改工作区内文件'),
+                           choice('full-access','Full Access','完整文件访问') ]}
+            cap['create'] = {'cwd':'C:/Example/Project','revision':'demo-create'}
+        if task['state'] == 'running':
+            cap.pop('policy');cap.pop('create');cap['reason'] = '演示：会话正在运行，等待本轮结束。'
+        if task['state'] == 'waiting_input':
+            cap['reply'] = False;cap.pop('policy', None)
+            cap['requests'] = [{'id':'demo-question','revision':'demo-v1','kind':'question','prompt':'选择合成示例的显示方案',
+                'questions':[{'id':'layout','question':'列表采用哪种密度？','options':['紧凑','宽松'],
+                              'option_details':{'紧凑':'一次显示更多会话','宽松':'保留更大的点击区域'},'custom':True}]}]
+        if task['state'] == 'waiting_approval':
+            cap['reply'] = False;cap.pop('policy', None)
+            cap['requests'] = [{'id':'demo-approval','revision':'demo-v1','kind':'approval',
+                                'prompt':'合成工具请求：打印 DEMO-ONLY（不会执行）','choices':['approve','reject']}]
+        if self.scenario == 'changed' and 'policy' in cap:
+            generation = int((self.clock()-self.started)//15)
+            cap['policy']['revision'] = f'demo-policy-{generation}'
+            selected = cap['policy']['options'][generation % 2]
+            cap['policy']['current'] = selected['value']
+            if tool != 'codex':cap['settings']['permission'] = selected['label']
+        return cap
+
+    def machines(self):
+        tasks = self.tasks()
+        return {'id:'+device:{'machine_id':device, 'machine':name, 'online':self.scenario != 'offline' or device == 'demo-mac',
+                             'ips':[ip], 'tasks':sum(t['machine_id'] == device for t in tasks), 'last_seen':self.clock(),
+                             'local':device == 'demo-mac'}
+                for device,name,ip in [('demo-mac','Example Mac','192.0.2.10'),('demo-pc','Example PC','192.0.2.20')]}
+
+    def page(self):
+        notice = ('<aside style="position:fixed;right:8px;bottom:5px;z-index:20;background:#fff8dc;'
+                  'color:#513c00;border:1px solid #d6c487;border-radius:4px;padding:3px 8px;font-size:11px;max-width:calc(100vw - 16px);box-sizing:border-box">'
+                  '合成预览 · 不连接设备 · 不输入真实密码 · <a href="/__preview">切换场景</a></aside>')
+        return (STATIC/'index.html').read_text().replace('<title>Agent Watch</title>',
+            '<title>Agent Watch — 合成预览</title>').replace('</body>',notice+'</body>')
+
+    def route(self, method, target, body=None):
+        """Pure fixture dispatch, except reading the explicitly allowlisted assets."""
+        parsed = urlsplit(target);path = unquote(parsed.path)
+        if method == 'GET' and path == '/':
+            scenario = parse_qs(parsed.query).get('scenario', [None])[0]
+            if scenario is not None:self.select(scenario)
+            return 200, 'text/html', self.page()
+        if method == 'GET' and path == '/__preview':
+            links = ''.join(f'<li><a href="/?scenario={key}">{html.escape(label)}</a></li>' for key,label in SCENARIOS.items())
+            return 200, 'text/html', ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>UI 验收场景</title>'
+                '<main style="max-width:640px;margin:48px auto;font:16px/1.7 system-ui;padding:24px"><h1>Agent Watch 合成预览</h1>'
+                '<p>只读取仓库中的静态文件，不连接真实设备、Hub 或原生应用。登录可填写任意演示字符串，勿使用真实密码。</p>'
+                '<p>所有控制、凭据与配置写操作均拒绝；已读与“知道了”仅保存在本进程内存。</p>'
+                '<p>刷新场景每次轮询更新活动时间；权限版本场景每 15 秒改变原生版本，用于检查草稿、光标、滚动与设置选择。</p><ul>'+links+'</ul></main></html>')
+        if method == 'GET' and path.startswith('/static/'):
+            file = (STATIC/path.removeprefix('/static/')).resolve()
+            if file.parent == STATIC and file.suffix in ('.js','.css') and file.is_file():
+                return 200, 'text/javascript' if file.suffix == '.js' else 'text/css', file.read_text()
+            return 404, 'application/json', {'error':'not_found'}
+        if path == '/api/auth/status' and method == 'GET':
+            if self.scenario == 'auth_failure':return 503, 'application/json', {'error':'demo_auth_unavailable'}
+            return 200, 'application/json', {'authenticated':self.authenticated,'needs_setup':self.scenario == 'setup','csrf_token':'demo-only'}
+        if path in ('/api/auth/login','/api/auth/setup') and method == 'POST':
+            self.authenticated = True
+            return 200, 'application/json', {'ok':True,'csrf_token':'demo-only'}
+        if path == '/api/auth/logout' and method == 'POST':
+            self.authenticated = False
+            return 200, 'application/json', {'ok':True}
+        if not self.authenticated:return 401, 'application/json', {'error':'demo_login_required'}
+        if method == 'GET' and path == '/api/tasks':
+            if self.scenario == 'failure':return 503, 'application/json', {'error':'demo_unavailable'}
+            tasks = self.tasks()
+            return 200, 'application/json', {'tasks':tasks,'machines':self.machines(),'errors':{},'scanned_at':self.clock(),
+                'counts':{'attention':sum(t['state'] in ('waiting_input','waiting_approval') for t in tasks),
+                          'running':sum(t['state']=='running' for t in tasks),'done':sum(t['state']=='done' and self.clock()-t['activity_at']<7200 for t in tasks)}}
+        tasks = {t['key']:t for t in self.tasks()};sid = path.rsplit('/',1)[-1];task = tasks.get(sid)
+        if method == 'GET' and path.startswith('/api/tasks/') and task:return 200, 'application/json', {'task':task}
+        if method == 'GET' and path.startswith('/api/control/tasks/') and task:
+            connected = self.scenario != 'offline'
+            commands = []
+            if self.scenario == 'pending':commands = [{'id':'demo-command','kind':'reply','created':self.started,
+                'state':'unknown' if task['tool']=='antigravity' else 'queued','detail':'合成回执，不会派发操作'}]
+            return 200, 'application/json', {'connected':connected,'capability':self.capability(task) if connected else None,
+                                            'commands':commands,'reason':'' if connected else '演示：原应用控制桥已离线'}
+        if method == 'GET' and path.startswith('/api/history/tasks/') and task:
+            if self.scenario == 'offline':return 409, 'application/json', {'error':'history_unavailable'}
+            content = '合成结果：本轮修改已经检查。\n\n- 项目、设备和 Harness 可区分\n- 继续回复保持原会话上下文'
+            if self.scenario == 'long':content += '\n\n' + ('长内容用于检查滚动、换行、代码与较早记录。\n\n' * 50) + '\n```text\n' + 'long_identifier_'*25 + '\n```'
+            return 200, 'application/json', {'ready':True,'messages':[{'id':'u1','role':'user','text':'请检查本轮修改。'},
+                 {'id':'t1','role':'tool','text':'合成工具输出，不包含真实执行记录。'},
+                 {'id':'a1','role':'assistant','text':content}], 'next_cursor':None}
+        if method == 'GET' and path == '/api/settings':
+            return 200, 'application/json', {'machine':'Example Hub','port':8090,'autostart':False,
+                'local_ips':['192.0.2.30'],'adapters':{tool:{'enabled':True} for tool in ('codex','antigravity','dsh')},
+                'hub_urls':[],'ingest_token':'DEMO-NOT-A-CREDENTIAL','hub_token':'','summary_token':'DEMO-READ-ONLY','webhooks':[]}
+        if method == 'GET' and path == '/api/control/devices':
+            return 200, 'application/json', {'devices':[{'device_id':m['machine_id'],'name':m['machine'],'configured':True,
+                'enabled':True,'connected':self.scenario != 'offline','sessions':m['tasks'],
+                'harnesses':{tool:sum(t['tool'] == tool and t['machine_id'] == m['machine_id'] for t in tasks.values())
+                             for tool in ('codex','antigravity','dsh')}} for m in self.machines().values()]}
+        if method == 'PATCH' and path.startswith('/api/workspace/tasks/') and task:
+            self.read_at[sid] = self.clock()
+            return 200, 'application/json', {'ui':{'read_at':self.read_at[sid]}}
+        if method == 'POST' and path.startswith('/api/tasks/') and path.endswith('/ack'):
+            self.acked.add(path.split('/')[-2]);return 200, 'application/json', {'ok':True}
+        if method != 'GET':return 409, 'application/json', {'ok':False,'error':'preview_read_only'}
+        return 404, 'application/json', {'error':'not_found'}
+
+
+def handler(preview):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):pass
+        def do_GET(self):self.dispatch()
+        def do_POST(self):self.dispatch()
+        def do_PATCH(self):self.dispatch()
+        def do_DELETE(self):self.dispatch()
+        def dispatch(self):
+            # Discard all submitted contents, especially demo passwords. Do not
+            # log or persist them and do not interpret arbitrary control actions.
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 <= length <= 65536:
+                self.send_error(413);return
+            self.rfile.read(length)
+            if preview.scenario == 'slow' and self.command == 'GET' and self.path == '/api/settings':
+                time.sleep(2)  # Browser acceptance: navigate away before this response.
+            with preview.lock:status,kind,data = preview.route(self.command,self.path)
+            encoded = (json.dumps(data,ensure_ascii=False) if kind == 'application/json' else data).encode()
+            self.send_response(status);self.send_header('Content-Type',kind+'; charset=utf-8')
+            self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(encoded)))
+            self.end_headers();self.wfile.write(encoded)
+    return Handler
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port',type=int,default=18093)
+    parser.add_argument('--scenario',choices=SCENARIOS,default='normal')
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:parser.error('port must be between 1 and 65535')
+    server = ThreadingHTTPServer(('127.0.0.1',args.port),handler(Preview(args.scenario)))
+    print(f'Synthetic UI only: http://127.0.0.1:{args.port}/__preview',flush=True)
+    try:server.serve_forever()
+    except KeyboardInterrupt:pass
+    finally:server.server_close()
+
+
+if __name__ == '__main__':main()

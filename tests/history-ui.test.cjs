@@ -1,8 +1,11 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('fs'),vm=require('vm');
 function setup(){
- const elements={'session-history':{innerHTML:'',dataset:{}},'latest-messages':{hidden:false},'session-detail':{scrollHeight:100,scrollTop:20}};
- const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id]},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),setTimeout,Date,showAuthView(){}});
+ const history={dataset:{},tools:[],html:'',get innerHTML(){return this.html},set innerHTML(value){
+  this.html=value;this.tools=[...value.matchAll(/<details class="history-tool" data-history-id="([^"]+)" data-history-session="([^"]+)"/g)].map(([,id,session])=>({dataset:{historyId:id,historySession:session},open:false}));
+ },querySelectorAll(){return this.tools}};
+ const elements={'session-history':history,'latest-messages':{hidden:false},'session-detail':{scrollHeight:100,scrollTop:20}};
+ const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id]},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
  vm.runInContext(fs.readFileSync('static/history.js','utf8'),ctx);return{ctx,elements,run:s=>vm.runInContext(s,ctx)};
 }
 test('history escapes content and never renders a reasoning role',()=>{
@@ -32,4 +35,37 @@ test('all three harnesses load older history through the same reader',async()=>{
   assert.match(elements['session-history'].innerHTML,/Earlier answer/);
   assert.match(elements['session-history'].innerHTML,/加载更早的记录/);
  }
+});
+test('opened tool records survive changed content and reordered history by message ID',()=>{
+ const {ctx,elements,run}=setup();const history=elements['session-history'];
+ run(`Object.assign(historyState('a'),{messages:[{id:'tool-1',role:'tool',text:'old result'},{id:'tool-2',role:'tool',text:'other result'}],loaded:true});renderHistory()`);
+ ctx.opened=history.tools[0];ctx.opened.open=true;run('rememberHistoryTool(opened)');
+ run(`historyState('a').messages=[{id:'earlier',role:'tool',text:'earlier record'},{id:'tool-2',role:'tool',text:'updated other result'},{id:'tool-1',role:'tool',text:'new result'}];historyState('a').busy=true;renderHistory()`);
+ assert.equal(history.tools.find(n=>n.dataset.historyId==='tool-1').open,true);
+ assert.equal(history.tools.find(n=>n.dataset.historyId==='tool-2').open,false);
+ assert.equal(history.tools.find(n=>n.dataset.historyId==='earlier').open,false);
+ ctx.opened=history.tools.find(n=>n.dataset.historyId==='tool-1');ctx.opened.open=false;run('rememberHistoryTool(opened);historyState("a").busy=false;renderHistory()');
+ assert.equal(history.tools.find(n=>n.dataset.historyId==='tool-1').open,false);
+});
+test('tool expansion is scoped to its conversation even when message IDs coincide',()=>{
+ const {ctx,elements,run}=setup();
+ run(`historyState('a').messages=[{id:'same',role:'tool',text:'A'}];renderHistory()`);
+ ctx.opened=elements['session-history'].tools[0];ctx.opened.open=true;run('rememberHistoryTool(opened)');
+ run(`workspace.selected='b';historyState('b').messages=[{id:'same',role:'tool',text:'B'}];renderHistory()`);
+ assert.equal(elements['session-history'].tools[0].open,false);
+ run(`workspace.selected='a';renderHistory()`);assert.equal(elements['session-history'].tools[0].open,true);
+});
+test('loaded assistant replies keep copy controls and copy the exact selected body',async()=>{
+ const {ctx,elements,run}=setup(),copied=[];ctx.copyText=text=>copied.push(text);
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[
+  {id:'user',role:'user',text:'Request'},
+  {id:'answer-1',role:'assistant',text:'**Exact Markdown**\n\n```text\n<result>\n```'},
+  {id:'answer-2',role:'assistant',text:'A different answer'},
+  {id:'tool',role:'tool',text:'Tool record'}],next_cursor:null})});
+ await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,true);
+ assert.equal((elements['session-history'].innerHTML.match(/aria-label="复制这条回复"/g)||[]).length,2);
+ ctx.button={dataset:{historySession:'a',historyId:'answer-1'}};
+ run('copyHistoryReply(button)');assert.deepEqual(copied,['**Exact Markdown**\n\n```text\n<result>\n```']);
+ ctx.button.dataset.historyId='tool';run('copyHistoryReply(button)');assert.equal(copied.length,1);
+ ctx.button.dataset.historyId='answer-2';run('workspace.selected="b";copyHistoryReply(button)');assert.equal(copied.length,1);
 });

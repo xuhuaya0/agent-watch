@@ -27,13 +27,14 @@
   <form class="auth-card" onsubmit="submitAuth(event)">
     <h2 id="auth-title">管理员登录</h2>
     <p id="auth-desc">请输入管理员密码进入监控面板</p>
-    <div id="auth-err" class="auth-err"></div>
+    <div id="auth-err" class="auth-err" role="alert"></div>
+    <div id="auth-fields">
     <div class="field">
-      <label>管理员密码</label>
+      <label for="auth-pw">管理员密码</label>
       <input type="password" id="auth-pw" required autocomplete="current-password">
     </div>
     <div class="field" id="auth-confirm-box" style="display:none">
-      <label>确认密码</label>
+      <label for="auth-pw2">确认密码</label>
       <input type="password" id="auth-pw2" autocomplete="new-password">
     </div>
     <div class="field">
@@ -42,6 +43,8 @@
       </label>
     </div>
     <button type="submit" class="btn-pri" style="width:100%;padding:8px 0;font-size:14px" id="auth-btn">进入面板</button>
+    </div>
+    <button type="button" id="auth-retry" class="btn-pri" hidden onclick="checkAuth()">重试连接</button>
   </form>
 </div>
 
@@ -78,8 +81,10 @@
   <section id="projects-view" class="page-view overview-view" hidden></section>
   <section id="devices-view" class="page-view overview-view" hidden></section>
   <section id="settings-view" class="page-view overview-view" hidden>
-  <div class="settings-page">
+  <div class="settings-page" oninput="settingsInputChanged(event)">
     <h3>Agent Watch 设置</h3>
+    <p id="settings-target">此页修改运行 Agent Watch 服务的设备，目标设备正在读取。</p>
+    <fieldset id="settings-fields" class="settings-fields" disabled><legend class="sr-only">应用设置</legend>
     <div class="settings-section">
       <h4>会话交互</h4>
       <p>查看各设备的原应用连接。暂停后不再接收新的回复或处理操作，尚未派发的操作会取消；已经交给原应用的操作不会撤回。</p>
@@ -93,13 +98,13 @@
       <small>勾选后登录系统时自动在后台启动托盘图标，无需手动运行。</small>
     </div>
     <div class="field">
-      <label>本机名称</label>
+      <label for="s-machine">服务设备名称</label>
       <input type="text" id="s-machine">
       <small id="s-local-ips"></small>
     </div>
     <div class="field">
-      <label>本机监控的 AI 工具</label>
-      <div class="checks">
+      <span id="adapter-selection-label">服务设备采集工具</span>
+      <div class="checks" role="group" aria-labelledby="adapter-selection-label">
         <label><input type="checkbox" id="s-ag"> Antigravity</label>
         <label><input type="checkbox" id="s-dsh"> DeepSeek Harness</label>
         <label><input type="checkbox" id="s-codex"> Codex CLI</label>
@@ -141,25 +146,27 @@
       <small id="s-summary-url"></small>
     </div>
     <div class="field">
-      <label>Webhook 通知地址（一行一个，出现新需介入/刚完成任务时 POST）</label>
+      <label for="s-webhooks">Webhook 通知地址（一行一个，出现新需介入/刚完成任务时 POST）</label>
       <textarea id="s-webhooks" rows="2" placeholder="http://127.0.0.1:8080/api/push"></textarea>
     </div>
 
     <div class="sep"></div>
     <div class="field">
-      <label>修改管理员密码（留空则不修改；修改后所有旧会话立即失效）</label>
-      <div class="row-inline" style="margin-bottom:6px">
-        <input type="password" id="s-old-pw" placeholder="当前密码">
-        <input type="password" id="s-new-pw" placeholder="新密码（至少 4 位）">
+      <span id="password-settings-label">修改管理员密码（使用“修改密码”按钮单独提交；修改后所有旧会话立即失效）</span>
+      <div class="row-inline" style="margin-bottom:6px" role="group" aria-labelledby="password-settings-label">
+        <input type="password" id="s-old-pw" placeholder="当前密码" aria-label="当前管理员密码" autocomplete="current-password">
+        <input type="password" id="s-new-pw" placeholder="新密码（至少 4 位）" aria-label="新管理员密码" autocomplete="new-password">
         <button type="button" onclick="changePassword()">修改密码</button>
       </div>
       <small id="s-pw-msg"></small>
     </div>
 
+    </fieldset>
     <div class="modal-foot">
       <span id="settings-status" role="status"></span>
       <button onclick="closeSettings()">返回会话</button>
-      <button class="btn-pri" onclick="saveSettings()">保存设置</button>
+      <button id="settings-retry" hidden onclick="openSettings(true)">重试读取</button>
+      <button id="settings-save" class="btn-pri" disabled onclick="saveSettings()">保存设置</button>
     </div>
   </div>
   </section>
@@ -175,6 +182,8 @@
 let CSRF_TOKEN = "";
 let NEEDS_SETUP = false;
 let POLL_TIMER = null;
+const authState = {serial:0,submitting:false};
+const settingsView = {serial:0,loading:false,loaded:false,saving:false,dirty:false,edits:0};
 
 function activityAt(t) {
   return Number(t.activity_at || (["done","idle"].includes(t.state) ? t.state_since || t.last_event_at : t.last_event_at || t.state_since)) || 0;
@@ -203,6 +212,10 @@ function apiFetch(url, opts = {}) {
 
 function showAuthView(needsSetup, errMsg = "") {
   if(typeof closeSessionOptions==='function')closeSessionOptions();
+  authState.serial++;
+  settingsView.serial++;settingsView.loading = false;updateSettingsControls();
+  document.getElementById("auth-fields").hidden = false;
+  document.getElementById("auth-retry").hidden = true;
   NEEDS_SETUP = !!needsSetup;
   if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
   document.getElementById("dash-main").style.display = "none";
@@ -227,39 +240,63 @@ function showDashView() {
   if (!POLL_TIMER) POLL_TIMER = setInterval(load, 5000);
 }
 
+function showAuthConnection(message, pending=false) {
+  if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+  document.getElementById("dash-main").style.display = "none";
+  document.getElementById("hdr-authed").style.display = "none";
+  for (const id of ["p-att","p-done","p-run"]) document.getElementById(id).style.display = "none";
+  document.getElementById("auth-wrap").classList.add("open");
+  document.getElementById("auth-fields").hidden = true;
+  document.getElementById("auth-title").textContent = pending ? "正在连接" : "暂时无法连接";
+  document.getElementById("auth-desc").textContent = "正在确认面板的登录状态。";
+  const error = document.getElementById("auth-err");
+  error.textContent = message;error.style.display = message ? "block" : "none";
+  const retry = document.getElementById("auth-retry");retry.hidden = pending;retry.disabled = pending;
+}
+
 async function checkAuth() {
-  const r = await fetch("/api/auth/status").then(r => r.json());
-  if (r.authenticated) {
-    CSRF_TOKEN = r.csrf_token || "";
-    showDashView();
-  } else {
-    showAuthView(r.needs_setup);
+  const serial = ++authState.serial;
+  showAuthConnection("",true);
+  try {
+    const response = await fetch("/api/auth/status");
+    if (!response.ok) throw new Error("connection");
+    const r = await response.json();
+    if (serial !== authState.serial) return;
+    if (typeof r.authenticated !== "boolean") throw new Error("invalid status");
+    if (r.authenticated) {
+      CSRF_TOKEN = r.csrf_token || "";
+      showDashView();
+    } else showAuthView(r.needs_setup);
+  } catch (_) {
+    if (serial === authState.serial) showAuthConnection("尚未确认登录状态，请检查连接后重试。");
   }
 }
 
 async function submitAuth(ev) {
   ev.preventDefault();
+  if (authState.submitting) return;
   const pw = document.getElementById("auth-pw").value;
   const remember = document.getElementById("auth-remember").checked;
-  if (NEEDS_SETUP) {
-    const pw2 = document.getElementById("auth-pw2").value;
-    if (pw !== pw2) { showAuthView(true, "两次输入的密码不一致"); return; }
+  if (NEEDS_SETUP && pw !== document.getElementById("auth-pw2").value) {
+    showAuthView(true,"两次输入的密码不一致");return;
   }
-  const url = NEEDS_SETUP ? "/api/auth/setup" : "/api/auth/login";
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({password: pw, remember}),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    showAuthView(NEEDS_SETUP, data.error || "验证失败");
-    return;
+  authState.serial++;authState.submitting = true;
+  const button = document.getElementById("auth-btn");button.disabled = true;button.textContent = "正在验证…";
+  const error = document.getElementById("auth-err");error.textContent = "";error.style.display = "none";
+  try {
+    const res = await fetch(NEEDS_SETUP ? "/api/auth/setup" : "/api/auth/login", {
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw,remember}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {showAuthView(NEEDS_SETUP,data.error || "验证失败");return;}
+    CSRF_TOKEN = data.csrf_token || "";
+    document.getElementById("auth-pw").value = "";document.getElementById("auth-pw2").value = "";
+    showDashView();
+  } catch (_) {showAuthView(NEEDS_SETUP,"未收到登录回执，请检查连接后重试。");}
+  finally {
+    authState.submitting = false;button.disabled = false;
+    button.textContent = NEEDS_SETUP ? "设置密码并进入" : "进入面板";
   }
-  CSRF_TOKEN = data.csrf_token || "";
-  document.getElementById("auth-pw").value = "";
-  document.getElementById("auth-pw2").value = "";
-  showDashView();
 }
 
 async function doLogout() {
@@ -296,36 +333,71 @@ function updateSummaryUrlHint(token) {
   document.getElementById("s-summary-url").textContent = `Get 读取地址：${url}`;
 }
 
-async function openSettings() {
-  const res = await fetch("/api/settings");
-  if (res.status === 401) return showAuthView(false);
-  if (!res.ok) return toast("设置暂时不可用，请重试");
-  const s = await res.json();
-  document.getElementById("s-autostart").checked = !!s.autostart;
-  document.getElementById("s-machine").value = s.machine || "";
-  document.getElementById("s-local-ips").textContent = "本机可用 IP（含局域网/WireGuard）：" + ((s.local_ips || []).map(ip => `http://${ip}:${s.port}`).join(" , ") || "未检测到");
-  document.getElementById("s-ag").checked = !!(s.adapters?.antigravity?.enabled);
-  document.getElementById("s-dsh").checked = !!(s.adapters?.dsh?.enabled);
-  document.getElementById("s-codex").checked = !!(s.adapters?.codex?.enabled);
-  document.getElementById("s-hubs").value = (s.hub_urls || []).join("\n");
-  document.getElementById("s-token").value = s.ingest_token || "";
-  document.getElementById("s-hub-token").value = s.hub_token || "";
-  document.getElementById("s-summary-token").value = s.summary_token || "";
-  updateSummaryUrlHint(s.summary_token || "");
-  document.getElementById("s-webhooks").value = (s.webhooks || []).join("\n");
-  document.getElementById("s-old-pw").value = "";
-  document.getElementById("s-new-pw").value = "";
-  document.getElementById("s-pw-msg").textContent = "";
-  const p = s.pusher || {};
-  document.getElementById("s-push-status").textContent = (s.hub_urls || []).length ? "等待上报结果" : "未启用向主控上报";
-  if (p.last_error) {
-    document.getElementById("s-push-status").textContent = `⚠️ 上报失败：${p.last_error}`;
-  } else if (p.last_ok_url) {
-    document.getElementById("s-push-status").textContent = `✅ 最近上报成功：${p.last_ok_url}`;
-  }
+function setSettingsStatus(message,tone='info') {
+  const el=document.getElementById('settings-status');el.textContent=message;el.dataset.tone=tone;
+}
+function updateSettingsControls() {
+  document.getElementById("settings-fields").disabled = settingsView.loading || !settingsView.loaded;
+  document.getElementById("settings-save").disabled = settingsView.loading || settingsView.saving || !settingsView.loaded;
+}
+function settingsInputChanged(event) {
+  if (!['s-autostart','s-machine','s-ag','s-dsh','s-codex','s-hubs','s-hub-token','s-webhooks'].includes(event.target?.id)) return;
+  settingsView.edits++;settingsView.dirty = true;
+  if (!settingsView.saving) setSettingsStatus("有未保存的修改");
+}
+async function openSettings(retry=false) {
+  // Selecting the current page again must not reload over an in-progress edit.
+  if (!retry && workspace.page === 'settings' && (settingsView.loading || settingsView.loaded)) return;
   navigate('settings');
-  loadControlDevices();
-  document.getElementById("settings-status").textContent = "";
+  if (settingsView.dirty || settingsView.saving) {
+    setSettingsStatus(settingsView.saving ? "正在保存…" : "有未保存的修改");
+    return;
+  }
+  const serial = ++settingsView.serial, edits = settingsView.edits;
+  settingsView.loading = true;updateSettingsControls();
+  document.getElementById("settings-retry").hidden = true;
+  setSettingsStatus("正在读取设置…");
+  const current = () => serial === settingsView.serial && workspace.page === 'settings' && edits === settingsView.edits;
+  try {
+    const res = await fetch("/api/settings");
+    if (!current()) return;
+    if (res.status === 401) return showAuthView(false);
+    if (!res.ok) throw new Error("unavailable");
+    const s = await res.json();
+    if (!current()) return;
+    document.getElementById("settings-target").textContent = "设置目标：" + (s.machine || "设备名称未知") + " · 此页修改运行 Agent Watch 服务的设备。";
+    document.getElementById("s-autostart").checked = !!s.autostart;
+    document.getElementById("s-machine").value = s.machine || "";
+    document.getElementById("s-local-ips").textContent = "本机可用 IP（含局域网/WireGuard）：" + ((s.local_ips || []).map(ip => `http://${ip}:${s.port}`).join(" , ") || "未检测到");
+    document.getElementById("s-ag").checked = !!(s.adapters?.antigravity?.enabled);
+    document.getElementById("s-dsh").checked = !!(s.adapters?.dsh?.enabled);
+    document.getElementById("s-codex").checked = !!(s.adapters?.codex?.enabled);
+    document.getElementById("s-hubs").value = (s.hub_urls || []).join("\n");
+    document.getElementById("s-token").value = s.ingest_token || "";
+    document.getElementById("s-hub-token").value = s.hub_token || "";
+    document.getElementById("s-summary-token").value = s.summary_token || "";
+    updateSummaryUrlHint(s.summary_token || "");
+    document.getElementById("s-webhooks").value = (s.webhooks || []).join("\n");
+    document.getElementById("s-old-pw").value = "";
+    document.getElementById("s-new-pw").value = "";
+    document.getElementById("s-pw-msg").textContent = "";
+    const p = s.pusher || {};
+    document.getElementById("s-push-status").textContent = (s.hub_urls || []).length ? "等待上报结果" : "未启用向主控上报";
+    if (p.last_error) {
+      document.getElementById("s-push-status").textContent = `⚠️ 上报失败：${p.last_error}`;
+    } else if (p.last_ok_url) {
+      document.getElementById("s-push-status").textContent = `✅ 最近上报成功：${p.last_ok_url}`;
+    }
+    settingsView.loaded = true;settingsView.dirty = false;
+    loadControlDevices();setSettingsStatus("");
+  } catch (_) {
+    if (current()) {
+      setSettingsStatus("设置读取失败，请重试。","error");
+      document.getElementById("settings-retry").hidden = false;
+    }
+  } finally {
+    if (serial === settingsView.serial) {settingsView.loading = false;updateSettingsControls();}
+  }
 }
 
 function closeSettings() {
@@ -385,6 +457,7 @@ async function changePassword() {
 }
 
 async function saveSettings() {
+  if (settingsView.saving || settingsView.loading || !settingsView.loaded) return;
   const body = {
     autostart: document.getElementById("s-autostart").checked,
     machine: document.getElementById("s-machine").value.trim(),
@@ -398,15 +471,20 @@ async function saveSettings() {
       codex: document.getElementById("s-codex").checked,
     },
   };
-  const res = await apiFetch("/api/settings", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) return showAuthView(false);
-  if (!res.ok) { document.getElementById("settings-status").textContent = "保存失败，请重试"; return; }
-  document.getElementById("settings-status").textContent = "已保存";
-  load();
+  const edits = settingsView.edits;
+  settingsView.saving = true;updateSettingsControls();
+  setSettingsStatus("正在保存…");
+  try {
+    const res = await apiFetch("/api/settings", {
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),
+    });
+    if (res.status === 401) {showAuthView(false);setSettingsStatus("登录已失效，修改已保留。","error");return;}
+    if (!res.ok) {setSettingsStatus("保存失败，修改已保留，请重试。","error");return;}
+    settingsView.dirty = edits !== settingsView.edits;
+    setSettingsStatus(settingsView.dirty ? "已保存提交时的内容，仍有未保存的新修改。" : "已保存",settingsView.dirty?"warning":"success");
+    load();
+  } catch (_) {setSettingsStatus("未收到保存回执，修改已保留；请核对后再保存。","warning");}
+  finally {settingsView.saving = false;updateSettingsControls();}
 }
 
 checkAuth();

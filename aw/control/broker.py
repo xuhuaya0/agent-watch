@@ -333,7 +333,7 @@ class Broker:
             self._expire(db)
             _, cap = self._owner(device, (tool, session))
             enabled = self._enabled(db, device)
-            rows = db.execute('SELECT id,state,detail,created,result FROM commands WHERE device=? AND tool=? AND session=? ORDER BY created DESC LIMIT 5', (device, tool, session)).fetchall()
+            rows = db.execute('SELECT id,state,detail,created,result,kind FROM commands WHERE device=? AND tool=? AND session=? ORDER BY created DESC LIMIT 5', (device, tool, session)).fetchall()
             commands = []
             for row in rows:
                 item = dict(row)

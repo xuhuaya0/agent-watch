@@ -22,6 +22,14 @@
 
 ## Implementation and verification
 
+- Before changing web UI, read `FRONTEND_DESIGN.md` and `UI_ACCEPTANCE.md`.
+  Define the flow and native scope, reuse shared components, and check adjacent
+  states and pages. Read `UI_AUDIT.md`; existing defects are not design precedent.
+- For a UI change, run the relevant logic tests and real-browser acceptance
+  scenarios using `tools/preview_ui.py`. Record pass/fail/not-verified for the
+  affected flow; a test count or a screenshot alone is not acceptance. Keep
+  synthetic preview, native checks and deployment evidence separate.
+
 - Keep monitoring lightweight; reuse native Harness engines and bounded history.
 - Preserve native pin/archive state and report only validated capabilities.
 - Do not describe fixture/CI tests as native OS or Harness acceptance. Update

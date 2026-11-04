@@ -2,7 +2,7 @@
 const histories = new Map();
 const HISTORY_ERRORS = {history_compression_unavailable:'此设备需要更新历史读取依赖。',history_too_large:'记录过大，暂时无法在面板中展开，请在原应用查看。',history_unavailable:'此设备暂时无法读取历史，请确认采集端与桥接已更新并在线。',native_session_archived:'会话已在原应用中归档。',native_session_unavailable:'原会话已不可用。',history_cursor_expired:'历史记录已变更，请重新加载。',history_timeout:'设备读取超时，请重试。',control_paused:'设备交互连接已暂停。',history_busy:'正在读取其他会话，请稍后重试。',history_record_too_large:'部分原始记录过大，暂时无法读取这一页。'};
 function historyState(id) {
- if(!histories.has(id))histories.set(id,{messages:[],loaded:false,busy:false,next:null,version:null,generation:0,error:'',older:false,updated:false});
+ if(!histories.has(id))histories.set(id,{messages:[],loaded:false,busy:false,next:null,version:null,generation:0,error:'',older:false,updated:false,openedTools:new Set()});
  return histories.get(id);
 }
 function historyHtml(s) {
@@ -13,15 +13,31 @@ function historyHtml(s) {
  for(const m of s.messages) {
   const label=`${esc(m.label||({user:'你',assistant:'Agent',tool:'工具'}[m.role]))}${m.timestamp?` <time>${esc(new Date(m.timestamp).toLocaleString())}</time>`:''}`;
   const body=`<div class="message-body">${markdown(m.text)}</div>${m.truncated?'<p class="capture-note">此条内容过长，显示前 48 KB；完整内容请在原应用查看。</p>':''}`;
-  html+=m.role==='tool'?`<details class="history-tool"><summary>${label}</summary>${body}</details>`:`<article class="message ${m.role==='user'?'user-message':''}" data-history-id="${esc(m.id)}"><div class="message-label">${label}</div>${body}</article>`;
+  const identity=`data-history-id="${esc(m.id)}" data-history-session="${esc(workspace.selected)}"`;
+  const copy=m.role==='assistant'?`<button type="button" ${identity} aria-label="复制这条回复" onclick="copyHistoryReply(this)">${icon('copy')}复制</button>`:'';
+  html+=m.role==='tool'?`<details class="history-tool" ${identity} ontoggle="rememberHistoryTool(this)"><summary>${label}</summary>${body}</details>`:`<article class="message ${m.role==='user'?'user-message':''}" data-history-id="${esc(m.id)}"><div class="message-label">${label}${copy}</div>${body}</article>`;
  }
  if(s.loaded&&!s.messages.length&&!s.next)html+='<p class="capture-note">没有可显示的消息。</p>';
  return html;
 }
 function renderHistory() {
  const id=workspace.selected,el=document.getElementById('session-history');if(!el||!id)return;
- const s=historyState(id),html=historyHtml(s);if(el.dataset.historyHtml!==html){el.innerHTML=html;el.dataset.historyHtml=html;}
+ const s=historyState(id),html=historyHtml(s);if(el.dataset.historyHtml!==html){
+  el.innerHTML=html;el.dataset.historyHtml=html;
+  // Opening a tool record is reader state, independent of refreshed content.
+  for(const tool of el.querySelectorAll('.history-tool'))tool.open=s.openedTools.has(tool.dataset.historyId);
+ }
  const latest=document.getElementById('latest-messages');if(latest)latest.hidden=s.loaded;
+}
+function rememberHistoryTool(element) {
+ const s=histories.get(element.dataset.historySession),id=element.dataset.historyId;
+ if(!s?.messages.some(m=>m.role==='tool'&&m.id===id))return;
+ if(element.open)s.openedTools.add(id);else s.openedTools.delete(id);
+}
+function copyHistoryReply(button) {
+ const id=button.dataset.historySession;if(id!==workspace.selected||workspace.page!=='sessions')return;
+ const message=histories.get(id)?.messages.find(m=>m.id===button.dataset.historyId&&m.role==='assistant');
+ if(message)return copyText(message.text);
 }
 function ensureHistory() {
  const task=workspace.tasks.find(t=>taskId(t)===workspace.selected);

@@ -1,6 +1,6 @@
 // Read-only native state and separate, explicitly scoped actions. No model or
 // permission choices are invented here; only offered capabilities can be sent.
-const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false};
+const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''};
 function harnessName(cap) {return ({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap?.tool||workspace.detail?.tool]||'原应用';}
 function settingsSummaryHtml(cap) {
  const s=cap.settings||{},p=cap.policy;
@@ -39,13 +39,42 @@ function creationForm(cap,draft,disabled) {
 function openSessionOptions(kind) {
  const data=interaction.byTask.get(workspace.selected);
  if(!data?.connected||!data.capability||(kind==='create'&&!data.capability.create))return;
- Object.assign(sessionOptions,{id:workspace.selected,kind,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false});
- renderSessionOptions();document.getElementById('session-options').showModal();
+ Object.assign(sessionOptions,{id:workspace.selected,kind,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''});
+ renderSessionOptions();
+ const dialog=document.getElementById('session-options');dialog.onkeydown=trapSessionOptionsFocus;dialog.showModal();
+}
+function trapSessionOptionsFocus(event) {
+ const dialog=document.getElementById('session-options');if(event.key!=='Tab'||!dialog?.open)return;
+ const candidates=Array.from(dialog.querySelectorAll('button,input,select,textarea,a[href],summary,[tabindex]'))
+  .filter(el=>{
+   if(el.tabIndex<0||el.matches(':disabled')||el.closest('[hidden],[inert]')||!el.getClientRects().length)return false;
+   // Some browsers keep layout rects for descendants of collapsed details.
+   // Only its first direct summary (and that summary's children) is focusable.
+   for(let ancestor=el.parentElement;ancestor&&ancestor!==dialog;ancestor=ancestor.parentElement){
+    if(ancestor.tagName==='DETAILS'&&!ancestor.open){
+     const summary=Array.from(ancestor.children).find(child=>child.tagName==='SUMMARY');
+     if(!summary||(summary!==el&&!summary.contains(el)))return false;
+    }
+   }
+   return true;
+  });
+ // A radio group has one native Tab stop: its checked option, or its first
+ // available option when no choice is checked. Arrow keys remain native.
+ const stops=candidates.filter(el=>{
+  if(el.type!=='radio'||!el.name)return true;
+  const group=candidates.filter(other=>other.type==='radio'&&other.name===el.name&&other.form===el.form);
+  return el===(group.find(other=>other.checked)||group[0]);
+ });
+ const active=document.activeElement;
+ if(!stops.length){event.preventDefault();dialog.focus();return;}
+ if(!stops.includes(active)||(event.shiftKey?active===stops[0]:active===stops[stops.length-1])){
+  event.preventDefault();(event.shiftKey?stops[stops.length-1]:stops[0]).focus();
+ }
 }
 function closeSessionOptions() {document.getElementById('session-options')?.close();sessionOptionsClosed();}
 function sessionOptionsClosed() {sessionOptions.id=null;sessionOptions.kind=null;sessionOptions.signature='';}
 function chooseSessionPolicy(value) {
- sessionOptions.value=value;sessionOptions.confirmed=false;renderSessionOptions(true);
+ sessionOptions.value=value;sessionOptions.confirmed=false;sessionOptions.message='';renderSessionOptions(true);
  document.querySelector('#session-options input[name="policy"]:checked')?.focus({preventScroll:true});
 }
 function updatePolicyApply() {
@@ -67,7 +96,7 @@ function renderSessionOptions(force=false) {
  const data=interaction.byTask.get(id),cap=data?.capability;
  const signature=JSON.stringify([data?.connected,cap?.settings,cap?.policy,cap?.create,interactionBusy(id)]);
  const el=document.getElementById('session-options-body');if(!el)return;
- if(!force&&signature===sessionOptions.signature){const feedback=el.querySelector('.interaction-feedback');if(feedback)feedback.innerHTML=interactionFeedbackHtml(id);return;}
+ if(!force&&signature===sessionOptions.signature){const feedback=el.querySelector('.interaction-feedback');if(feedback)feedback.innerHTML=interactionFeedbackHtml(id,sessionOptions.kind==='settings'?'policy':'create');return;}
  const p=cap?.policy;
  if(sessionOptions.policyRevision!==p?.revision) {
   sessionOptions.changed=Boolean(sessionOptions.policyRevision);
@@ -80,6 +109,6 @@ function renderSessionOptions(force=false) {
  // updates do not recreate fields or steal the caret.
  const active=el.contains(document.activeElement)?document.activeElement:null;
  const focusId=active?.id,caret=active&&typeof active.selectionStart==='number'?[active.selectionStart,active.selectionEnd]:null;
- el.innerHTML=`<div class="options-heading"><div><small>${esc(harnessName(cap))}</small><h2 id="session-options-title">${title}</h2></div><button type="button" aria-label="关闭" onclick="closeSessionOptions()">×</button></div>${sessionOptions.changed&&sessionOptions.kind==='settings'?'<p class="settings-change" role="status">原应用状态已更新，请重新确认选择。</p>':''}${body}<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
+ el.innerHTML=`<div class="options-heading"><div><small>${esc(harnessName(cap))}</small><h2 id="session-options-title">${title}</h2></div><button type="button" aria-label="关闭" onclick="closeSessionOptions()">×</button></div>${sessionOptions.changed&&sessionOptions.kind==='settings'?'<p class="settings-change" role="status">原应用状态已更新，请重新确认选择。</p>':''}${body}<div class="options-error" role="alert">${esc(sessionOptions.message||'')}</div><div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id,sessionOptions.kind==='settings'?'policy':'create')}</div>`;
  if(focusId){const input=document.getElementById(focusId);input?.focus({preventScroll:true});if(input&&caret)input.setSelectionRange(...caret);}
 }

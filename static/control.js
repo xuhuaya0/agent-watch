@@ -63,12 +63,23 @@ function createdSessionHtml(id,receipt) {
  const target=source&&workspace.tasks.find(t=>(t.machine_id?`id:${t.machine_id}`:`name:${t.machine}`)===(source.machine_id?`id:${source.machine_id}`:`name:${source.machine}`) && t.tool===result.tool && (t.tool==='codex'?(t.extra?.thread_id||t.session_id):t.session_id)===result.session_id);
  return target?`<button type="button" onclick="selectSession(${jsArg(target.ui_key||target.key)})">打开新会话 →</button>`:`<p class="capture-note">目标会话 ID：${esc(result.session_id)} · 等待设备同步，可在原应用核实。</p>`;
 }
-function interactionFeedbackHtml(id) {
- const data=interaction.byTask.get(id),local=interaction.pending.get(id);
- const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.[0];
+function interactionFeedbackHtml(id,kind=null) {
+ const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
+ const local=pending&&(!kind||pending.action?.kind===kind)?pending:null;
+ const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>!kind||c.kind===kind);
  if(local?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
- return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
+ const actionKind=local?.action?.kind||latest?.kind;
+ const label=({reply:'回复',answer:'回答问题',approval:'单次审批',create:'新建会话',policy:'权限设置'})[actionKind]||'操作';
+ const when=latest?.created?' · '+new Date(latest.created*1000).toLocaleTimeString():'';
+ return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
+}
+function controlNotice(message,id=workspace.selected,kind=null) {
+ const dialog=document.getElementById('session-options');
+ if(typeof sessionOptions!=='undefined'&&dialog?.open&&sessionOptions.id===id&&
+    (!kind||kind===(sessionOptions.kind==='settings'?'policy':'create'))) {
+  sessionOptions.message=message;renderSessionOptions(true);
+ }else toast(message);
 }
 function interactionHtml(id) {
  const data=interaction.byTask.get(id),cap=data?.capability,draft=interactionDraft(id);
@@ -175,6 +186,7 @@ function newCommandId() {
 }
 async function submitNative(action) {
  const id=workspace.selected;if(!id||interaction.pending.has(id))return;
+ if(typeof sessionOptions!=='undefined'&&sessionOptions.id===id)sessionOptions.message='';
  const record={id:newCommandId(),action};interaction.pending.set(id,record);
  if(action.kind==='reply')interaction.outgoing.set(id,{id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,state:'sending',detail:''});
  renderInteraction(true);
@@ -183,7 +195,7 @@ async function submitNative(action) {
   const r=await apiFetch('/api/control/tasks/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(record)});
   if(r.status===401){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:'登录已失效，请重新登录'});showAuthView(false);return;}
   const data=await r.json();
-  if(!r.ok){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:data.error||'操作未接收'});toast(CONTROL_ERRORS[data.error]||'操作未接收，请检查原应用状态');}
+  if(!r.ok){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:data.error||'操作未接收'});controlNotice(CONTROL_ERRORS[data.error]||'操作未接收，请检查原应用状态',id,action.kind);}
   else {interaction.byTask.set(id,{...interaction.byTask.get(id),commands:[data.command]});updateOutgoing(id,data.command);}
  }catch(_){record.uncertain=true;updateOutgoing(id,{id:record.id,state:'unknown',detail:'未收到服务器回执，请勿重复发送'});}
  if(workspace.selected===id){renderInteraction(true);await refreshInteraction();if(interactionBusy(id))watchInteraction(id);}
@@ -202,19 +214,19 @@ function releaseUncertain(){const id=workspace.selected;if(interaction.pending.g
 
 function sendCreate(revision) {
  const id=workspace.selected,data=interaction.byTask.get(id),value=interactionDraft(id).createText;
- if(!data?.connected||data.capability?.create?.revision!==revision){toast(CONTROL_ERRORS.create_unavailable);return;}
- if(!value.trim()){toast('请输入新会话的首条消息');return;}
+ if(!data?.connected||data.capability?.create?.revision!==revision){controlNotice(CONTROL_ERRORS.create_unavailable);return;}
+ if(!value.trim()){controlNotice('请输入新会话的首条消息');return;}
  const project=data.capability.create.location==='native-project'?{project_id:data.capability.create.project_id}:{};
  return submitNative({kind:'create',revision,text:value,...project});
 }
 
 function sendPolicy(form,revision) {
  const data=interaction.byTask.get(workspace.selected),policy=data?.capability?.policy;
- if(!data?.connected||!policy||policy.revision!==revision){toast(CONTROL_ERRORS.policy_changed);return;}
- if(policy.scope==='project-permissions'&&!form.elements.confirmProject?.checked){toast('请先确认目标项目');return;}
+ if(!data?.connected||!policy||policy.revision!==revision){controlNotice(CONTROL_ERRORS.policy_changed);return;}
+ if(policy.scope==='project-permissions'&&!form.elements.confirmProject?.checked){controlNotice('请先确认目标项目');return;}
  const value=form.elements.policy.value;
- if(!policy.options.some(o=>o.value===value)){toast(CONTROL_ERRORS.invalid_policy);return;}
- if(value===policy.current){toast('已使用该权限选项');return;}
+ if(!policy.options.some(o=>o.value===value)){controlNotice(CONTROL_ERRORS.invalid_policy);return;}
+ if(value===policy.current){controlNotice('已使用该权限选项');return;}
  const project=policy.scope==='project-permissions'?{project_id:policy.project_id}:{};
  return submitNative({kind:'policy',revision,value,...project});
 }

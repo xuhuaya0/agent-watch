@@ -187,7 +187,7 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .settings-page .modal-foot { position: sticky; bottom: -38px; background: var(--surface); padding: 16px 0; margin-top: 28px; align-items: center; }
 .btn-pri { background: var(--accent); color: #fff; border-color: var(--accent); padding: 7px 16px; font-size: 13px; }
 .btn-pri:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-#settings-status { margin-right: auto; color: var(--success); font-size: 12px; }
+#settings-status { margin-right: auto; color: var(--mute); font-size: 12px; }
 #workspace-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #263b30; color: white; padding: 11px 20px; border-radius: 8px; font-size: 13px; z-index: 30; display: none; box-shadow: 0 4px 18px #203b2a26; }
 .auth-wrap { height: calc(100dvh - 60px); display: none; align-items: center; justify-content: center; padding: 24px; overflow: auto; }
 .auth-wrap.open { display: flex; }
@@ -329,3 +329,12 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
  .session-settings-summary { display: grid; gap: 8px; }
  .session-settings-summary button { justify-self: start; }
 }
+
+.options-error:not(:empty) { margin-top: 16px; padding: 10px 12px; border-radius: var(--radius); background: var(--danger-soft); color: var(--danger); font-size: 12px; }
+
+.settings-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+#settings-target { color: var(--mute); font-size: 12px; line-height: 1.7; }
+
+#settings-status[data-tone="error"] { color: var(--danger); }
+#settings-status[data-tone="warning"] { color: var(--warning); }
+#settings-status[data-tone="success"] { color: var(--success); }

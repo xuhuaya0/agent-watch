@@ -49,7 +49,10 @@ class ControlTests(unittest.TestCase):
         self.b.exchange('pc','worker',[cap()],[{'id':c['id'],'state':'delivered','detail':'原应用已接收'}])
         with self.b.db() as db:
             self.assertIsNone(db.execute('SELECT action FROM commands WHERE id=?',(c['id'],)).fetchone()[0])
-        self.assertEqual(self.b.status('pc','codex','s')['commands'][0]['state'],'delivered')
+        receipt = self.b.status('pc','codex','s')['commands'][0]
+        self.assertEqual(receipt['state'], 'delivered')
+        self.assertEqual(receipt['kind'], 'approval')
+        self.assertNotIn('action', receipt)
 
     def test_same_id_is_idempotent_and_changed_payload_conflicts(self):
         c=self.submit();self.assertEqual(self.submit(id=c['id']),c)

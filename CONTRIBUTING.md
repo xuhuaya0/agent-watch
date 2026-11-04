@@ -4,6 +4,12 @@ This is a public source repository. Local user data and deployment records belon
 outside it. Git stores author and committer identity in every commit; deleting a
 file in a later commit does not remove earlier versions.
 
+For web changes, first read [the design contract](FRONTEND_DESIGN.md), follow
+[the acceptance procedure](UI_ACCEPTANCE.md), and consult the current
+[audit register](UI_AUDIT.md). Use `python3 tools/preview_ui.py` for repeatable
+synthetic scenarios. Record which browser and native checks actually ran; do not
+substitute a passing unit-test count for visual or interaction review.
+
 Before your first commit, set a repository-local GitHub noreply identity and
 enable the checked-in hook:
 
