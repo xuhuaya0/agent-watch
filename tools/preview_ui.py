@@ -132,7 +132,7 @@ class Preview:
         notice = ('<aside style="position:fixed;right:8px;bottom:5px;z-index:20;background:#fff8dc;'
                   'color:#513c00;border:1px solid #d6c487;border-radius:4px;padding:3px 8px;font-size:11px;max-width:calc(100vw - 16px);box-sizing:border-box">'
                   '合成预览 · 不连接设备 · 不输入真实密码 · <a href="/__preview">切换场景</a></aside>')
-        return (STATIC/'index.html').read_text().replace('<title>Agent Watch</title>',
+        return (STATIC/'index.html').read_text(encoding='utf-8').replace('<title>Agent Watch</title>',
             '<title>Agent Watch — 合成预览</title>').replace('</body>',notice+'</body>')
 
     def route(self, method, target, body=None):
@@ -152,7 +152,7 @@ class Preview:
         if method == 'GET' and path.startswith('/static/'):
             file = (STATIC/path.removeprefix('/static/')).resolve()
             if file.parent == STATIC and file.suffix in ('.js','.css') and file.is_file():
-                return 200, 'text/javascript' if file.suffix == '.js' else 'text/css', file.read_text()
+                return 200, 'text/javascript' if file.suffix == '.js' else 'text/css', file.read_text(encoding='utf-8')
             return 404, 'application/json', {'error':'not_found'}
         if path == '/api/auth/status' and method == 'GET':
             if self.scenario == 'auth_failure':return 503, 'application/json', {'error':'demo_auth_unavailable'}

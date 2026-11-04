@@ -16,6 +16,7 @@ class PreviewTests(unittest.TestCase):
             status,kind,page = fixture.route('GET','/?scenario='+scenario)
             self.assertEqual((status,kind),(200,'text/html'))
             self.assertIn('/static/workspace.js',page)
+            self.assertIn('管理员登录',page)
             self.assertIn('合成预览',page)
         fixture.select('normal')
         data = fixture.route('GET','/api/tasks?all=1')[2]
