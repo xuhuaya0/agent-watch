@@ -7,6 +7,7 @@
     "scope": "selected",
     "native_questions": false,
     "native_approvals": false,
+    "native_project_permissions": false,
     "data_root": "~/.gemini/antigravity",
     "session_ids": []
   }

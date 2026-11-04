@@ -44,11 +44,14 @@ class NativeInteractions:
         self.rpc = rpc
         self.approvals = approvals
 
-    def inspect(self, sid):
+    def inspect(self, sid, *, context=None):
         meta = self.rpc.call('GetConversationMetadata', {'conversationId':sid})
         result = self.rpc.call('GetCascadeTrajectory', {'cascadeId':sid, 'disableRehydration':True})
         if not isinstance(meta,dict) or not isinstance(result,dict):
             raise ControlError('native_session_unavailable')
+        if context is not None:
+            metadata = meta.get('metadata')
+            context['project_id'] = metadata.get('projectId') if isinstance(metadata,dict) else None
         trajectory = result.get('trajectory', {})
         if not isinstance(trajectory,dict):
             raise ControlError('native_session_unavailable')

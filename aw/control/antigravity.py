@@ -12,7 +12,7 @@ from .broker import ControlError
 
 
 class Antigravity:
-    def __init__(self, executable, session_ids, run=subprocess.run, environ=None, background=False, interactions=None, history=None):
+    def __init__(self, executable, session_ids, run=subprocess.run, environ=None, background=False, interactions=None, history=None, project_permissions=None, creation=None):
         self.executable = str(Path(executable).expanduser().resolve())
         if Path(self.executable).suffix.lower() in ('.bat','.cmd','.ps1'):
             raise ValueError('Use the native language_server executable, not a shell wrapper')
@@ -20,6 +20,8 @@ class Antigravity:
         self.environ = dict(os.environ if environ is None else environ)
         self.background = background
         self.interactions = interactions
+        self.project_permissions = project_permissions
+        self.creation = creation
         self.history = history
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -67,12 +69,26 @@ class Antigravity:
         """Fresh native check for ONE target immediately before dispatch."""
         if sid not in self.session_ids():
             return []
+        context = {}
         if self.interactions is not None:
-            row, _ = self.interactions.inspect(sid)
-            return [row]
-        self.invoke('get-conversation-metadata', sid)
-        return [{'tool':'antigravity','session_id':sid,'reply':True,'requests':[],
-                 'reason':'文字消息以 Agent Watch 系统通知发送；此原生接口尚不支持回答选项或批准执行'}]
+            row, _ = self.interactions.inspect(sid, context=context)
+        else:
+            metadata = self.invoke('get-conversation-metadata', sid) or {}
+            body = metadata.get('response', metadata)
+            if isinstance(body, dict):
+                native_metadata = body.get('metadata')
+                context['project_id'] = native_metadata.get('projectId') if isinstance(native_metadata,dict) else None
+            row = {'tool':'antigravity', 'session_id':sid, 'reply':True, 'requests':[],
+                   'reason':'文字消息以 Agent Watch 系统通知发送；此原生接口尚不支持回答选项或批准执行'}
+        create = self.creation.capability(sid, context.get('project_id')) if self.creation else None
+        if (self.project_permissions and self.session_ids.allows_project_permissions()
+                and row['reply'] and not row.get('requests')):
+            policy = self.project_permissions.capability(sid, context.get('project_id'))
+            if policy:
+                row['policy'] = policy
+        if create:
+            row['create'] = create
+        return [row]
 
     def _refresh(self):
         # Slow/missing native sessions cannot block heartbeats and receipts.
@@ -100,7 +116,9 @@ class Antigravity:
                     checked[sid] = time.monotonic()
                     try:
                         rows = future.result()
-                    except (ControlError, subprocess.TimeoutExpired, OSError):
+                    except Exception:
+                        # Isolate malformed or newly introduced native payloads
+                        # to this session; never kill discovery for every chat.
                         rows = []
                     with self._lock:
                         if rows:
@@ -136,6 +154,17 @@ class Antigravity:
     def execute(self, command):
         if command['session_id'] not in self.session_ids():
             raise ControlError('native_session_unavailable')
+        if command['action']['kind'] == 'create':
+            if self.creation is None:
+                raise ControlError('native_action_unsupported')
+            return self.creation.execute(self, command)
+        if command['action']['kind'] == 'policy':
+            if not self.project_permissions or not self.session_ids.allows_project_permissions():
+                raise ControlError('policy_changed')
+            def authorized():
+                return (self.session_ids.allows_project_permissions()
+                        and command['session_id'] in self.session_ids())
+            return self.project_permissions.execute(command['session_id'], command['action'], self.session_snapshot, authorized)
         if command['action']['kind'] != 'reply':
             if self.interactions is not None:
                 return self.interactions.execute(command['session_id'],command['action'])

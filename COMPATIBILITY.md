@@ -1,6 +1,6 @@
 # Compatibility and acceptance matrix
 
-Updated: 2026-11-03. This is a record of observed support, not a promise that
+Updated: 2026-11-04. This is a record of observed support, not a promise that
 every desktop release implements the same protocol. A passing CI test exercises
 fixtures and simulated transports; it is not native application acceptance.
 
@@ -52,10 +52,10 @@ operation succeeded.
 
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
-| New conversation | DeepSeek: create in the selected session's directory, using native defaults, for all-session profiles. Device/Harness/directory visible before submission; destination receipt links after collection. Verified through the Windows provider; browser submission remains pending | Codex and Antigravity creation still need a validated native entry point. No arbitrary directory, project membership copy or second engine |
-| Permission-policy changes | Codex: idle session only, next-turn approval policy on-request / never, with native read-back; sandbox and reviewer untouched. Verified on the current macOS desktop; Windows and other installations pending | DeepSeek: native session permission presets implemented, including sandbox and approval changes; catalog, command ownership and write-and-restore verified on Windows; browser acceptance pending. Antigravity and full Codex profile switches still need validation. No project/global policy writes |
+| New conversation | DeepSeek creates in the selected directory. Antigravity creates in the selected native project, retaining only the source model choice. Both Windows provider paths verified. Codex macOS opens a prefilled native draft requiring user submission | Full Codex creation is implemented for an existing shared app-server but native acceptance is pending. No arbitrary directory, permission copy or second engine. See transport-specific evidence below |
+| Permission-policy changes | Codex changes an idle session's next-turn on-request / never policy, preserving sandbox and reviewer. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex and DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching has regression coverage but needs native acceptance. Full Codex profiles and global settings are not exposed |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
-| Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | Validate a native `USER_INPUT` submission path before claiming equivalent user-message behavior |
+| Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | The new-conversation first turn uses native user input; existing-chat user-style reply dispatch still needs separate validation |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
 | Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; Hub history delivery verified; archived-session revocation and browser rendering still need acceptance. Attachments remain placeholders |
 
@@ -90,7 +90,7 @@ passing named-pipe CI tests.
 
 ## Next native acceptance opportunities
 
-1. Windows Codex: record native version, inspect available transport, verify list,
+1. Windows Codex (deferred): record native version, inspect available transport, verify list,
    history and archives first. Only offer control after original-session ownership
    and reply delivery have been established.
 2. Second Mac: separately verify collector identity, remote Hub routing, loaded
@@ -140,3 +140,114 @@ test assistant reply through the same API. Reads completed in approximately
 1.2–2.3 seconds per page. Both native workers reconnected after a Hub restart.
 This verifies normal login, API routing and history delivery; it does not claim
 browser rendering or another native permission/create action was exercised.
+
+### Codex new-conversation transports
+
+The macOS desktop connection exposes **Open a draft in Codex**, not an automatic
+send action. For an all-session profile, the worker uses a visible, unarchived
+native conversation to select its existing directory. The native `codex:` route
+opens the new-chat composer with the supplied prompt. The user must submit it
+in Codex before a persistent conversation and model response exist. Codex may
+select or register its native project for that directory; Agent Watch does not
+copy another conversation's settings or project membership.
+
+The supported desktop builds are 26.1027.61615 (24141) and 26.1029.61003
+(24614). Their installed route handlers were inspected: `threads/new` navigates
+to the composer with `prefillPrompt`; it does not invoke `thread/start` or
+`turn/start`. Their external desktop IPC has no new-conversation method. The
+bundled `app` command opens a workspace, and `queue` requires an existing
+conversation. Agent Watch verifies the installed build and native app signature,
+then uses LaunchServices with the explicit app bundle. The prompt is not passed
+through a shell, process command line or default URL handler. Unrecognized builds
+do not advertise this draft capability until their route has been checked.
+Polling caches signature verification against the app bundle, manifest,
+executable, signature resources and route archive file identities. An app update
+invalidates that cache and withdraws an unsupported capability without a worker
+restart; dispatch always repeats full signature verification.
+
+On 2026-11-03 and 2026-11-04, a fixed draft in a dedicated test directory was
+dispatched successfully to builds 24141 and 24614 respectively. No Send action
+was performed, and the native catalog gained no conversation in that directory.
+This verifies signature checking and native OS dispatch, not rendered composer
+content: the narrow accessibility read did not expose the focused element.
+The receipt is `draft_opened`, never `delivered` or a fabricated conversation ID.
+
+The **existing shared app-server** adapter implements full creation separately:
+`thread/start`, then `turn/start` on the returned native ID, followed by identity
+and directory read-back. It uses native defaults without model, sandbox or
+approval-policy overrides. The current bundled CLI schemas confirm these request
+fields, and regression tests cover uncertain sends, changed scope, archive
+revocation and subsequent control of the created conversation. These are schema
+and simulated-transport checks, not native shared-server acceptance: the inspected
+Mac has no existing shared control socket. Agent Watch does not start a second
+engine or move the desktop to a different transport. Windows Codex creation and
+second-installation acceptance remain deferred.
+
+### Antigravity project permission presets
+
+The adapter uses the native project picker semantics, not a per-conversation or
+application-wide setting. It requires all-session control scope and the separate
+`native_project_permissions` opt-in. A change applies to every conversation in
+the named project, including other conversations that may be running. A session
+whose connection reports a pending interaction does not offer this control; reply availability alone
+is not a guarantee that the session or the whole project is idle.
+
+The device reads the complete native project, checks conversation membership,
+local backend and archive state, and binds the displayed choice to the project
+ID and a revision of that snapshot. It rechecks native administrator controls,
+sandbox availability and Auto feature availability before writing. Managed
+installations conservatively expose inheritance only. Unknown or unavailable
+native state disables this optional capability without disabling replies.
+
+The native API accepts a complete `UpdateProject` object, with no field mask or
+atomic compare-and-set. The adapter preserves unrelated fields, changes only the
+four fields used by the native permission picker, submits once, and reads back
+both the selected preset and unrelated fields before reporting success. It does
+not write global settings. A missing acknowledgement or unexpected readback is
+reported as unknown and never retried automatically. Rechecking a revision
+reduces stale edits but cannot eliminate a simultaneous native project edit
+between read and write; concurrent-client behavior still needs acceptance.
+
+On 2026-11-04, a dedicated project on Antigravity 2.28.2.0 for Windows was
+verified through its native-managed sidecar. `ReadProject` omitted the legacy
+conversation list, while `GetConversationMetadata.projectId` confirmed ownership;
+the adapter now uses that metadata as the membership authority. Native capability
+discovery identified Request Review as current and exposed the five supported
+project choices. With the dedicated session confirmed idle by native status,
+a single same-value `UpdateProject` was acknowledged and read back as Request
+Review. All four permission fields, unrelated returned project fields and the
+native project file were preserved, apart from any update timestamp. This proves
+native project write acknowledgement and preservation, not a preset transition.
+The inherited global preset differed, so inheritance was not selected and no
+global settings were changed. Cross-preset transitions, browser submission and
+other platforms remain unverified; fixture tests cover preset changes and
+restoration without claiming native acceptance for those combinations.
+
+### Antigravity new conversations
+
+An all-session control profile can create a native conversation in the selected
+conversation's existing local project. This uses the native `StartCascade` RPC
+with that project's default environment, then verifies the new ID and native
+project membership before sending `SendUserCascadeMessage`. It does not require
+questions or project-permission editing to be enabled. The sidecar's own project
+binding does not restrict the destination project.
+
+The first turn inherits only the source conversation's latest native `planModel`
+selection. For native API conversations without an explicit user configuration,
+its native static model selection is used. Tool configuration, profiles, static
+execution policies and permission grants are never copied. The native project's
+settings remain authoritative. Unsupported custom model aliases, unknown models,
+archived projects, remote/cloud projects and selected-session profiles do not
+advertise creation. Project settings, resources, source scope and model choice
+are rechecked before creation and again before the first message. An uncertain
+operation retains its allocated destination ID and is never retried automatically.
+
+On 2026-11-04, the product creation adapter was exercised through an
+Antigravity-managed sidecar on Windows 2.28.2.0. It created a conversation in a
+dedicated test project different from the sidecar's own project, submitted the
+fixed test message, and observed both native user input and the matching assistant
+reply with no error step. Native membership and the unchanged project object were
+verified. An earlier probe established that omitting the model yields a native
+execution error despite a successful send acknowledgement, so model discovery
+is a required capability check. This verifies provider execution and native
+results, not browser submission or another OS/version.

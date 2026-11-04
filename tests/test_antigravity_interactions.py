@@ -77,6 +77,17 @@ class NativeQuestionTests(unittest.TestCase):
         self.provider.execute(SID,self.action(['Blue','Green']))
         self.assertEqual(self.rpc.writes[-1]['interaction']['askQuestion']['responses'][0]['selectedOptionIds'],['1','2'])
 
+    def test_malformed_optional_project_metadata_preserves_question_controls(self):
+        original=self.rpc.call
+        for metadata in (None,[],['unexpected'],42,True,'unexpected'):
+            with self.subTest(metadata=metadata):
+                self.rpc.call=lambda method,body: {'trajectoryId':TID,'metadata':metadata} if method=='GetConversationMetadata' else original(method,body)
+                context={}
+                row,_=self.provider.inspect(SID,context=context)
+                self.assertIsNone(context['project_id'])
+                self.assertEqual(len(row['requests']),1)
+        self.rpc.call=original
+
 
 class NativeApprovalTests(unittest.TestCase):
     def setUp(self):

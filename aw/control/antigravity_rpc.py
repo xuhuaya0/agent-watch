@@ -1,7 +1,7 @@
 """Bounded JSON RPC transport for an Antigravity-managed loopback context.
 
-This module is not enabled by the worker until the installed protocol is verified.
-It never searches for credentials, changes native permissions or launches an engine.
+Only verified native methods are available; callers enforce action scope and
+authorization. This transport never searches for credentials or launches an engine.
 """
 import json
 import logging
@@ -13,8 +13,9 @@ from .worker import NoRedirect
 
 
 class NativeRpc:
-    READ_METHODS = frozenset({'GetConversationMetadata', 'GetCascadeTrajectory'})
-    WRITE_METHODS = frozenset({'HandleCascadeUserInteraction'})
+    READ_METHODS = frozenset({'GetConversationMetadata', 'GetCascadeTrajectory', 'ReadProject',
+                              'FetchAdminControls', 'GetServerConfiguration', 'GetMendelFlags'})
+    WRITE_METHODS = frozenset({'HandleCascadeUserInteraction', 'UpdateProject', 'StartCascade', 'SendUserCascadeMessage'})
 
     def __init__(self, environ, opener=None):
         address = environ.get('ANTIGRAVITY_LS_ADDRESS', '')

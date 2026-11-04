@@ -16,6 +16,7 @@ from aw.control.lock import WorkerLock
 from aw.control.sessions import SessionScope, CodexScope
 from aw.control.antigravity_rpc import NativeRpc
 from aw.control.antigravity_interactions import NativeInteractions
+from aw.control.broker import ControlError
 
 
 def main():
@@ -37,16 +38,34 @@ def main():
         interactions=NativeInteractions(NativeRpc(os.environ), approvals=ag.get('native_approvals') is True) if ag.get('native_questions') is True else None
         scope = SessionScope(path)
         history = AntigravityHistory(ag.get('data_root', '~/.gemini/antigravity'), scope)
-        providers['antigravity']=Antigravity(ag['executable'], scope, background=not args.once, interactions=interactions, history=history)
+        rpc = interactions.rpc if interactions else None
+        if rpc is None:
+            try:
+                rpc = NativeRpc(os.environ)
+            except ControlError:
+                pass
+        creation = None
+        if rpc is not None:
+            from aw.control.antigravity_create import ProjectCreation
+            creation = ProjectCreation(rpc, path)
+        project_permissions = None
+        if scope.allows_project_permissions() and rpc is not None:
+            from aw.control.antigravity_policy import ProjectPermissions
+            project_permissions = ProjectPermissions(rpc)
+        providers['antigravity']=Antigravity(ag['executable'], scope, background=not args.once, interactions=interactions, history=history,
+                                            project_permissions=project_permissions, creation=creation)
     if 'codex' in cfg:
         cx=cfg['codex']
         if cx.get('transport') == 'desktop-ipc':
             scope=CodexScope(path)
             history=CodexHistory(cx.get('data_root', '~/.codex'), scope)
-            providers['codex']=CodexDesktop(cx['socket_path'],scope,background=not args.once,history=history,queue_sender=native_queue_sender(history.root, cx.get('executable')))
+            from aw.control.codex_create import DesktopDraft, desktop_draft_app
+            app = desktop_draft_app()
+            providers['codex']=CodexDesktop(cx['socket_path'],scope,background=not args.once,history=history,queue_sender=native_queue_sender(history.root, cx.get('executable')),
+                                           draft=DesktopDraft(app) if app else None)
             if args.once:providers['codex'].refresh()
         else:
-            providers['codex']=Codex(cx['executable'],cx['socket_path'],cx['session_ids'])
+            providers['codex']=Codex(cx['executable'],cx['socket_path'],CodexScope(path))
     if 'dsh' in cfg:
         providers['dsh']=DeepSeek(cfg['dsh'],background=not args.once)
         if args.once:providers['dsh'].refresh()

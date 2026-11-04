@@ -7,7 +7,7 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
-from .broker import normalize_sessions, validate_action, ControlError
+from .broker import normalize_sessions, validate_action, valid_created_session, ControlError
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -111,19 +111,26 @@ class Worker:
             validate_action(current, command['action'])
             result = provider.execute(command)
             if result == 'policy_updated' and command['action']['kind'] == 'policy':
-                detail = ('原应用已确认此会话的权限预设（沙盒与审批设置）；新会话默认值未修改'
-                          if command['tool'] == 'dsh' else
-                          '原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值')
+                detail = {
+                    'codex': '原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值',
+                    'dsh': '原应用已确认此会话的权限预设（沙盒与审批设置）；新会话默认值未修改',
+                    'antigravity': '原应用已确认目标项目的权限设置，该项目中的会话共用此设置',
+                }[command['tool']]
                 receipt.update(state='resolved', detail=detail)
                 self.save()
                 return True
-            if isinstance(result, dict) and command['tool'] == 'dsh' and command['action']['kind'] == 'create':
+            if (result == 'draft_opened' and command['tool'] == 'codex'
+                    and command['action']['kind'] == 'create' and current['create'].get('mode') == 'draft'):
+                receipt.update(state='resolved', detail='已请求 Codex 打开新会话草稿，请在原应用确认并发送')
+                self.save()
+                return True
+            if isinstance(result, dict) and command['action']['kind'] == 'create':
                 sid = result.get('created_session_id', '')
                 if (set(result) != {'state', 'created_session_id'} or not isinstance(sid, str)
-                        or not sid.startswith('session-') or str(uuid.UUID(sid[8:])) != sid[8:]
+                        or not valid_created_session(command['tool'], sid) or sid == command['session_id']
                         or result['state'] not in ('delivered', 'unknown')):
                     raise ValueError('invalid creation receipt')
-                receipt.update(state=result['state'], result={'tool':'dsh', 'session_id':sid},
+                receipt.update(state=result['state'], result={'tool':command['tool'], 'session_id':sid},
                     detail='新会话已创建，首条消息已接收；不代表 Agent 已完成执行' if result['state']=='delivered'
                     else '创建或首条消息送达情况待确认；请按目标会话 ID 检查原应用，勿重复新建')
                 self.save()

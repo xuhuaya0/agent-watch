@@ -60,7 +60,7 @@ function updateOutgoing(id,receipt) {
 function createdSessionHtml(id,receipt) {
  const result=receipt?.result;if(!result)return '';
  const source=workspace.tasks?.find(t=>(t.ui_key||t.key)===id);
- const target=source&&workspace.tasks.find(t=>(t.machine_id?`id:${t.machine_id}`:`name:${t.machine}`)===(source.machine_id?`id:${source.machine_id}`:`name:${source.machine}`) && t.tool===result.tool && t.session_id===result.session_id);
+ const target=source&&workspace.tasks.find(t=>(t.machine_id?`id:${t.machine_id}`:`name:${t.machine}`)===(source.machine_id?`id:${source.machine_id}`:`name:${source.machine}`) && t.tool===result.tool && (t.tool==='codex'?(t.extra?.thread_id||t.session_id):t.session_id)===result.session_id);
  return target?`<button type="button" onclick="selectSession(${jsArg(target.ui_key||target.key)})">打开新会话 →</button>`:`<p class="capture-note">目标会话 ID：${esc(result.session_id)} · 等待设备同步，可在原应用核实。</p>`;
 }
 function interactionFeedbackHtml(id) {
@@ -69,6 +69,31 @@ function interactionFeedbackHtml(id) {
  if(local?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
  return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
+}
+function policyForm(policy,disabled) {
+ const project=policy.scope==='project-permissions', presets=policy.scope==='session-permissions';
+ const target=project?esc(policy.project_name||policy.project_id):'';
+ const title=project?'项目权限':presets?'会话权限预设':'审批策略';
+ const note=project?`应用到项目「${target}」，影响该项目中的会话。`:
+   presets?'仅此会话 · 同时切换沙盒与审批设置；不修改新会话默认值':'仅此会话的后续轮次 · 不改变沙盒权限或审批者';
+ const missing=!policy.options.some(option=>option.value===policy.current);
+ const currentLabel=policy.current==='custom'?'自定义组合':esc(policy.current);
+ const custom=missing?`<option value="${esc(policy.current)}" selected disabled>当前：${currentLabel}</option>`:'';
+ const choices=policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===policy.current?' selected':''}>${esc(o.label)}</option>`).join('');
+ const descriptions=policy.options.filter(o=>o.description).map(o=>`<p class="capture-note">${esc(o.label)}：${esc(o.description)}</p>`).join('');
+ const confirmation=project?`<label><input type="checkbox" name="confirmProject" required> 确认更改项目「${target}」的权限</label>`:'';
+ return `<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(policy.revision)})"><label for="native-policy">${title}</label><p class="capture-note">${note}</p><select id="native-policy" name="policy"${disabled}>${custom}${choices}</select>${descriptions}${confirmation}<button type="submit"${disabled}>${project?'应用到整个项目':'应用到此会话'}</button></form>`;
+}
+function creationForm(cap,draft,disabled) {
+ const harness=({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap.tool||workspace.detail?.tool]||'Harness';
+ const create=cap.create, openDraft=create.mode==='draft';
+ const destination=create.location==='native-project'
+   ? `目标项目：${esc(create.project_name||create.project_id)}`
+   : `工作目录：${esc(create.cwd)}`;
+ const title=openDraft?'在 Codex 打开新会话草稿':`新建 ${harness} 会话`;
+ const description=openDraft?'在这台 Mac 的 Codex 窗口中预填内容，按发送后创建会话。':
+   create.location==='native-project'?'沿用当前会话的模型，权限使用目标项目设置。':'使用原应用默认模型与权限，新会话会在此位置接收首条消息。';
+ return `<details class="new-session"><summary>${title}</summary><form class="reply-composer" onsubmit="event.preventDefault();sendCreate(${jsArg(create.revision)})"><p class="capture-note">设备：${esc(workspace.detail?.machine||'当前设备')} · ${harness}<br>${destination}<br>${description}</p><label for="native-create">新会话的首条消息</label><textarea id="native-create" rows="3" maxlength="16000" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><button class="primary"${disabled}>${openDraft?'在 Codex 打开草稿':'新建并发送'}</button></form></details>`;
 }
 function interactionHtml(id) {
  const data=interaction.byTask.get(id),cap=data?.capability,draft=interactionDraft(id);
@@ -95,12 +120,8 @@ function interactionHtml(id) {
    body+='</form>';
   }
   if(cap.reply)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()"><label for="native-reply">回复原会话</label><textarea id="native-reply" rows="3" maxlength="16000" placeholder="给这个会话发送后续消息…" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea><div class="composer-footer"><span>发送到上方标明的设备与 Harness</span><button class="primary"${disabled}>发送</button></div></form>`;
-  if(cap.policy){
-    const presets=cap.policy.scope==='session-permissions';
-    const custom=presets&&cap.policy.current==='custom';
-    body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(cap.policy.revision)})"><label for="native-policy">${presets?'会话权限预设':'审批策略'}</label><p class="capture-note">${presets?'仅此会话 · 同时切换沙盒与审批设置；不修改新会话默认值':'仅此会话的后续轮次 · 不改变沙盒权限或审批者'}</p><select id="native-policy" name="policy"${disabled}>${custom?'<option value="custom" selected disabled>当前：自定义组合</option>':''}${cap.policy.options.map(o=>`<option value="${esc(o.value)}"${o.value===cap.policy.current?' selected':''}>${esc(o.label)}</option>`).join('')}</select>${presets?cap.policy.options.map(o=>`<p class="capture-note">${esc(o.label)}${o.description?'：'+esc(o.description):''}</p>`).join(''):''}<button type="submit"${disabled}>应用到此会话</button></form>`;
-  }
-  if(cap.create)body+=`<details class="new-session"><summary>新建 DeepSeek 会话</summary><form class="reply-composer" onsubmit="event.preventDefault();sendCreate(${jsArg(cap.create.revision)})"><p class="capture-note">设备：${esc(workspace.detail?.machine||'当前设备')} · DeepSeek Harness<br>工作目录：${esc(cap.create.cwd)}<br>使用原应用默认 Agent 与权限配置。</p><label for="native-create">新会话的首条消息</label><textarea id="native-create" rows="3" maxlength="16000" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><button class="primary"${disabled}>新建并发送</button></form></details>`;
+  if(cap.policy)body+=policyForm(cap.policy,disabled);
+  if(cap.create)body+=creationForm(cap,draft,disabled);
   if(cap.reason)body+=`<p class="capture-note">${esc(cap.reason)}</p>`;
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
  return body+`<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
@@ -205,14 +226,17 @@ function sendCreate(revision) {
  const id=workspace.selected,data=interaction.byTask.get(id),value=interactionDraft(id).createText;
  if(!data?.connected||data.capability?.create?.revision!==revision){toast(CONTROL_ERRORS.create_unavailable);return;}
  if(!value.trim()){toast('请输入新会话的首条消息');return;}
- return submitNative({kind:'create',revision,text:value});
+ const project=data.capability.create.location==='native-project'?{project_id:data.capability.create.project_id}:{};
+ return submitNative({kind:'create',revision,text:value,...project});
 }
 
 function sendPolicy(form,revision) {
  const data=interaction.byTask.get(workspace.selected),policy=data?.capability?.policy;
  if(!data?.connected||!policy||policy.revision!==revision){toast(CONTROL_ERRORS.policy_changed);return;}
+ if(policy.scope==='project-permissions'&&!form.elements.confirmProject?.checked){toast('请先确认目标项目');return;}
  const value=form.elements.policy.value;
  if(!policy.options.some(o=>o.value===value)){toast(CONTROL_ERRORS.invalid_policy);return;}
  if(value===policy.current){toast('已使用该权限选项');return;}
- return submitNative({kind:'policy',revision,value});
+ const project=policy.scope==='project-permissions'?{project_id:policy.project_id}:{};
+ return submitNative({kind:'policy',revision,value,...project});
 }

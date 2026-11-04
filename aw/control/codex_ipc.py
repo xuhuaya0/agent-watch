@@ -201,11 +201,12 @@ def patch_requests(requests, patches):
 
 
 class CodexDesktop:
-    def __init__(self, socket_path, scope, rpc_factory=DesktopRpc, background=True, history=None, queue_sender=None):
+    def __init__(self, socket_path, scope, rpc_factory=DesktopRpc, background=True, history=None, queue_sender=None, draft=None):
         self.socket_path, self.scope, self.rpc_factory = socket_path, scope, rpc_factory
         self.rpc = None
         self.history_reader = history
         self.queue_sender = queue_sender
+        self.draft = draft
         self.states, self.owners = {}, {}
         self.next_probe = {}
         self.owner_checked = {}
@@ -356,7 +357,18 @@ class CodexDesktop:
             present = {r['session_id'] for r in out}
             if self.history_reader:
                 out.extend(self.cold_row(sid) for sid in ids - present)
-            return out
+            return self._with_creation(out)
+
+    def _with_creation(self, rows):
+        if self.draft and rows and self.draft.available():
+            from .codex_create import capability
+            directories = self.scope.creation_directories()
+            for row in rows:
+                sid = row['session_id']
+                cap = capability(sid, directories.get(sid), 'draft')
+                if cap:
+                    row['create'] = cap
+        return rows
 
     def cold_row(self, sid):
         return {'tool': 'codex', 'session_id': sid, 'history': True,
@@ -378,7 +390,7 @@ class CodexDesktop:
                 with self.condition:
                     self.owners.pop(sid, None)
                     self.states.pop(sid, None)
-                return [self.cold_row(sid)]
+                return self._with_creation([self.cold_row(sid)])
             raise
         owner = response['handledByClientId']
         with self.condition:
@@ -389,7 +401,7 @@ class CodexDesktop:
             if sid not in self.states:
                 self.rpc.follow(sid, owner)
                 self.condition.wait_for(lambda: sid in self.states or not self.rpc.connected, timeout=15)
-            return [self.row(sid, self.states[sid])] if sid in self.states else []
+            return self._with_creation([self.row(sid, self.states[sid])]) if sid in self.states else []
 
     def execute(self, command):
         sid, action = command['session_id'], command['action']
@@ -399,6 +411,10 @@ class CodexDesktop:
         if not rows:
             raise ControlError('native_session_unavailable')
         validate_action(rows[0], action)
+        if action['kind'] == 'create':
+            if not self.draft:
+                raise ControlError('create_unavailable')
+            return self.draft.execute(self.scope, command)
         if sid not in self.states:
             if action['kind'] != 'reply':
                 raise ControlError('request_expired')

@@ -18,6 +18,13 @@ class SessionScope:
     def __init__(self, config_path):
         self.config_path = Path(config_path)
 
+    def allows_project_permissions(self):
+        try:
+            settings = json.loads(self.config_path.read_text(encoding='utf-8'))['antigravity']
+            return settings.get('scope') == 'all' and settings.get('native_project_permissions') is True
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+
     def __call__(self):
         # Re-read just the scope: changing a Hub or token still requires a new
         # worker binding. Invalid/partially written config fails closed.
@@ -56,14 +63,21 @@ class CodexScope:
         self.config_path = Path(config_path)
 
     def __call__(self):
+        return list(self._catalog())
+
+    def creation_directories(self):
+        return self._catalog(all_only=True)
+
+    def _catalog(self, all_only=False):
         try:
             config = json.loads(self.config_path.read_text(encoding='utf-8'))['codex']
             mode = config.get('scope', 'selected')
-            if mode == 'selected':
+            if mode == 'selected' and not all_only:
                 ids = config.get('session_ids', [])
-                return list(dict.fromkeys(ids)) if isinstance(ids, list) and all(canonical_id(s) for s in ids) else []
+                if isinstance(ids, list) and all(canonical_id(s) for s in ids):
+                    return dict.fromkeys(ids)
             if mode != 'all':
-                return []
+                return {}
             root = Path(config.get('data_root', '~/.codex')).expanduser().resolve()
             paths = sorted(root.glob('state_*.sqlite'), key=lambda p: int(p.stem.split('_')[-1]), reverse=True)
             for path in paths:
@@ -72,9 +86,10 @@ class CodexScope:
                     if not {'id', 'source', 'archived', 'updated_at'} <= columns:
                         continue
                     kind = 'thread_source' if 'thread_source' in columns else 'NULL'
-                    rows = db.execute(f'SELECT id,source,{kind} FROM threads WHERE archived=0 ORDER BY updated_at DESC')
-                    result = []
-                    for sid, source, thread_source in rows:
+                    cwd = 'cwd' if 'cwd' in columns else 'NULL'
+                    rows = db.execute(f'SELECT id,source,{kind},{cwd} FROM threads WHERE archived=0 ORDER BY updated_at DESC')
+                    result = {}
+                    for sid, source, thread_source, directory in rows:
                         try:
                             source = json.loads(source)
                         except (ValueError, TypeError):
@@ -86,8 +101,8 @@ class CodexScope:
                         if source not in ('vscode', 'desktop') and thread_source != 'user':
                             continue
                         if canonical_id(sid) and not (isinstance(source, dict) and 'subagent' in source):
-                            result.append(sid)
+                            result[sid] = directory
                     return result
         except (OSError, ValueError, KeyError, TypeError, AttributeError, sqlite3.Error):
             pass
-        return []
+        return {}

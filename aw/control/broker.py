@@ -31,6 +31,32 @@ def text(value, limit=200):
     return isinstance(value, str) and 0 < len(value) <= limit and '\x00' not in value
 
 
+def valid_created_session(tool, sid):
+    if tool not in ('dsh', 'codex', 'antigravity') or not isinstance(sid, str):
+        return False
+    if tool == 'dsh' and not sid.startswith('session-'):
+        return False
+    value = sid[8:] if tool == 'dsh' else sid
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def valid_create_capability(tool, value):
+    if not isinstance(value, dict) or not text(value.get('revision')):
+        return False
+    if tool == 'antigravity':
+        keys = {'location', 'project_id', 'revision'}
+        return (keys <= value.keys() <= keys | {'project_name', 'model_name'}
+                and value['location'] == 'native-project' and text(value['project_id'])
+                and ('project_name' not in value or text(value['project_name'], 500))
+                and ('model_name' not in value or text(value['model_name'], 200)))
+    if tool == 'codex' and value.get('mode') == 'draft':
+        return set(value) == {'cwd', 'revision', 'mode'} and text(value['cwd'], 2000)
+    return tool in ('codex', 'dsh') and set(value) == {'cwd', 'revision'} and text(value['cwd'], 2000)
+
+
 def normalize_sessions(rows):
     if not isinstance(rows, list) or len(rows) > 2000:
         raise ControlError('invalid_sessions', 400)
@@ -51,16 +77,17 @@ def normalize_sessions(rows):
             clean['history'] = row['history']
         if 'create' in row:
             create = row['create']
-            if (row['tool'] != 'dsh' or not isinstance(create, dict)
-                    or set(create) != {'cwd', 'revision'}
-                    or not text(create.get('cwd'), 2000) or not text(create.get('revision'))):
+            if not valid_create_capability(row['tool'], create):
                 raise ControlError('invalid_create_capability', 400)
             clean['create'] = dict(create)
         if 'policy' in row:
             from .codex_policy import OPTIONS
             from .dsh_permissions import valid_capability
             policy = row['policy']
-            if row['tool'] == 'dsh':
+            if row['tool'] == 'antigravity':
+                from .antigravity_policy import valid_capability as valid_project_policy
+                valid = valid_project_policy(policy)
+            elif row['tool'] == 'dsh':
                 valid = valid_capability(policy)
             else:
                 valid = (row['tool'] == 'codex' and isinstance(policy, dict)
@@ -123,17 +150,26 @@ def validate_action(session, action):
         policy = session.get('policy')
         if not policy or action.get('revision') != policy['revision']:
             raise ControlError('policy_changed')
-        if (set(action) != {'kind','revision','value'}
+        fields = {'kind', 'revision', 'value'}
+        if policy.get('scope') == 'project-permissions':
+            fields.add('project_id')
+            if action.get('project_id') != policy.get('project_id'):
+                raise ControlError('policy_changed')
+        if (set(action) != fields
                 or action.get('value') not in [o['value'] for o in policy['options']]):
             raise ControlError('invalid_policy',400)
         return
     if kind == 'create':
-        if (set(action) != {'kind', 'text', 'revision'} or not text(action.get('text'), 16000)
-                or not action['text'].strip()):
-            raise ControlError('invalid_message', 400)
         capability = session.get('create')
         if not capability or action.get('revision') != capability['revision']:
             raise ControlError('create_unavailable')
+        fields = {'kind', 'text', 'revision'}
+        if capability.get('location') == 'native-project':
+            fields.add('project_id')
+            if action.get('project_id') != capability['project_id']:
+                raise ControlError('create_unavailable')
+        if set(action) != fields or not text(action.get('text'), 16000) or not action['text'].strip():
+            raise ControlError('invalid_message', 400)
         return
     if kind == 'reply':
         if set(action) != {'kind', 'text'} or not text(action.get('text'), 16000) or not action['text'].strip():
@@ -345,13 +381,9 @@ class Broker:
                 raise ControlError('invalid_receipt', 400)
             if 'result' in r:
                 result = r['result']
-                try:
-                    if (not isinstance(result, dict) or set(result) != {'tool', 'session_id'}
-                            or result['tool'] != 'dsh' or not result['session_id'].startswith('session-')
-                            or str(uuid.UUID(result['session_id'][8:])) != result['session_id'][8:]):
-                        raise ValueError()
-                except (ValueError, TypeError, AttributeError):
-                    raise ControlError('invalid_receipt', 400) from None
+                if (not isinstance(result, dict) or set(result) != {'tool', 'session_id'}
+                        or not valid_created_session(result['tool'], result['session_id'])):
+                    raise ControlError('invalid_receipt', 400)
         with self.lock, self.db() as db:
             self._expire(db)
             workers = self._active_workers(device)
@@ -366,9 +398,12 @@ class Broker:
             self.live[device] = workers
             accepted = []
             for r in receipts:
-                row = db.execute('SELECT state,tool,kind,result FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                row = db.execute('SELECT state,tool,kind,result,session FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
                 if row and row['state'] in ('dispatched', 'delivered', 'resolved', 'rejected', 'unknown'):
-                    if 'result' in r and row['tool'] == 'dsh' and row['kind'] == 'create' and row['state'] in ('dispatched','unknown'):
+                    if 'result' in r and (row['tool'] != r['result']['tool'] or row['kind'] != 'create'
+                                          or row['session'] == r['result']['session_id']):
+                        raise ControlError('invalid_creation_destination', 400)
+                    if 'result' in r and row['state'] in ('dispatched','unknown'):
                         if row['result'] and row['result'] != encoded(r['result']):
                             raise ControlError('creation_result_conflict',400)
                         db.execute('UPDATE commands SET result=? WHERE id=?', (encoded(r['result']),r['id']))

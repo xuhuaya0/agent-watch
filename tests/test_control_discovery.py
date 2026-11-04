@@ -76,3 +76,35 @@ class DiscoveryTests(unittest.TestCase):
         p=Antigravity('/tmp/native',lambda:ids,run=run,environ={'ANTIGRAVITY_LS_ADDRESS':'localhost:1'})
         self.assertEqual(p.session_snapshot(ids[1])[0]['session_id'],ids[1])
         self.assertEqual(calls,[ids[1]])
+
+    def test_unexpected_session_error_does_not_stop_discovering_new_chats(self):
+        broken,first,later=(str(uuid.uuid4()) for _ in range(3))
+        ids=[broken,first]
+        seen=threading.Event()
+        class Interactions:
+            def inspect(self,sid,context=None):
+                if sid==broken:raise AttributeError('new native payload shape')
+                if sid==later:seen.set()
+                return {'tool':'antigravity','session_id':sid,'reply':True,'requests':[]},{}
+        provider=Antigravity('/tmp/native',lambda:list(ids),interactions=Interactions(),
+            environ={'ANTIGRAVITY_LS_ADDRESS':'localhost:1'},background=True)
+        try:
+            provider.snapshot()
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline and not provider.snapshot():time.sleep(.01)
+            self.assertEqual([row['session_id'] for row in provider.snapshot()],[first])
+            ids.append(later)
+            self.assertTrue(seen.wait(2))
+            self.assertTrue(provider._thread.is_alive())
+        finally:provider.close()
+
+    def test_malformed_optional_agentapi_metadata_does_not_remove_text_reply(self):
+        sid=str(uuid.uuid4())
+        for metadata in (None,[],['unexpected'],42,True,'unexpected'):
+            with self.subTest(metadata=metadata):
+                provider=Antigravity('/tmp/native',lambda:[sid],
+                    run=lambda *a,**kw:SimpleNamespace(returncode=0,stdout=json.dumps({'metadata':metadata})),
+                    environ={'ANTIGRAVITY_LS_ADDRESS':'localhost:1'})
+                row=provider.session_snapshot(sid)[0]
+                self.assertTrue(row['reply'])
+                self.assertNotIn('policy',row)

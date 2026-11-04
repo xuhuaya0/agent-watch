@@ -154,3 +154,20 @@ test('DeepSeek presets disclose sandbox changes and keep custom display-only',()
  assert.match(html,/&lt;native description>/);
  assert.doesNotMatch(html,/不改变沙盒权限或审批者/);
 });
+
+test('Codex desktop draft shows the native submit step; created rollout links by thread ID',()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',create:{cwd:'/project',revision:'v1',mode:'draft'}}};
+ run(ctx,'interaction.byTask.set("a",data)');
+ const html=run(ctx,'interactionHtml("a")');
+ assert.match(html,/在 Codex 打开草稿/);assert.doesNotMatch(html,/新建并发送/);
+ run(ctx,`workspace.tasks=[{ui_key:'a',machine_id:'one',tool:'codex'},{ui_key:'new',machine_id:'one',tool:'codex',session_id:'rollout-file',extra:{thread_id:'native-id'}}]`);
+ assert.match(run(ctx,'createdSessionHtml("a",{result:{tool:"codex",session_id:"native-id"}})'),/打开新会话/);
+});
+
+test('Antigravity displays its bound creation project and requires confirmation for a project policy',async()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',create:{location:'native-project',project_id:'project-id',project_name:'Example <project>',revision:'c1'},policy:{current:'ask',scope:'project-permissions',project_name:'Example <project>',options:[{value:'ask',label:'Ask'},{value:'review',label:'Review'}],revision:'p1'}}};
+ run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'interactionHtml("a")');
+ assert.match(html,/新建 Antigravity 会话/);assert.match(html,/Example &lt;project>/);assert.match(html,/应用到整个项目/);
+ ctx.form={elements:{policy:{value:'review'},confirmProject:{checked:false}}};
+ let calls=0;ctx.apiFetch=()=>{calls++};await run(ctx,'sendPolicy(form,"p1")');assert.equal(calls,0);
+});

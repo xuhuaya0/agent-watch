@@ -76,7 +76,8 @@ class Rpc:
 
 class Codex:
     def __init__(self, executable, socket_path, session_ids, rpc_factory=Rpc):
-        self.session_ids=set(session_ids)
+        self.scope = session_ids if callable(session_ids) else None
+        self.session_ids = set() if self.scope else set(session_ids)
         self.requests={};self.lock=threading.RLock();self.connected=True
         self.rpc=rpc_factory(executable,socket_path,self.event)
         self.subscribed=set()
@@ -121,36 +122,66 @@ class Codex:
     def close(self):
         self.rpc.close()
 
-    def snapshot(self):
-        if not self.connected:return []
-        loaded=set();cursor=None
+    def _loaded(self):
+        loaded = set()
+        cursor = None
         while True:
-            page=self.rpc.call('thread/loaded/list',{'cursor':cursor,'limit':100})
+            page = self.rpc.call('thread/loaded/list', {'cursor':cursor, 'limit':100})
             loaded.update(page['data'])
-            cursor=page.get('nextCursor')
-            if not cursor:break
-        # Historical files are not evidence that this server owns the conversation.
+            cursor = page.get('nextCursor')
+            if not cursor:
+                return loaded
+
+    def _snapshot(self, target):
+        if not self.connected:
+            return []
+        if self.scope:
+            self.session_ids = set(self.scope())
+        loaded = self._loaded()
         with self.lock:
-            self.requests={k:v for k,v in self.requests.items() if v['thread'] in loaded}
+            self.requests = {key:value for key,value in self.requests.items() if value['thread'] in loaded}
         self.subscribed.intersection_update(loaded)
-        out=[]
-        for sid in sorted(self.session_ids & loaded):
+        allowed = self.session_ids & loaded
+        if target is not None:
+            allowed.intersection_update([target])
+        creation_directories = getattr(self.scope, 'creation_directories', None)
+        directories = creation_directories() if callable(creation_directories) else {}
+        out = []
+        for sid in sorted(allowed):
             try:
                 if sid not in self.subscribed:
-                    self.rpc.call('thread/resume',{'threadId':sid,'excludeTurns':True})
+                    self.rpc.call('thread/resume', {'threadId':sid, 'excludeTurns':True})
                     self.subscribed.add(sid)
-                result=self.rpc.call('thread/read',{'threadId':sid,'includeTurns':False})
-                if result['thread']['id']!=sid:continue
-            except (ControlError, KeyError):continue
+                result = self.rpc.call('thread/read', {'threadId':sid, 'includeTurns':False})
+                thread = result['thread']
+                if thread['id'] != sid:
+                    continue
+            except (ControlError, KeyError):
+                continue
             with self.lock:
-                requests=[x['request'] for x in self.requests.values() if x['thread']==sid]
-            out.append({'tool':'codex','session_id':sid,'reply':True,'requests':requests,
-                        'reason':'文件修改、敏感信息和扩展权限请求请在原应用处理'})
+                requests = [item['request'] for item in self.requests.values() if item['thread']==sid]
+            row = {'tool':'codex', 'session_id':sid, 'reply':True, 'requests':requests,
+                   'reason':'文件修改、敏感信息和扩展权限请求请在原应用处理'}
+            if directories.get(sid) == thread.get('cwd'):
+                from .codex_create import capability
+                create = capability(sid, thread.get('cwd'))
+                if create:
+                    row['create'] = create
+            out.append(row)
         return out
+
+    def snapshot(self):
+        return self._snapshot(None)
+
+    def session_snapshot(self, sid):
+        return self._snapshot(sid)
 
     def execute(self,command):
         sid,a=command['session_id'],command['action']
-        if sid not in self.session_ids:raise ControlError('native_session_unavailable')
+        if a['kind'] == 'create':
+            from .codex_create import start
+            return start(self, command)
+        if sid not in (self.scope() if self.scope else self.session_ids):raise ControlError('native_session_unavailable')
         if a['kind']=='reply':
             result=self.rpc.call('turn/start',{'threadId':sid,'input':[{'type':'text','text':a['text']}],
                                                'clientUserMessageId':command['id']})
