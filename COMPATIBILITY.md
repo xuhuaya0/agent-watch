@@ -251,3 +251,13 @@ verified. An earlier probe established that omitting the model yields a native
 execution error despite a successful send acknowledgement, so model discovery
 is a required capability check. This verifies provider execution and native
 results, not browser submission or another OS/version.
+
+After deploying revision `f231801` on 2026-11-04, a normal administrator login
+through the remote Hub was used to submit one new-conversation command from the
+dedicated Antigravity test chat. The deployed worker returned a delivered receipt
+and a different native conversation ID. Collection and on-demand Hub history
+confirmed the same device and project, the exact test user message and its
+assistant reply, and Request Review on both source and destination. No tool record
+was present and no command was resubmitted. This verifies the authenticated Hub
+queue, native worker, collection and history path; it does not claim a browser
+click or a cross-preset permission transition was exercised.
