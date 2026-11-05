@@ -7,7 +7,7 @@ const app=fs.readFileSync(path.join(__dirname,'../static/workspace.js'),'utf8');
 function context(){
  const nodes={};
  const node=()=>({listeners:{},addEventListener(type,fn){this.listeners[type]=fn},value:'',checked:false,hidden:false,style:{},dataset:{},scrollTop:0,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},contains(){return false},setAttribute(){},focus(){},scrollIntoView(){}});
- const document={activeElement:null,getElementById(id){return nodes[id] ||=node()},querySelectorAll(){return []},querySelector(){return null}};
+ const document={activeElement:null,addEventListener(){},getElementById(id){return nodes[id] ||=node()},querySelectorAll(){return []},querySelector(){return null}};
  const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,location:{origin:'http://example.test'},window:{},navigator:{}});
  vm.runInContext(app,ctx);vm.runInContext(inline,ctx);return {ctx,nodes};
 }
@@ -81,7 +81,7 @@ test('activity changes update the header without unmounting long history or the 
  // A real browser clamps the offset when the long contents are removed.
  Object.defineProperty(pane,'innerHTML',{set(){pane.scrollTop=0;ctx.document.activeElement=null;}});
  run(ctx,'workspace.tasks[0].title="Updated title";workspace.detailSignature="next";renderDetail()');
- assert.match(nodes['detail-intro'].innerHTML,/Updated title/);
+ assert.match(nodes['detail-title'].textContent,/Updated title/);
  assert.equal(pane.scrollTop,2479);assert.equal(ctx.document.activeElement,reply);
 });
 test('switching sessions restores each reader offset and ignores a hidden reader',()=>{
@@ -107,6 +107,30 @@ test('a returning reader waits for full detail unless they move during the reque
   run(ctx,'workspace.detail={extra:{latest_turn:{assistant:"Full reply"}}};workspace.detailSignature="loaded";renderDetail()');
   assert.equal(offset,userMoved?35:1400);
  }
+});
+test('first open settles at the latest captured reply once and respects reading started before the detail arrived',()=>{
+ for(const moved of [false,true]){
+  const {ctx,nodes}=context();
+  seed(ctx,[task('a',{prompt:'Short summary'})]);
+  ctx.historyState=()=>({loaded:true,messages:[],error:''});
+  const pane=nodes['session-detail'];pane.scrollHeight=100;
+  run(ctx,'workspace.selected="a";renderDetail()');
+  if(moved){pane.listeners.wheel();pane.scrollTop=28;}
+  pane.scrollHeight=3200;
+  run(ctx,'workspace.detail={extra:{latest_turn:{assistant:"Captured reply"}}};workspace.detailSignature="loaded";renderDetail()');
+  assert.equal(pane.scrollTop,moved?28:3200);
+  pane.scrollTop=370;pane.scrollHeight=3500;
+  run(ctx,'workspace.detailSignature="new-activity";renderDetail()');
+  assert.equal(pane.scrollTop,370);
+ }
+});
+test('captured conversation distinguishes initial loading, active work and an empty completed session',()=>{
+ const {ctx}=context();ctx.noMessages=task('a');
+ assert.match(run(ctx,'capturedChatHtml(noMessages,false)'),/正在读取/);
+ assert.match(run(ctx,'capturedChatHtml(noMessages,true)'),/暂无消息/);
+ ctx.noMessages.state='running';
+ assert.match(run(ctx,'capturedChatHtml(noMessages,true)'),/正在处理/);
+ assert.doesNotMatch(run(ctx,'capturedChatHtml(noMessages,true)'),/暂无消息/);
 });
 test('full detail and older collector summaries both render honestly',()=>{
  const {ctx,nodes}=context();seed(ctx,[task('a',{prompt:'Summary prompt',detail:'Short result'})]);
@@ -138,22 +162,22 @@ test('native pin changes appear on refresh and no independent pin control exists
  assert.equal(run(ctx,'splitList(visibleTasks()).pinned.length'),1);
  run(ctx,'workspace.tasks[0].extra.native_pin.pinned=false;workspace.selected="a";renderDetail()');
  assert.equal(run(ctx,'splitList(visibleTasks()).pinned.length'),0);
- assert.doesNotMatch(nodes['detail-pin'].textContent,/setPreference\('pinned'/);
+ assert.doesNotMatch(nodes['detail-facts'].innerHTML,/setPreference\('pinned'/);
 });
 
 test('archive controls are absent while acknowledgement remains available',()=>{
  const {ctx,nodes}=context();seed(ctx,[task('a',{ui:{archived:true}})]);
  run(ctx,'workspace.selected="a";renderDetail()');
  assert.doesNotMatch(html,/filter-archive|icon-archive/);
- assert.doesNotMatch(nodes['detail-intro'].innerHTML,/归档会话|恢复会话|setPreference/);
- assert.match(nodes['detail-intro'].innerHTML,/知道了/);
+ assert.doesNotMatch(nodes['detail-extra-actions'].innerHTML,/归档会话|恢复会话|setPreference/);
+ assert.match(nodes['detail-extra-actions'].innerHTML,/知道了/);
 });
 test('native system notifications are separate from the original user message',()=>{
  const {ctx,nodes}=context();seed(ctx,[task('a')]);
  ctx.full=task('a',{extra:{latest_turn:{user:'Original question',notification:'External <script> message',assistant:'New answer'}}});
  run(ctx,'workspace.selected="a";workspace.detail=full;workspace.detailSignature="new";renderDetail()');
  const text=nodes['latest-messages'].innerHTML;
- assert.match(text,/Original question/);assert.match(text,/最近外部消息 · 原生系统通知/);assert.match(text,/External &lt;script&gt; message/);assert.match(text,/New answer/);
+ assert.match(text,/Original question/);assert.match(text,/原生系统通知/);assert.match(text,/External &lt;script&gt; message/);assert.match(text,/New answer/);
  assert.doesNotMatch(text,/<script>/);
 });
 

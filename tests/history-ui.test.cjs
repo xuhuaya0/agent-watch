@@ -4,6 +4,8 @@ class HistoryElement {
  constructor(tag='div') {this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.html='';this.open=false;}
  get innerHTML(){return this.html+this.children.map(node=>node.innerHTML).join('');}
  set innerHTML(value){this.replaceChildren();this.html=value;}
+ setAttribute(name,value){this[name]=value;}
+ querySelector(selector){return this.children.find(element=>'#'+element.id===selector)||null;}
  get firstElementChild(){return this.children[0]||null;}
  get lastElementChild(){return this.children.at(-1)||null;}
  get nextElementSibling(){return this.parentElement?.children[this.parentElement.children.indexOf(this)+1]||null;}
@@ -16,9 +18,13 @@ class HistoryElement {
  replaceChildren(...nodes){for(const child of [...this.children])child.remove();for(const child of nodes)this.insertBefore(child,null);}
 }
 function setup(){
- const elements=Object.fromEntries(['session-detail','session-history','latest-messages','session-control'].map(id=>[id,new HistoryElement()]));
+ const elements=Object.fromEntries(['session-detail','session-history','latest-messages','chat-outgoing','session-control'].map(id=>[id,new HistoryElement()]));
+ elements['chat-outgoing'].id='chat-outgoing';
+ elements['session-control'].id='session-control';
  const pane=elements['session-detail'];pane.root=true;pane.scrollTop=20;pane.clientHeight=0;
- pane.replaceChildren(elements['session-history'],elements['latest-messages'],elements['session-control']);
+ const detailView=new HistoryElement();detailView.root=true;
+ detailView.replaceChildren(pane,elements['session-control']);
+ pane.replaceChildren(elements['session-history'],elements['latest-messages'],elements['chat-outgoing']);
  const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id],createElement:tag=>new HistoryElement(tag)},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
  vm.runInContext(fs.readFileSync('static/history.js','utf8'),ctx);return{ctx,elements,run:s=>vm.runInContext(s,ctx)};
 }
@@ -40,6 +46,24 @@ test('loading earlier pages deduplicates messages and retains order',async()=>{
 test('unavailable history leaves the latest captured messages visible',async()=>{
  const {ctx,elements,run}=setup();ctx.apiFetch=async()=>({ok:false,json:async()=>({error:'history_unavailable'})});
  await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,false);assert.match(elements['session-history'].innerHTML,/无法读取历史/);
+});
+test('empty native history keeps the captured reply visible with a single source of empty-state text',async()=>{
+ const {ctx,elements,run}=setup();
+ run("workspace.detail={extra:{latest_turn:{assistant:'Captured reply'}}}");
+ elements['latest-messages'].innerHTML='<article>Captured reply</article>';
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[],next_cursor:null})});
+ await run('loadHistory(true)');
+ assert.equal(elements['latest-messages'].hidden,false);
+ assert.match(elements['latest-messages'].innerHTML,/Captured reply/);
+ assert.doesNotMatch(elements['session-history'].innerHTML,/暂无消息/);
+});
+test('empty history arriving ahead of the full detail waits for the captured conversation before settling',async()=>{
+ const {ctx,run}=setup();
+ let settledBeforeDetail=false;
+ ctx.settleChatOpening=()=>{settledBeforeDetail=true;};
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[],next_cursor:null})});
+ await run('loadHistory(true)');
+ assert.equal(settledBeforeDetail,false);
 });
 test('all three harnesses load older history through the same reader',async()=>{
  for(const tool of ['codex','antigravity','dsh']) {
@@ -91,7 +115,8 @@ function readingLayout(elements) {
  const rectAt=index=>({top:100+index*100-pane.scrollTop,bottom:200+index*100-pane.scrollTop});
  for(const row of list.children)row.getBoundingClientRect=()=>rectAt(list.children.indexOf(row));
  list.getBoundingClientRect=()=>({top:rectAt(0).top,bottom:rectAt(list.children.length).top});
- elements['session-control'].getBoundingClientRect=()=>rectAt(list.children.length);
+ elements['chat-outgoing'].getBoundingClientRect=()=>rectAt(list.children.length);
+ elements['session-control'].getBoundingClientRect=()=>({top:200,bottom:280});
  return {pane,list};
 }
 function initialMessages(run) {
@@ -137,17 +162,20 @@ test('live refresh retains a page when the visible message has left the latest n
  await run('loadHistory(true,true)');
  assert.equal(list.children[1],reading);assert.equal(pane.scrollTop,250);
  assert.match(elements['session-history'].innerHTML,/有新内容/);
- await run('loadHistory(true)');
+ ctx.readerPane=pane;
+ await run('showNewHistory()');
  assert.equal(list.children[0].dataset.historyId,'latest');assert.equal(run("historyState('a').updated"),false);
 });
-test('history arriving above a focused reply keeps the reply at its original viewport offset',async()=>{
+test('typing in the fixed composer preserves its focus and the visible transcript row during a refresh',async()=>{
  const {ctx,elements,run}=setup();initialMessages(run);
- const {pane,list}=readingLayout(elements);pane.scrollTop=520;
+ const {pane,list}=readingLayout(elements);pane.scrollTop=325;
+ const reading=list.children[2],before=reading.getBoundingClientRect().top;
  const input=new HistoryElement('textarea');elements['session-control'].insertBefore(input,null);ctx.document.activeElement=input;
- input.getBoundingClientRect=()=>({top:110+100*list.children.length-pane.scrollTop,bottom:180+100*list.children.length-pane.scrollTop});
- const before=input.getBoundingClientRect().top;
+ input.value='Unsent reply';input.selectionStart=3;
+ input.getBoundingClientRect=()=>({top:205,bottom:250});
  const messages=['new','a','b','c','d','e'].map(id=>({id,role:'assistant',text:id}));
  ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages,next_cursor:null})});
  await run('loadHistory(true,true)');
- assert.equal(ctx.document.activeElement,input);assert.equal(input.getBoundingClientRect().top,before);
+ assert.equal(ctx.document.activeElement,input);assert.equal(input.selectionStart,3);assert.equal(input.value,'Unsent reply');
+ assert.equal(reading.getBoundingClientRect().top,before);assert.equal(pane.scrollTop,425);
 });

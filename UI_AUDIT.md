@@ -81,3 +81,17 @@ a middle paragraph kept its screen position across multiple polls at 1280×720
 and 390×844. The desktop reply and question drafts retained focus, caret and
 screen position. Switching away from a long offline reply and returning restored
 the same paragraph after the full detail arrived.
+
+## Conversation detail and composer
+
+In the desktop browser, a long transcript kept the same paragraph in view
+through activity updates, including while a draft held keyboard focus. At
+390×844 the reader and a long question could scroll independently; the custom
+answer survived a rejected submission. The session information menu, settings
+dialog, and destination-specific new conversation dialog remained reachable.
+
+A separate loopback instance ran the production Hub, command broker, database,
+and device worker against an in-memory Harness. Browser actions submitted a
+keyboard reply, one answer, one approval, and one rejection. Each appeared in
+the intended transcript with its corresponding result. Native applications
+were outside the scope of these frontend checks.

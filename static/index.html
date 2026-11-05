@@ -61,7 +61,7 @@
   </nav>
   <section id="sessions-view" class="page-view sessions-view">
     <aside id="session-list" class="session-list" aria-label="会话列表">
-      <div class="list-heading"><h2>会话 <small id="list-count"></small></h2><button onclick="toggleList()" aria-label="收起会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button></div>
+      <div class="list-heading"><h2>会话 <small id="list-count"></small></h2><div id="session-actions" class="session-actions"></div><button onclick="toggleList()" aria-label="收起会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button></div>
       <div class="list-filters">
         <div class="search-controls"><div class="search-field"><svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg><input id="session-search" type="search" placeholder="搜索会话…" aria-label="搜索会话" oninput="setFilter('query',this.value)"></div>
         <details class="filter-menu"><summary id="filter-toggle">筛选</summary><div class="filter-panel">
@@ -74,8 +74,15 @@
       <div id="session-items" class="session-items"></div>
     </aside>
     <section class="detail-pane" aria-label="会话详情">
-      <div class="detail-toolbar"><button onclick="showList()" aria-label="显示会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg> 会话列表</button><span id="detail-location"></span><div id="session-actions" class="session-actions"></div></div>
-      <div id="session-detail" class="session-detail"><div class="blank-state"><svg class="icon" aria-hidden="true"><use href="#icon-conversations"></use></svg><h2>选择一个会话</h2><p>从左侧列表查看最近消息与结果。</p></div></div>
+      <div id="detail-toolbar" class="detail-toolbar">
+        <button class="list-return" onclick="showList()" aria-label="显示会话列表"><svg class="icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
+        <h1 id="detail-title" class="detail-title"></h1><span id="detail-context" class="detail-context"></span>
+        <details id="session-info" class="session-info" hidden><summary aria-label="会话信息" title="会话信息">···</summary>
+          <div class="session-info-panel"><dl id="detail-facts"></dl><div id="detail-subagents"></div><div id="detail-extra-actions"></div></div>
+        </details>
+      </div>
+      <div id="session-detail" class="session-detail"></div>
+      <section id="session-control" class="session-control" aria-label="原会话交互" hidden></section>
     </section>
   </section>
   <section id="projects-view" class="page-view overview-view" hidden></section>

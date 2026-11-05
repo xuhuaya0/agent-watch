@@ -29,7 +29,17 @@ async function setControlEnabled(device,enabled,button) {
  } catch (_) {button.disabled=false;toast('未能更新交互设置，请刷新状态确认');}
 }
 function interactionDraft(id) {if(!interaction.drafts.has(id))interaction.drafts.set(id,{text:'',createText:'',answers:{}});return interaction.drafts.get(id);}
-function setReplyDraft(value) {interactionDraft(workspace.selected).text=value;}
+function setReplyDraft(value) {
+ interactionDraft(workspace.selected).text=value;
+ const send=document.getElementById('composer-send');
+ if(send)send.disabled=!value.trim() || Boolean(interactionBusy(workspace.selected));
+}
+function composerKeydown(event) {
+ if(event.key!=='Enter' || !(event.ctrlKey||event.metaKey) || event.isComposing || event.keyCode===229)return;
+ const button=event.target.form.querySelector('.composer-send');
+ event.preventDefault();
+ if(!button.disabled)event.target.form.requestSubmit(button);
+}
 function setAnswerDraft(requestId,questionId,field,value) {
  const d=interactionDraft(workspace.selected);const key=requestId+'\n'+questionId;
  const answer=d.answers[key] ||= {selected:[],custom:''};answer[field]=value;
@@ -42,6 +52,12 @@ function capturedOutgoing(id) {
  if(!t || (t.ui_key||t.key)!==id)return null;
  return {turn:t.extra?.latest_turn,at:t.activity_at||t.last_event_at||0};
 }
+function receiptDetail(receipt) {
+ const detail=receipt.detail||'';
+ if(receipt.state==='delivered' && (detail==='原应用已接收' || detail==='原应用已接收；不代表 Agent 已完成执行'))return '';
+ if(receipt.state==='resolved' && detail==='原应用已结束该请求；请查看原应用的最终结果')return '请在原应用查看最终结果';
+ return CONTROL_ERRORS[detail]||detail;
+}
 function outgoingHtml(id) {
  const message=interaction.outgoing.get(id);if(!message)return '';
  const captured=capturedOutgoing(id),turn=captured?.turn;
@@ -51,7 +67,8 @@ function outgoingHtml(id) {
     [turn?.notification,turn?.user].includes(message.text))return '';
  const labels={sending:'发送中',queued:'等待设备接收',dispatched:'正在送达',delivered:'已送达',rejected:'发送失败',expired:'已过期，未发送',cancelled:'已取消',unknown:'送达情况待确认'};
  const warning=['rejected','expired','cancelled','unknown'].includes(message.state);
- return `<article class="message user-message local-outgoing" data-command-id="${esc(message.id)}"><div class="message-label">你<span>${esc(new Date(message.createdAt).toLocaleTimeString())}</span><span class="outgoing-state${warning?' warning':''}" role="status">${esc(labels[message.state]||message.state)}</span></div><div class="message-body outgoing-text">${esc(message.text)}</div>${message.detail?`<p class="capture-note">${esc(CONTROL_ERRORS[message.detail]||message.detail)}</p>`:''}</article>`;
+ const detail=receiptDetail(message);
+ return `<article class="message user-message local-outgoing" data-command-id="${esc(message.id)}"><div class="message-label">${message.notification?'Agent Watch · 系统通知':'你'}<span>${esc(new Date(message.createdAt).toLocaleTimeString())}</span><span class="outgoing-state${warning?' warning':''}" role="status">${esc(labels[message.state]||message.state)}</span></div><div class="message-body outgoing-text">${esc(message.text)}</div>${detail?`<p class="capture-note">${esc(detail)}</p>`:''}</article>`;
 }
 function updateOutgoing(id,receipt) {
  const message=interaction.outgoing.get(id);
@@ -65,14 +82,21 @@ function createdSessionHtml(id,receipt) {
 }
 function interactionFeedbackHtml(id,kind=null) {
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
- const local=pending&&(!kind||pending.action?.kind===kind)?pending:null;
- const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>!kind||c.kind===kind);
- if(local?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
+ const matches=actionKind=>kind?kind===actionKind:actionKind!=='policy'&&actionKind!=='create';
+ const local=pending&&matches(pending.action?.kind)?pending:null;
+ const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>matches(c.kind));
+ if((kind?local:pending)?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
+ // A local reply carries its delivery receipt on the outgoing message itself.
+ const outgoing=interaction.outgoing.get(id);
+ if(!kind && outgoing && outgoing.id===(local?.id||latest?.id))return '';
+ // A rejected HTTP request never enters the broker's receipt list.
+ if(!kind && !local && outgoing?.previousReceiptIds?.includes(latest?.id))return '';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
  const actionKind=local?.action?.kind||latest?.kind;
  const label=({reply:'回复',answer:'回答问题',approval:'单次审批',create:'新建会话',policy:'权限设置'})[actionKind]||'操作';
+ const detail=latest?receiptDetail(latest):'';
  const when=latest?.created?' · '+new Date(latest.created*1000).toLocaleTimeString():'';
- return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(CONTROL_STATES[latest.state]||latest.state)}${latest.detail?' · '+esc(CONTROL_ERRORS[latest.detail]||latest.detail):''}</p>${createdSessionHtml(id,latest)}`:'';
+ return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(CONTROL_STATES[latest.state]||latest.state)}${detail?' · '+esc(detail):''}</p>${createdSessionHtml(id,latest)}`:'';
 }
 function controlNotice(message,id=workspace.selected,kind=null) {
  const dialog=document.getElementById('session-options');
@@ -83,14 +107,16 @@ function controlNotice(message,id=workspace.selected,kind=null) {
 }
 function interactionHtml(id) {
  const data=interaction.byTask.get(id),cap=data?.capability,draft=interactionDraft(id);
- const outgoing=`<div class="outgoing-message">${outgoingHtml(id)}</div>`;
- if(!data)return outgoing+'<p class="capture-note">正在检查原应用交互连接…</p>';
+ if(!data)return '<p class="capture-note" role="status">正在连接原应用…</p>';
  const pending=interactionBusy(id);
  const disabled=pending?' disabled':'';
- let body=outgoing;
+ let body='';
  if(data.connected && cap) {
+  if(cap.requests?.length)body+='<div class="composer-requests">';
   for(const r of cap.requests||[]) {
-   body+=`<form class="interaction-request" onsubmit="event.preventDefault();sendAnswer(${jsArg(r.id)},${jsArg(r.revision)})"><h3>${r.kind==='approval'?'待批准操作':'Agent 的问题'}</h3><div class="native-request-detail">${esc(r.prompt)}</div>`;
+   const prompt=r.prompt?.trim();
+   const shownByLegend=r.kind==='question' && r.questions.some(question=>question.question?.trim()===prompt);
+   body+=`<form class="interaction-request" onsubmit="event.preventDefault();sendAnswer(${jsArg(r.id)},${jsArg(r.revision)})"><h3>${r.kind==='approval'?'待批准操作':'Agent 的问题'}</h3>${prompt&&!shownByLegend?`<div class="native-request-detail">${esc(r.prompt)}</div>`:''}`;
    if(r.kind==='approval') {
     for(const choice of r.choices)body+=`<button type="button"${disabled} class="${choice==='approve'?'primary':''}" onclick="sendApproval(${jsArg(r.id)},${jsArg(choice)},${jsArg(r.revision)})">${choice==='approve'?'仅批准这一次':'拒绝执行'}</button>`;
    }else{
@@ -105,9 +131,18 @@ function interactionHtml(id) {
    }
    body+='</form>';
   }
-  if(cap.reply)body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()"><label for="native-reply">回复原会话</label><textarea id="native-reply" rows="3" maxlength="16000" placeholder="给这个会话发送后续消息…" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea><div class="composer-footer"><span>发送到上方标明的设备与 Harness</span><button class="primary"${disabled}>发送</button></div></form>`;
-  if(typeof settingsSummaryHtml==='function')body+=`<div class="settings-summary-slot">${settingsSummaryHtml(cap)}</div>`;
-  if(cap.reason)body+=`<p class="capture-note">${esc(cap.reason)}</p>`;
+  if(cap.requests?.length)body+='</div>';
+  const settings=`<div class="settings-summary-slot">${settingsSummaryHtml(cap)}</div>`;
+  if(cap.reply) {
+   const placeholder=cap.tool==='antigravity'?'向 Antigravity 发送系统通知…':`回复 ${harnessName(cap)}…`;
+   body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()">
+    <label for="native-reply" class="sr-only">回复原会话</label>
+    <textarea id="native-reply" rows="2" maxlength="16000" placeholder="${esc(placeholder)}" onkeydown="composerKeydown(event)" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea>
+    <div class="composer-footer">${settings}<button type="submit" id="composer-send" class="primary composer-send" aria-keyshortcuts="Control+Enter Meta+Enter" title="发送（Ctrl / ⌘ + Enter）"${pending||!draft.text.trim()?' disabled':''}>发送<svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button></div></form>`;
+  }else {
+   if(cap.reason || !cap.requests?.length)body+=`<p class="capture-note">${esc(cap.reason||'当前会话暂时无法回复。')}</p>`;
+   body+=settings;
+  }
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
  return body+`<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
 }
@@ -115,24 +150,37 @@ function renderInteraction(force=false) {
  if(typeof renderSessionActions==='function')renderSessionActions();
  const id=workspace.selected,el=document.getElementById('session-control');if(!id||!el)return;
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
+ const outgoing=document.getElementById('chat-outgoing'),markup=outgoingHtml(id);
+ if(outgoing && outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
- const structure=JSON.stringify([id,data?.connected,data?.capability?.reply,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
+ const structure=JSON.stringify([id,data?.connected,data?.reason,data?.capability?.reply,data?.capability?.reason,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;
  // Keep focused drafts and selection on ordinary polls. A resolved approval may
  // still remove its card; submission revalidates every ID at both Hub and worker.
- if(el.contains(document.activeElement) && el.dataset.task===id && el.dataset.interactionStructure===structure) {
+ if(el.dataset.task===id && el.dataset.interactionStructure===structure) {
   // Status must advance even while the textarea or Send button retains focus.
   // Update controls in place so newer text and its caret are not replaced.
   const feedback=el.querySelector('.interaction-feedback');
-  if(feedback)feedback.innerHTML=interactionFeedbackHtml(id);
+  if(feedback){
+   const receipt=interactionFeedbackHtml(id);
+   if(feedback.renderedReceipt!==receipt){feedback.innerHTML=receipt;feedback.renderedReceipt=receipt;}
+  }
   const summary=el.querySelector('.settings-summary-slot');
-  if(summary&&typeof settingsSummaryHtml==='function')summary.innerHTML=settingsSummaryHtml(data.capability||{});
-  const outgoing=el.querySelector('.outgoing-message');
-  if(outgoing)outgoing.innerHTML=outgoingHtml(id);
-  for(const control of el.querySelectorAll('form button, form fieldset'))control.disabled=Boolean(interactionBusy(id));
+  if(summary){
+   const markup=settingsSummaryHtml(data?.capability||{});
+   if(summary.renderedSettings!==markup){summary.innerHTML=markup;summary.renderedSettings=markup;}
+  }
+  for(const control of el.querySelectorAll('.interaction-request button,.interaction-request fieldset'))control.disabled=Boolean(interactionBusy(id));
+  const send=document.getElementById('composer-send');
+  if(send)send.disabled=Boolean(interactionBusy(id))||!interactionDraft(id).text.trim();
+  el.dataset.interactionSignature=signature;
   return;
  }
  el.innerHTML=interactionHtml(id);el.dataset.interactionSignature=signature;el.dataset.interactionStructure=structure;el.dataset.task=id;
+ const summary=el.querySelector('.settings-summary-slot');
+ if(summary)summary.renderedSettings=settingsSummaryHtml(data?.capability||{});
+ const feedback=el.querySelector('.interaction-feedback');
+ if(feedback)feedback.renderedReceipt=interactionFeedbackHtml(id);
 }
 function watchInteraction(id) {
  if(interaction.poll?.id===id)return;
@@ -188,9 +236,16 @@ async function submitNative(action) {
  const id=workspace.selected;if(!id||interaction.pending.has(id))return;
  if(typeof sessionOptions!=='undefined'&&sessionOptions.id===id)sessionOptions.message='';
  const record={id:newCommandId(),action};interaction.pending.set(id,record);
- if(action.kind==='reply')interaction.outgoing.set(id,{id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,state:'sending',detail:''});
+ if(action.kind==='reply'){
+  const before=interaction.byTask.get(id);
+  interaction.outgoing.set(id,{
+   id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,
+   previousReceiptIds:(before?.commands||[]).map(command=>command.id),
+   state:'sending',detail:'',notification:before?.capability?.tool==='antigravity'
+  });
+ }
  renderInteraction(true);
- if(action.kind==='reply')document.getElementById('session-control')?.querySelector('.local-outgoing')?.scrollIntoView({block:'nearest'});
+ if(action.kind==='reply')document.getElementById('chat-outgoing')?.querySelector('.local-outgoing')?.scrollIntoView({block:'nearest'});
  try{
   const r=await apiFetch('/api/control/tasks/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(record)});
   if(r.status===401){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:'登录已失效，请重新登录'});showAuthView(false);return;}

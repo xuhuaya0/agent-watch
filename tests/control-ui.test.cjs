@@ -3,10 +3,10 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const crypto=require('node:crypto').webcrypto;
 function setup(){
- const feedback={innerHTML:''},summary={innerHTML:''},outgoing={innerHTML:''},button={disabled:false},input={value:''},timers=new Map();let timerId=0;
+ const feedback={innerHTML:''},summary={innerHTML:''},outgoing={innerHTML:'',querySelector(){return null}},button={disabled:false},input={value:''},timers=new Map();let timerId=0;
  const node={dataset:{},innerHTML:'',contains(){return false},querySelector(selector){return selector==='.settings-summary-slot'?summary:selector==='.outgoing-message'?outgoing:selector==='.local-outgoing'?{scrollIntoView(){}}:feedback},querySelectorAll(){return [button]}};
  const body={...node,dataset:{},innerHTML:''},actions={innerHTML:''},dialog={open:false,showModal(){this.open=true},close(){this.open=false}};
- const ctx=vm.createContext({console,crypto,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>JSON.stringify(s),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
+ const ctx=vm.createContext({console,crypto,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'chat-outgoing':outgoing,'composer-send':button,'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>JSON.stringify(s),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/control.js'),'utf8'),ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/session-options.js'),'utf8'),ctx);return {ctx,node,body,actions,dialog,feedback,summary,outgoing,button,input,timers};
 }
 function run(ctx,s){return vm.runInContext(s,ctx)}
@@ -120,13 +120,20 @@ test('a stale visible approval cannot approve a changed native request',async()=
  run(ctx,'interaction.byTask.set("a",data)');let calls=0;ctx.apiFetch=async()=>{calls++};
  await run(ctx,'sendApproval("r","approve","old")');assert.equal(calls,0);
 });
-test('sending feedback is immediate and does not show the previous receipt',async()=>{
- const {ctx,node}=setup();ctx.data={...cap,commands:[{id:'old',state:'delivered'}]};
+test('a rejected reply hides prior receipts while later operations still report their own result',async()=>{
+ const {ctx,node,outgoing}=setup();const old={id:'old',kind:'approval',state:'delivered'};
+ ctx.data={...cap,commands:[old]};
  run(ctx,'interaction.byTask.set("a",data);setReplyDraft("hello")');let release;
  ctx.apiFetch=()=>new Promise(resolve=>release=resolve);
- ctx.fetch=async()=>({ok:true,status:200,json:async()=>cap});
- const sending=run(ctx,'sendReply()');assert.match(node.innerHTML,/正在发送/);assert.doesNotMatch(node.innerHTML,/原应用已接收/);
+ ctx.fetch=async()=>({ok:true,status:200,json:async()=>ctx.data});
+ const sending=run(ctx,'sendReply()');assert.match(outgoing.innerHTML,/发送中/);assert.doesNotMatch(node.innerHTML,/原应用已接收/);
  release({ok:false,status:409,json:async()=>({error:'control_offline'})});await sending;
+ assert.match(outgoing.innerHTML,/发送失败[\s\S]*设备交互连接已断开/);
+ assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');
+ ctx.data={...cap,commands:[{id:'later',kind:'answer',state:'delivered'},old]};
+ await run(ctx,'refreshInteraction()');
+ assert.match(run(ctx,'interactionFeedbackHtml("a")'),/最近回答问题.*原应用已接收/);
+ assert.match(outgoing.innerHTML,/发送失败/);
 });
 test('focused composer updates receipts and controls without replacing newer edits',async()=>{
  const {ctx,node,feedback,button,input}=setup();ctx.data={...cap,commands:[{id:'c',state:'queued'}]};
@@ -149,9 +156,9 @@ test('fast polling stops when navigating away from the session',async()=>{
  await [...timers.values()][0].fn();assert.equal(timers.size,0);
 });
 test('message body appears before the HTTP response and remains on failed delivery',async()=>{
- const {ctx,node}=setup();ctx.data=cap;ctx.message='<img src=x>\nMy message';run(ctx,'interaction.byTask.set("a",data);setReplyDraft(message)');let release;
+ const {ctx,node,outgoing}=setup();ctx.data=cap;ctx.message='<img src=x>\nMy message';run(ctx,'interaction.byTask.set("a",data);setReplyDraft(message)');let release;
  ctx.apiFetch=()=>new Promise(resolve=>release=resolve);ctx.fetch=async()=>({ok:true,status:200,json:async()=>cap});
- const sending=run(ctx,'sendReply()');assert.match(node.innerHTML,/local-outgoing/);assert.match(node.innerHTML,/&lt;img src=x>\nMy message/);assert.doesNotMatch(node.innerHTML,/<img/);
+ const sending=run(ctx,'sendReply()');assert.match(outgoing.innerHTML,/local-outgoing/);assert.match(outgoing.innerHTML,/&lt;img src=x>\nMy message/);assert.doesNotMatch(outgoing.innerHTML,/<img/);assert.doesNotMatch(node.innerHTML,/local-outgoing/);
  assert.match(run(ctx,'outgoingHtml("a")'),/发送中/);assert.equal(run(ctx,'outgoingHtml("b")'),'');
  release({ok:false,status:409,json:async()=>({error:'control_offline'})});await sending;
  assert.match(run(ctx,'outgoingHtml("a")'),/发送失败/);assert.match(run(ctx,'outgoingHtml("a")'),/My message/);
@@ -242,7 +249,7 @@ test('reply area does not mix creation or editable policy controls',()=>{
  assert.match(html,/Native Model/);assert.match(html,/Workspace/);
  assert.doesNotMatch(html,/sendCreate|sendPolicy|native-policy|native-create/);
  run(ctx,'openSessionOptions("settings")');const settings=run(ctx,'settingsHtml(data.capability,"")');
- assert.match(settings,/高级 · 审批规则/);assert.match(settings,/完整权限模式也在 Codex 中选择/);
+ assert.match(settings,/高级 · 审批规则/);assert.match(settings,/完整权限模式在 Codex 中选择/);
 });
 test('settings selection survives polls and resets confirmation on native revision changes',()=>{
  const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',policy:{scope:'project-permissions',project_name:'Example',current:'a',revision:'v1',options:[{value:'a',label:'First',description:'first description'},{value:'b',label:'Second',description:'second description'}]}}};
@@ -299,4 +306,47 @@ test('dialog validation errors are visible inside the modal and preserve its dra
  assert.match(body.innerHTML,/class="options-error" role="alert">请输入新会话/);
  run(ctx,'interactionDraft("a").createText="Unsent draft";controlNotice("Try again","a","create")');
  assert.match(body.innerHTML,/Unsent draft/);assert.match(body.innerHTML,/Try again/);
+});
+
+
+test('composer offers settings from native facts and creation requires the selected capability',()=>{
+ const {ctx,actions}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',settings:{model:'Example model',scope:'project',permission:'Request Review'}}};
+ run(ctx,'interaction.byTask.set("a",data);renderSessionActions()');
+ const html=run(ctx,'interactionHtml("a")');
+ assert.match(html,/placeholder="向 Antigravity 发送系统通知…"/);
+ assert.match(html,/composer-footer[\s\S]*composer-settings[\s\S]*记录模型 · Example model[\s\S]*项目权限 · Request Review[\s\S]*composer-send/);
+ assert.equal(actions.innerHTML,'');
+ run(ctx,'data.capability.create={revision:"native-v1"};renderSessionActions()');
+ assert.match(actions.innerHTML,/新建会话/);assert.doesNotMatch(actions.innerHTML,/会话设置/);
+ run(ctx,'workspace.selected="b";renderSessionActions()');assert.equal(actions.innerHTML,'');
+ assert.equal(run(ctx,'settingsSummaryHtml({tool:"codex"})'),'');
+ const codex=run(ctx,'settingsSummaryHtml({tool:"codex",settings:{model:"Example",permission:"工作区可写 · 联网受限 · 按需审批"}})');
+ assert.match(codex,/composer-permission">工作区可写<\/span>/);assert.match(codex,/aria-description="Example · 工作区可写 · 联网受限 · 按需审批"/);
+});
+test('reply keyboard shortcut observes IME and the outstanding operation guard',()=>{
+ const {ctx,button}=setup();let submissions=0;
+ ctx.event={key:'Enter',ctrlKey:false,metaKey:false,isComposing:false,preventDefault(){},target:{form:{querySelector(){return button},requestSubmit(){submissions++}}}};
+ run(ctx,'setReplyDraft("reply");composerKeydown(event)');assert.equal(submissions,0);
+ ctx.event.metaKey=true;ctx.event.isComposing=true;run(ctx,'composerKeydown(event)');assert.equal(submissions,0);
+ ctx.event.isComposing=false;run(ctx,'composerKeydown(event)');assert.equal(submissions,1);
+ run(ctx,'interaction.pending.set("a",{id:"pending"});setReplyDraft("another");composerKeydown(event)');assert.equal(submissions,1);assert.equal(button.disabled,true);
+ run(ctx,'interaction.pending.clear();setReplyDraft(" ");composerKeydown(event)');assert.equal(submissions,1);assert.equal(button.disabled,true);
+});
+
+
+test('standard delivered receipts show acceptance once and retain special delivery details',()=>{
+ const {ctx}=setup();ctx.data={...cap,commands:[{id:'accepted',kind:'approval',state:'delivered',detail:'原应用已接收；不代表 Agent 已完成执行'}]};
+ run(ctx,'interaction.byTask.set("a",data)');
+ let html=run(ctx,'interactionFeedbackHtml("a")');
+ assert.equal((html.match(/原应用已接收/g)||[]).length,1);assert.doesNotMatch(html,/已完成执行/);
+ ctx.data.commands[0].detail='已进入 Codex 原生队列，但桌面唤醒失败；请在原应用查看，勿重复发送';
+ assert.match(run(ctx,'interactionFeedbackHtml("a")'),/唤醒失败.*勿重复发送/);
+ ctx.data.commands[0].state='unknown';ctx.data.commands[0].detail='设备断线，正在核实';
+ assert.match(run(ctx,'interactionFeedbackHtml("a")'),/结果未知.*设备断线/);
+});
+test('a repeated question prompt appears once and native-only request guidance stays visible',()=>{
+ const {ctx}=setup();
+ ctx.data={...cap,capability:{reply:false,reason:'此请求请在 Codex 原应用处理',requests:[{kind:'question',id:'q',revision:'v1',prompt:'选择布局',questions:[{id:'one',question:'选择布局',options:['宽松','紧凑']}]}]}};
+ run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'interactionHtml("a")');
+ assert.equal((html.match(/选择布局/g)||[]).length,1);assert.match(html,/<legend>选择布局<\/legend>/);assert.match(html,/请在 Codex 原应用处理/);
 });

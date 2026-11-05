@@ -94,8 +94,19 @@ function toast(message) {
 // A returning reader may first see a short list summary. Direct input takes
 // precedence over a saved position waiting for the full response.
 const readerPane = document.getElementById('session-detail');
+const sessionInfo = document.getElementById('session-info');
+function closeChatInfo() {
+  sessionInfo.open = false;
+  sessionInfo.querySelector('summary').focus({preventScroll:true});
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && sessionInfo.open) { event.preventDefault(); closeChatInfo(); }
+});
+document.addEventListener('click', event => {
+  if (sessionInfo.open && !sessionInfo.contains(event.target)) sessionInfo.open = false;
+});
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown', 'focusin']) {
-  readerPane.addEventListener(type, () => { readerPane.pendingOffset = null; }, {passive:true});
+  readerPane.addEventListener(type, () => { readerPane.pendingOffset = null; readerPane.openAtLatest = false; }, {passive:true});
 }
 function saveScroll() {
   const pane = document.getElementById('session-detail');
@@ -242,7 +253,10 @@ async function copyText(text) {
   catch(_){toast('浏览器未允许复制，请选中文字复制');}
 }
 function copyCode(button) {copyText(button.parentElement.querySelector('code').textContent);}
-function copyReply() {const t=workspace.detail;if(t)copyText(t.extra?.latest_turn?.assistant || t.detail || '');}
+function copyReply() {
+  const task = workspace.detail || workspace.tasks.find(item => taskId(item) === workspace.selected);
+  if (task) copyText(task.extra?.latest_turn?.assistant ?? task.detail ?? '');
+}
 // Keep history and reply controls mounted while a poll changes surrounding facts.
 function setDetailHtml(id, html) {
   const region = document.getElementById(id);
@@ -261,66 +275,120 @@ function detailAnchor(pane) {
   }
   return null;
 }
-function renderDetail() {
-  if(workspace.page!=='sessions')return;
-  const el=document.getElementById('session-detail');const brief=workspace.tasks.find(t=>taskId(t)===workspace.selected);
-  document.getElementById('detail-location').textContent=brief?[brief.project,brief.machine].filter(Boolean).join(' / '):'';
-  if(!brief){
-    saveScroll();
-    delete el.dataset.session;
-    el.pendingOffset = null;
-    el.innerHTML='<div class="blank-state">'+icon('conversations')+'<h2>'+ (workspace.selected?'会话当前未上报':'选择一个会话')+'</h2><p>'+(workspace.selected?'选择仍保留，等待该设备下次上报，或从列表打开其他会话。':'从列表查看最近消息与结果。')+'</p></div>';
-    workspace.renderedSignature='';if(typeof renderSessionActions==='function')renderSessionActions();return;
+function updateChatHeader(task, hasHistory) {
+  const harness = {codex:'Codex', antigravity:'Antigravity', dsh:'DeepSeek Harness'}[task.tool] || task.tool;
+  document.getElementById('detail-title').textContent = task.title;
+  document.getElementById('detail-title').title = task.title;
+  const status = task.machine_online === false ? '设备离线' : ZH[task.state] || task.state;
+  const context = document.getElementById('detail-context');
+  context.textContent = context.title = [task.machine, harness, status].filter(Boolean).join(' · ');
+  const pin = task.extra?.native_pin;
+  const facts = [
+    ['设备', task.machine], ['Harness', harness], ['项目', task.project], ['目录', task.extra?.cwd], ['设备地址', task.machine_ips?.join(' / ')],
+    ['最近活动', activityAt(task) ? new Date(activityAt(task)*1000).toLocaleString() : ''],
+    ['置顶', pin?.known ? (pin.pinned ? '已置顶' : '未置顶') : ''],
+  ];
+  if (task.machine_online === false) facts.push(['会话状态', ZH[task.state] || task.state]);
+  const live = ['running','stalled'].includes(task.state);
+  if (live && task.detail) facts.push(['当前活动',task.detail]);
+  const started = live && Number(task.turn_started_at || task.state_since);
+  const elapsed = started ? `<dt>已运行</dt><dd id="detail-duration" data-started="${started}"></dd>` : '';
+  setDetailHtml('detail-facts', facts.filter(([,value]) => value).map(([label,value]) =>
+    `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('') + elapsed);
+  const actions = [];
+  if (hasHistory) actions.push('<button type="button" onclick="closeChatInfo();loadHistory(true)">刷新记录</button>');
+  if (!['running','idle'].includes(task.state) && !task.acked) {
+    actions.push(`<button type="button" onclick="closeChatInfo();ack(${jsArg(task.key)})">知道了</button>`);
   }
-  const t=workspace.detail?{...workspace.detail,...brief,extra:{...workspace.detail.extra,...brief.extra}}:brief;
-  const signature=JSON.stringify([workspace.selected,workspace.detailSignature,brief.extra?.native_pin,brief.acked,brief.machine_online]);
-  const duration=fmt(Math.max(0,Math.floor(Date.now()/1000-(t.turn_started_at || t.state_since || Date.now()/1000))));
-  if(signature===workspace.renderedSignature){if(typeof ensureHistory==='function')ensureHistory();const age=document.getElementById('detail-duration');if(age)age.textContent=duration;return;}
-  const opening = el.dataset.session !== workspace.selected;
-  const anchor = opening ? null : detailAnchor(el);
-  const hasHistory = ['codex','antigravity','dsh'].includes(t.tool);
-  if (opening) {
-    el.dataset.session = workspace.selected;
-    el.pendingOffset = null;
-    el.innerHTML = `<div id="detail-intro"></div>
-      ${hasHistory ? '<section id="session-history" aria-label="会话记录"></section>' : ''}
-      <section id="latest-messages"></section>
-      <p id="detail-pin" class="native-pin-note"></p><div id="detail-subagents"></div>
-      <section id="session-control" class="session-control" aria-label="原会话交互"></section>
-      <p id="detail-capture" class="capture-note"></p>`;
-  }
-  const pin=t.extra?.native_pin;
-  const turn=t.extra?.latest_turn;const user=turn?.user ?? t.prompt;const reply=turn?.assistant ?? t.detail;
-  const live=['running','stalled'].includes(t.state);
-  setDetailHtml('detail-intro', `<div class="conversation-head"><h1>${esc(t.title)}</h1>
-    <div class="conversation-facts"><span class="status-tag ${esc(t.state)}">${esc(ZH[t.state] || t.state)}</span><span class="fact">${esc(t.machine)}</span><span class="fact">${esc(t.tool_short || t.tool)}</span><span>${t.machine_online===false?'设备离线':'设备在线'} · ${esc((t.machine_ips || []).join(' / '))}</span></div>
-    <div class="conversation-facts" style="margin-top:9px"><span>${activityAt(t)?'最近活动 '+esc(new Date(activityAt(t)*1000).toLocaleString()):'活动时间未知'}</span>${t.extra?.cwd?`<span title="${esc(t.extra.cwd)}">· ${esc(t.extra.cwd)}</span>`:''}</div>
-    <div class="conversation-actions">${t.state!=='running'&&t.state!=='idle'&&!t.acked?`<button onclick="ack(${jsArg(t.key)})">知道了</button>`:''}</div></div>
-    ${live?`<div class="conversation-facts" style="margin-bottom:20px">已运行 <span id="detail-duration">${duration}</span></div>`:''}
-    ${t.detail&&live?`<div class="activity-note ${t.state==='stalled'?'warning':''}">${esc(t.detail)}</div>`:''}`);
-  setDetailHtml('latest-messages', `
-    <article class="message user-message"><div class="message-label">${icon('user')}最近用户消息</div><div class="message-body">${user?markdown(user):'<p>未采集到用户消息</p>'}</div></article>
-    ${turn?.notification?`<article class="message user-message"><div class="message-label">${icon('activity')}最近外部消息 · 原生系统通知</div><div class="message-body">${markdown(turn.notification)}</div></article>`:''}
-    <article class="message"><div class="message-label">${icon('activity')}${turn?'最新回复':'最新结果摘要'}${reply?'<button onclick="copyReply()">'+icon('copy')+'复制</button>':''}</div><div class="message-body">${reply?markdown(reply):'<p>'+(live?'Agent 正在处理，结果到达后会更新。':'这条会话尚未采集到回复正文。')+'</p>'}</div></article>`);
-  document.getElementById('detail-pin').textContent = pin?.known ? (pin.pinned ? '已在原 Harness 中置顶 · 修改请前往原应用' : '未在原 Harness 中置顶') : '此采集端尚未提供原 Harness 的置顶状态';
+  setDetailHtml('detail-extra-actions',actions.join(''));
   const subs = document.getElementById('detail-subagents');
-  const subagentHtml = renderSubagents(t.extra?.subagents, taskId(t));
-  if (subs.renderedHtml !== subagentHtml) {
+  const content = renderSubagents(task.extra?.subagents, taskId(task));
+  if (subs.renderedHtml !== content) {
     const opened = new Set([...subs.querySelectorAll('.subagents[open]')].map(n => n.dataset.taskKey));
-    setDetailHtml('detail-subagents', subagentHtml);
+    setDetailHtml('detail-subagents',content);
     for (const item of subs.querySelectorAll('.subagents')) item.open = opened.has(item.dataset.taskKey);
   }
-  document.getElementById('detail-capture').textContent = `${workspace.detail?'':'正在读取详情… '}${t.extra?.metadata_only?'仅有原应用的会话索引，本机暂时没有正文日志。':turn?(turn.truncated?'内容较长，当前显示已采集的部分。':'显示当前采集到的最近一轮内容。'):'该采集端提供摘要，更新采集端后可查看较完整的回复。'} ${hasHistory?'历史记录通过原应用按需读取；连接状态和可用内容见会话记录。':''}`;
-  workspace.renderedSignature = signature;
-  if(typeof renderInteraction==='function')renderInteraction();
-  // Adjust only for layout above the reader. History owns its own subsequent updates.
-  if (anchor) el.scrollTop += anchor.region.getBoundingClientRect().top - anchor.top;
-  if(typeof ensureHistory==='function')ensureHistory();
-  if (opening || (workspace.detail && el.pendingOffset != null)) {
-    const target = opening ? (workspace.scroll.get(workspace.selected) || 0) : el.pendingOffset;
-    el.scrollTop = target;
-    el.pendingOffset = !workspace.detail && target > el.scrollTop + 1 ? target : null;
+}
+function capturedChatHtml(task, loaded) {
+  const turn = task.extra?.latest_turn;
+  const user = turn?.user ?? task.prompt;
+  const reply = turn?.assistant ?? task.detail;
+  const messages = [];
+  if (user) messages.push(`<article class="message user-message" aria-label="你"><div class="message-body">${markdown(user)}</div></article>`);
+  if (turn?.notification) messages.push(`<article class="message user-message"><small>原生系统通知</small><div class="message-body">${markdown(turn.notification)}</div></article>`);
+  if (reply) messages.push(`<article class="message" aria-label="${turn?'最新回复':'最新结果摘要'}">${turn?'':'<small>结果摘要</small>'}<div class="message-body">${markdown(reply)}</div><div class="message-actions"><button type="button" title="复制回复" aria-label="复制回复" onclick="copyReply()">${icon('copy')}</button></div></article>`);
+  if (turn?.truncated) messages.push('<p class="capture-note">仅显示已采集的部分。</p>');
+  if (!messages.length) {
+    const empty = !loaded ? '正在读取…' : task.extra?.metadata_only ? '原应用仅提供了会话索引。' : task.state === 'running' ? '正在处理…' : '暂无消息';
+    messages.push(`<p class="capture-note">${empty}</p>`);
   }
+  return messages.join('');
+}
+function settleChatOpening() {
+  if (!readerPane.openAtLatest) return;
+  readerPane.scrollTop = readerPane.scrollHeight;
+  readerPane.openAtLatest = false;
+}
+function updateChatDuration() {
+  if (!sessionInfo.open) return;
+  const elapsed = document.getElementById('detail-duration');
+  if (elapsed) elapsed.textContent = fmt(Math.max(0, Math.floor(Date.now()/1000 - Number(elapsed.dataset.started))));
+}
+sessionInfo.addEventListener('toggle', updateChatDuration);
+function renderDetail() {
+  if (workspace.page !== 'sessions') return;
+  const pane = readerPane;
+  const brief = workspace.tasks.find(t => taskId(t) === workspace.selected);
+  const info = document.getElementById('session-info');
+  info.hidden = !brief;
+  document.getElementById('session-control').hidden = !brief;
+  if (!brief) {
+    saveScroll();
+    delete pane.dataset.session;
+    pane.pendingOffset = null;
+    pane.openAtLatest = false;
+    info.open = false;
+    document.getElementById('detail-title').textContent = '';
+    document.getElementById('detail-context').textContent = '';
+    pane.innerHTML = `<div class="blank-state">${icon('conversations')}<h2>${workspace.selected?'等待设备上报':'选择一个会话'}</h2></div>`;
+    workspace.renderedSignature = '';
+    if (typeof renderSessionActions === 'function') renderSessionActions();
+    return;
+  }
+  const task = workspace.detail ? {...workspace.detail,...brief,extra:{...workspace.detail.extra,...brief.extra}} : brief;
+  const signature = JSON.stringify([workspace.selected,workspace.detailSignature,brief.extra?.native_pin,brief.acked,brief.machine_online,brief.machine]);
+  if (signature === workspace.renderedSignature) {
+    updateChatDuration();
+    if (typeof ensureHistory === 'function') ensureHistory();
+    return;
+  }
+  const opening = pane.dataset.session !== workspace.selected;
+  const anchor = opening ? null : detailAnchor(pane);
+  const hasHistory = ['codex','antigravity','dsh'].includes(task.tool);
+  if (opening) {
+    pane.dataset.session = workspace.selected;
+    pane.pendingOffset = null;
+    pane.openAtLatest = !workspace.scroll.has(workspace.selected);
+    info.open = false;
+    pane.innerHTML = `${hasHistory ? '<section id="session-history" aria-label="会话记录"></section>' : ''}
+      <section id="latest-messages"></section><div id="chat-outgoing"></div>`;
+  }
+  updateChatHeader(task, hasHistory);
+  updateChatDuration();
+  setDetailHtml('latest-messages', capturedChatHtml(task, Boolean(workspace.detail)));
+  workspace.renderedSignature = signature;
+  if (typeof renderInteraction === 'function') renderInteraction();
+  if (anchor) pane.scrollTop += anchor.region.getBoundingClientRect().top - anchor.top;
+  if (typeof ensureHistory === 'function') ensureHistory();
+  if ((opening && workspace.scroll.has(workspace.selected)) || (workspace.detail && pane.pendingOffset != null)) {
+    const target = opening ? workspace.scroll.get(workspace.selected) : pane.pendingOffset;
+    pane.scrollTop = target;
+    pane.pendingOffset = !workspace.detail && target > pane.scrollTop + 1 ? target : null;
+  } else if (opening) {
+    pane.scrollTop = pane.scrollHeight || 0;
+  }
+  const history = hasHistory && typeof historyState === 'function' && historyState(workspace.selected);
+  if (workspace.detail && (!hasHistory || history?.loaded || history?.error)) settleChatOpening();
 }
 function openProject(key) {workspace.project=key;workspace.device='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}
 function openDeviceTasks(key) {workspace.device=key;workspace.project='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}

@@ -45,29 +45,28 @@ entire page smoke check. Reload after changing assets.
 
 | ID | Scenario | Pass condition |
 | --- | --- | --- |
-| UI-01 | Normal Sessions, Projects, Devices, settings | Correct navigation; second column only in Sessions; target device/Harness remains unambiguous |
+| UI-01 | Normal Sessions, Projects, Devices, settings | Sessions alone shows the list. The chat header identifies title, device, Harness and state. Secondary details open on demand |
 | UI-02 | Attention, running, completed, pinned and older chats | Group priority, no duplicates, native title and distinct fixed identity badges; archive/pin semantics preserved |
-| UI-03 | Long title/path, many messages, code | Readable content and reachable actions; no page-wide horizontal overflow |
+| UI-03 | Long title/path, many messages, code | The transcript scrolls independently. Its header and composer remain reachable at desktop and narrow widths |
 | UI-04 | Empty data and filters with no match | Meaningful empty state, clear filters/recovery; not a loading or network error presented as no data |
 | UI-05 | Offline collection or disconnected control | Different conditions are identifiable; no enabled unavailable action; drafts retained |
 | UI-06 | Native question and single approval | Exact offered choices; no persistent approval implication; stale choice cannot be submitted |
-| UI-07 | Settings for three Harnesses | Same component language; true native facts; unknown/read-only distinguishable; scope and selected-option description visible |
-| UI-08 | New conversation | Separate from reply; destination and draft/send semantics explicit; closing does not submit |
+| UI-07 | Settings for three Harnesses | The composer shows a short native model and scope when available. Open it to verify full facts, editable choices and project scope |
+| UI-08 | New conversation | Open from the list header for a supported destination. Check the device, Harness and draft/send behavior in the dialog |
 | UI-09 | Live updates while typing and reading | Draft, caret, selected chat, scroll and expanded reading context retained; changed native revision invalidates action |
 | UI-10 | Delayed/failed/uncertain action | Immediate in-context feedback; no duplicate retry; failed/unknown receipt never implies completion |
 | UI-11 | Login, initial setup and failed connection | Labeled inputs, visible loading/error and recovery; no blank screen; no password exposure |
-| UI-12 | Keyboard and responsive layout | Tab/Shift-Tab, Enter/Space and Escape work; focus remains visible; dialog error is visible and focus returns correctly |
+| UI-12 | Keyboard and responsive layout | Check focus, dialog errors and Escape. Plain Enter creates a line, Ctrl/⌘ + Enter sends once, and IME confirmation preserves the draft |
 
 Inspect at 1280×800 and 390×844, and around an affected breakpoint (760 or 1100
 px) when changing layout. Include long content and keyboard checks, not only an
 empty/default screenshot. Restore temporary viewport overrides afterwards.
 
-For UI-09 use the `refresh` scenario with a long history. Scroll to a numbered
-reply in the middle, note its position on screen, and compare it after at least
-two scan timestamps advance. Repeat with a draft at the bottom, checking the
-input's screen position, focus, text and caret. Load an older page and check
-that the previously visible message stays in place. In `offline`, switch away
-from a long captured reply and back while the full detail is fetched.
+For UI-09, open a fresh long chat in `refresh` and check its latest message is
+visible. Scroll to a numbered message and type a draft. After two scans, check
+the message position, input focus and caret. Load an older page while reading,
+switch chats and return, then exercise “有新内容” when offered. In `offline`,
+repeat the return with a captured reply while its full detail loads.
 
 The preview supplies reproducible data, not every race condition. Code-level
 tests cover delayed response ordering and stale request identities; a focused

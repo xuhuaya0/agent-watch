@@ -2,18 +2,34 @@
 // permission choices are invented here; only offered capabilities can be sent.
 const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''};
 function harnessName(cap) {return ({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap?.tool||workspace.detail?.tool]||'原应用';}
+function permissionLabel(cap) {
+ const policy=cap.policy;
+ if(cap.settings?.permission)return cap.settings.permission;
+ if(policy && policy.scope!=='session-next-turn')return policy.options.find(option=>option.value===policy.current)?.label;
+}
+function hasSessionSettings(cap) {
+ return Boolean(cap && (cap.policy || cap.settings?.model || cap.settings?.reasoning || cap.settings?.permission || cap.settings?.note));
+}
 function settingsSummaryHtml(cap) {
- const s=cap.settings||{},p=cap.policy;
- const permission=s.permission||(p&&p.scope!=='session-next-turn'?p.options.find(o=>o.value===p.current)?.label:null);
- return `<div class="session-settings-summary"><span><small>模型</small>${esc(s.model||'未读取')}</span><span><small>${s.scope==='project'?'项目权限':'权限范围'}</small>${esc(permission||'未读取')}</span><button type="button" onclick="openSessionOptions('settings')">查看设置</button></div>`;
+ if(!hasSessionSettings(cap))return '';
+ const model=cap.settings?.model;
+ const permission=permissionLabel(cap);
+ const permissionText=permission && (cap.settings?.scope==='project'?'项目权限 · '+permission:permission);
+ const shortPermission=cap.tool==='codex'?permissionText?.split(' · ')[0]:permissionText;
+ const modelText=model && (cap.tool==='antigravity'?'记录模型 · '+model:model);
+ const title=[modelText,permissionText].filter(Boolean).join(' · ')||'会话设置';
+ return `<button type="button" class="composer-settings" aria-label="会话设置" aria-haspopup="dialog" title="${esc(title)}" aria-description="${esc(title)}" onclick="openSessionOptions('settings')">
+  ${modelText?`<span class="composer-model">${esc(modelText)}</span>`:''}${shortPermission?`<span class="composer-permission">${esc(shortPermission)}</span>`:''}${modelText||permissionText?'':'会话设置'}<span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`;
 }
 function settingsHtml(cap,disabled) {
  const s=cap.settings||{},h=harnessName(cap),p=cap.policy;
- const permission=s.permission||(p&&p.scope!=='session-next-turn'?p.options.find(o=>o.value===p.current)?.label:null);
+ const permission=permissionLabel(cap);
+ const nativeSettings=cap.tool==='codex'?'模型和完整权限模式在 Codex 中选择。':`模型在 ${esc(h)} 中选择。`;
  return `<div class="native-settings-values"><div><span>${cap.tool==='antigravity'?'原生记录模型':'当前模型'}</span><strong>${esc(s.model||'原应用尚未提供')}</strong></div>${s.reasoning?`<div><span>推理强度</span><strong>${esc(s.reasoning)}</strong></div>`:''}<div><span>${s.scope==='project'?'项目权限':'权限范围'}</span><strong>${esc(permission||'原应用尚未提供')}</strong></div></div>
- <p class="settings-note">模型切换请前往 ${esc(h)}。${cap.tool==='codex'?'完整权限模式也在 Codex 中选择；下方仅提供审批规则。':''}</p>
+ <p class="settings-note">${nativeSettings}</p>
  ${s.note&&cap.tool!=='codex'?`<p class="settings-note">${esc(s.note)}</p>`:''}
- ${p?(p.scope==='session-next-turn'?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>高级 · 审批规则</summary>${policyForm(p,disabled)}</details>`:policyForm(p,disabled)):'<p class="settings-note">当前没有可在面板修改的权限选项。会话忙碌时，请等待本轮结束。</p>'}`;
+ ${cap.reason && cap.reply?`<p class="settings-note">${esc(cap.reason)}</p>`:''}
+ ${p?(p.scope==='session-next-turn'?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>高级 · 审批规则</summary>${policyForm(p,disabled)}</details>`:policyForm(p,disabled)):'<p class="settings-note">当前权限仅供查看。</p>'}`;
 }
 function policyForm(policy,disabled) {
  const project=policy.scope==='project-permissions',presets=policy.scope==='session-permissions';
@@ -34,11 +50,15 @@ function creationForm(cap,draft,disabled) {
  const brief=workspace.tasks?.find(t=>(t.ui_key||t.key)===workspace.selected)||workspace.detail;
  const location=create.location==='native-project'?['项目',create.project_name||create.project_id]:['工作目录',create.cwd];
  const description=openDraft?'在目标设备的 Codex 中打开预填草稿，需要在 Codex 点击发送后才会创建会话。':create.location==='native-project'?'沿用当前会话的模型，权限使用目标项目设置。':'使用原应用默认模型与权限。';
- return `<form class="new-conversation-form" onsubmit="event.preventDefault();sendCreate(${jsArg(create.revision)})"><div class="creation-destination"><div><span>设备 / 应用</span><strong>${esc(brief?.machine||'当前设备')} · ${esc(h)}</strong></div><div><span>${location[0]}</span><strong>${esc(location[1])}</strong></div></div><p class="settings-note">${description}</p><label for="native-create">首条消息</label><textarea id="native-create" rows="5" maxlength="16000" required placeholder="描述新会话要做的事…" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><div class="options-footer"><span>会创建独立会话</span><button class="primary"${disabled}>${openDraft?'在 Codex 打开草稿':'新建并发送'}</button></div></form>`;
+ return `<form class="new-conversation-form" onsubmit="event.preventDefault();sendCreate(${jsArg(create.revision)})"><div class="creation-destination"><div><span>设备 / 应用</span><strong>${esc(brief?.machine||'当前设备')} · ${esc(h)}</strong></div><div><span>${location[0]}</span><strong>${esc(location[1])}</strong></div></div><p class="settings-note">${description}</p><label for="native-create">首条消息</label><textarea id="native-create" rows="5" maxlength="16000" required placeholder="描述新会话要做的事…" oninput="interactionDraft(workspace.selected).createText=this.value">${esc(draft.createText)}</textarea><div class="options-footer"><button class="primary"${disabled}>${openDraft?'在 Codex 打开草稿':'新建并发送'}</button></div></form>`;
 }
 function openSessionOptions(kind) {
  const data=interaction.byTask.get(workspace.selected);
- if(!data?.connected||!data.capability||(kind==='create'&&!data.capability.create))return;
+ if(!data?.connected||!data.capability)return;
+ if(kind!=='create' && kind!=='settings')return;
+ if(kind==='create' && !data.capability.create)return;
+ if(kind==='settings' && !hasSessionSettings(data.capability))return;
+ if(Array.isArray(workspace.tasks) && !workspace.tasks.some(task=>(task.ui_key||task.key)===workspace.selected))return;
  Object.assign(sessionOptions,{id:workspace.selected,kind,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''});
  renderSessionOptions();
  const dialog=document.getElementById('session-options');dialog.onkeydown=trapSessionOptionsFocus;dialog.showModal();
@@ -83,9 +103,12 @@ function updatePolicyApply() {
 }
 function renderSessionActions() {
  const el=document.getElementById('session-actions'),id=workspace.selected,data=interaction.byTask.get(id);
- const present=!Array.isArray(workspace.tasks)||workspace.tasks.some(t=>(t.ui_key||t.key)===id);
+ const selectedTask=workspace.tasks?.find(task=>(task.ui_key||task.key)===id);
+ const present=!Array.isArray(workspace.tasks)||Boolean(selectedTask);
  if(el) {
-  const html=present&&id&&data?.connected&&data.capability?`<button type="button" onclick="openSessionOptions('settings')">会话设置</button>${data.capability.create?'<button type="button" onclick="openSessionOptions(\'create\')">＋ 新建会话</button>':''}`:'';
+  const destination=[selectedTask?.machine,harnessName(data?.capability)].filter(Boolean).join(' · ');
+  const html=present && id && data?.connected && data.capability?.create ?
+   `<button type="button" aria-haspopup="dialog" title="${esc(destination)}" onclick="openSessionOptions('create')">＋ 新建会话</button>` : '';
   if(el.innerHTML!==html)el.innerHTML=html;
  }
  if(sessionOptions.id&&(workspace.selected!==sessionOptions.id||workspace.page!=='sessions'||!present))closeSessionOptions();
@@ -104,7 +127,7 @@ function renderSessionOptions(force=false) {
  }
  sessionOptions.signature=signature;
  const title=sessionOptions.kind==='create'?`新建 ${harnessName(cap)} 会话`:'会话设置';
- const body=!data?.connected||!cap?'<p class="settings-note">交互连接暂时不可用，草稿已保留。连接恢复后可继续。</p>':sessionOptions.kind==='create'?(cap?.create?creationForm(cap,interactionDraft(id),interactionBusy(id)?' disabled':''):'<p class="settings-note">当前新建入口不可用，请等待会话空闲后重试。</p>'):settingsHtml(cap,interactionBusy(id)?' disabled':'');
+ const body=!data?.connected||!cap?'<p class="settings-note">交互连接暂时不可用，草稿已保留。连接恢复后可继续。</p>':sessionOptions.kind==='create'?(cap?.create?creationForm(cap,interactionDraft(id),interactionBusy(id)?' disabled':''):'<p class="settings-note">原应用当前未提供新建入口。</p>'):settingsHtml(cap,interactionBusy(id)?' disabled':'');
  // The dialog sits outside the polled detail pane, so ordinary conversation
  // updates do not recreate fields or steal the caret.
  const active=el.contains(document.activeElement)?document.activeElement:null;

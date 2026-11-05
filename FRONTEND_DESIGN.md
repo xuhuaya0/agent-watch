@@ -17,9 +17,10 @@ necessarily on the device that receives an action.
 | Surface | Responsibility | Keep out of this surface |
 | --- | --- | --- |
 | Main navigation | Sessions, Projects, Devices, Agent Watch settings | Individual chats, native permission controls |
-| Session list | Find and select every non-archived session | Message bodies, connection diagnostics, editable permissions |
-| Session detail | Identity, activity, conversation history, current reply or request | Center administration, unrelated new-chat forms |
-| Session toolbar | Contextual settings and new-conversation entry | Hidden writes triggered by selection |
+| Session list | Select a non-archived chat. Offer New conversation in its header when the selected destination supports it | Message bodies and permission forms |
+| Chat header | Native title, device, Harness and state. Put project, connection details and secondary actions under session information | Repeated metadata in the transcript |
+| Transcript | Independently scrollable messages, tool records and outbound delivery status | Center settings and new-chat forms |
+| Chat composer | Keep the current reply or native request reachable below the transcript. Show a compact settings entry with the reported model and permission scope | Unavailable actions and full permission descriptions |
 | Session settings | Native facts, supported changes and their scope | Invented model catalogs, approval rules relabeled as full permissions |
 | New-conversation dialog | Destination and first message or native draft | Sending into the currently selected conversation |
 | Projects / Devices | Discover a location and navigate to its sessions | A mandatory second column |
@@ -107,11 +108,12 @@ Every data view and action must account for the following states:
 | Uncertain delivery | Never auto-resend; explain how to check the original application |
 | Stale native state | Invalidate an old request/revision and require a fresh choice; never silently apply it to new state |
 
-Refreshes must preserve selected conversation, scroll, focused input, caret,
-unsent text and open reading context when their underlying identity is unchanged.
-They must also remove obsolete actions promptly. Late responses cannot replace
-newer state or another conversation. These are behavior requirements, not merely
-animation or CSS concerns.
+Open an unvisited chat at its latest message and restore a returning reader's
+position per chat. An explicit send or “有新内容” action may bring the newest
+message into view. Polling and loading an older page preserve the message being
+read and its position on screen. If the reader moves during a request, use the
+position at arrival. Keep the input, selection, draft and expanded tools stable
+across updates. Withdraw stale actions as soon as their native request changes.
 
 Feedback belongs to the initiating action. A dialog must contain its own visible
 error/status region; a page toast behind a modal backdrop is not sufficient.

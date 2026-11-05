@@ -5,21 +5,25 @@ function historyState(id) {
  if(!histories.has(id))histories.set(id,{messages:[],loaded:false,busy:false,next:null,version:null,generation:0,error:'',older:false,updated:false,openedTools:new Set()});
  return histories.get(id);
 }
-function historyControlsHtml(s) {
- let html=`<div class="history-toolbar"><strong>会话记录${s.updated?' · 有新内容':''}</strong><button type="button" onclick="loadHistory(true)"${s.busy?' disabled':''}>刷新</button></div>`;
- if(s.error)html+=`<p class="capture-note warning" role="status">${esc(HISTORY_ERRORS[s.error]||'历史读取失败，请重试。')}</p>`;
- if(s.loaded && s.next)html+=`<button type="button" class="history-older" onclick="loadHistory(false)"${s.busy?' disabled':''}>${s.busy?'正在读取…':'加载更早的记录'}</button>`;
- else if(s.busy && !s.loaded)html+='<p class="capture-note" role="status">正在从设备读取历史…</p>';
- if(s.loaded&&!s.messages.length&&!s.next)html+='<p class="capture-note">没有可显示的消息。</p>';
- return html;
+function historyControlsHtml(state) {
+ const controls = [];
+ if (state.error) controls.push(`<p class="history-notice" role="status">${esc(HISTORY_ERRORS[state.error] || '历史读取失败')} <button type="button" onclick="loadHistory(true)">重试</button></p>`);
+ if (state.updated) controls.push('<button type="button" class="history-older" onclick="showNewHistory()">有新内容 ↓</button>');
+ if (state.loaded && state.next) controls.push(`<button type="button" class="history-older" onclick="loadHistory(false)"${state.busy?' disabled':''}>${state.busy?'读取中…':'加载更早的记录'}</button>`);
+ if (state.busy && !state.loaded) controls.push('<p class="capture-note" role="status">正在读取历史…</p>');
+ return controls.join('');
 }
-
-function historyMessageBody(m, sessionId) {
- const label=`${esc(m.label||({user:'你',assistant:'Agent',tool:'工具'}[m.role]))}${m.timestamp?` <time>${esc(new Date(m.timestamp).toLocaleString())}</time>`:''}`;
- const body=`<div class="message-body">${markdown(m.text)}</div>${m.truncated?'<p class="capture-note">此条内容过长，显示前 48 KB；完整内容请在原应用查看。</p>':''}`;
- if(m.role==='tool')return `<summary>${label}</summary>${body}`;
- const copy=m.role==='assistant'?`<button type="button" data-history-id="${esc(m.id)}" data-history-session="${esc(sessionId)}" aria-label="复制这条回复" onclick="copyHistoryReply(this)">${icon('copy')}复制</button>`:'';
- return `<div class="message-label">${label}${copy}</div>${body}`;
+function showNewHistory() {
+ if (historyState(workspace.selected).busy) return;
+ readerPane.openAtLatest = true;
+ return loadHistory(true);
+}
+function historyMessageBody(message, sessionId) {
+ const body = `<div class="message-body">${markdown(message.text)}</div>${message.truncated?'<p class="capture-note">长消息仅显示前 48 KB。</p>':''}`;
+ if (message.role === 'tool') return `<summary>${esc(message.label || '工具')}</summary>${body}`;
+ const label = message.label === '外部通知' ? '<small>原生系统通知</small>' : '';
+ if (message.role === 'user') return label + body;
+ return `${body}<div class="message-actions"><button type="button" data-history-id="${esc(message.id)}" data-history-session="${esc(sessionId)}" title="复制回复" aria-label="复制这条回复" onclick="copyHistoryReply(this)">${icon('copy')}</button></div>`;
 }
 
 function updateHistoryRows(list, state, sessionId) {
@@ -48,6 +52,9 @@ function updateHistoryRows(list, state, sessionId) {
   const old=row.historyMessage;
   if(!old || old.text!==message.text || old.label!==message.label || old.timestamp!==message.timestamp || old.truncated!==message.truncated)
    row.innerHTML=historyMessageBody(message,sessionId);
+  const author = message.label || {assistant:'Agent',user:'你',tool:'工具'}[message.role];
+  row.title = message.timestamp ? author+' · '+new Date(message.timestamp).toLocaleString() : author;
+  row.setAttribute('aria-label', author);
   row.historyMessage=message;
   if(row!==cursor)list.insertBefore(row,cursor);
   cursor=row.nextElementSibling;
@@ -62,17 +69,10 @@ function historyReadingAnchor(pane, list, prepend=false) {
  // page explicitly should keep the first visible message in place instead.
  if(!pane.clientHeight || (pane.scrollTop<=0 && !prepend))return null;
  const view=pane.getBoundingClientRect();
- const control=document.getElementById('session-control');
- const focused=document.activeElement;
- if(control?.contains(focused)) {
-  const rect=focused.getBoundingClientRect();
-  if(rect.bottom>view.top && rect.top<view.bottom)return {node:focused,top:rect.top};
- }
  for(const row of list.children) {
   const rect=row.getBoundingClientRect();
   if(rect.bottom>view.top && rect.top<view.bottom)return {node:row,top:rect.top};
  }
- if(control && list.getBoundingClientRect().bottom<=view.top)return {node:control,top:control.getBoundingClientRect().top};
  return null;
 }
 
@@ -87,11 +87,11 @@ function renderHistory(prepend=false) {
  const [controls,list]=el.children;
  const controlsHtml=historyControlsHtml(state);
  const latest=document.getElementById('latest-messages');
- if(controls.historyHtml===controlsHtml && list.historyMessages===state.messages && (!latest || latest.hidden===state.loaded))return;
+ if(controls.historyHtml===controlsHtml && list.historyMessages===state.messages && (!latest || latest.hidden===(state.loaded && state.messages.length>0)))return;
  const anchor=historyReadingAnchor(pane,list,prepend);
  if(controls.historyHtml!==controlsHtml){controls.innerHTML=controlsHtml;controls.historyHtml=controlsHtml;}
  if(list.historyMessages!==state.messages)updateHistoryRows(list,state,id);
- if(latest)latest.hidden=state.loaded;
+ if(latest)latest.hidden=state.loaded && state.messages.length>0;
  if(anchor?.node.isConnected)pane.scrollTop+=anchor.node.getBoundingClientRect().top-anchor.top;
 }
 function rememberHistoryTool(element) {
@@ -134,7 +134,7 @@ async function loadHistory(reset=true,background=false) {
   if(!Array.isArray(data.messages))throw new Error('history_unavailable');
   if(background && s.loaded && workspace.selected===id && workspace.page==='sessions') {
    const list=document.getElementById('session-history')?.lastElementChild;
-   const anchor=list&&historyReadingAnchor(document.getElementById('session-detail'),list);
+   const anchor=list&&historyReadingAnchor(document.getElementById('session-detail'),list,true);
    const visibleId=anchor && anchor.node.parentElement===list ? anchor.node.dataset.historyId : null;
    // A live page may have moved past the record on screen. Let the reader
    // choose when to replace this page with the latest window.
@@ -144,5 +144,7 @@ async function loadHistory(reset=true,background=false) {
   s.next=data.next_cursor;s.loaded=true;s.older=!reset;s.updated=false;
   prepended=!reset;
  } catch(e) {s.error=e.message;}
- finally {s.busy=false;if(workspace.selected!==id&&!s.loaded)s.version=null;if(workspace.selected===id)renderHistory(prepended);}
+ finally {s.busy=false;if(workspace.selected!==id&&!s.loaded)s.version=null;if(workspace.selected===id){renderHistory(prepended);
+  if(workspace.page==='sessions' && (s.messages.length || ((s.loaded || s.error) && workspace.detail)) && typeof settleChatOpening==='function')settleChatOpening();
+ }}
 }
