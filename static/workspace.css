@@ -303,15 +303,15 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .reply-composer textarea:focus-visible { outline: 0; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .settings-summary-slot { min-width: 0; }
+.composer-setting-controls { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .composer-settings {
-  display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-width: 0; min-height: 30px;
-  margin: 0; padding: 3px 7px; border: 0; border-radius: 6px; background: transparent;
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-width: 0; min-height: 30px;
+  margin: 0; padding: 3px 7px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--bg);
   color: var(--mute); font-size: 11px; white-space: nowrap;
 }
 .composer-settings:hover { color: var(--ink); background: var(--hover); }
-.composer-model, .composer-permission { overflow: hidden; text-overflow: ellipsis; }
-.composer-model { flex-shrink: 0; max-width: 52%; font-weight: 550; color: var(--text); }
-.composer-model + .composer-permission { padding-inline-start: 7px; border-inline-start: 1px solid var(--line); }
+.composer-setting-label { flex: none; color: var(--mute); }
+.composer-model, .composer-permission { min-width: 0; max-width: 23ch; overflow: hidden; text-overflow: ellipsis; font-weight: 550; color: var(--text); }
 .composer-settings-chevron { flex: none; }
 .composer-send { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-height: 30px; margin: 0 0 0 auto; padding: 4px 10px; }
 .composer-send .icon { width: 14px; height: 14px; }
@@ -342,8 +342,15 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .history-notice button, .history-older { border: 0; color: var(--mute); background: transparent; margin: 0; padding: 3px 6px; font-size: 11px; }
 .history-notice button:hover, .history-older:hover { background: var(--hover); color: var(--ink); }
 .history-older { display: block; margin: 0 auto 18px; }
-.history-tool { margin: 0 0 18px; padding-left: 10px; border-left: 2px solid var(--line); }
-.history-tool summary { cursor: pointer; font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.history-tools { margin: 0 0 24px; }
+.history-tools > summary, .history-tool > summary { cursor: pointer; font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.history-tools > summary { width: fit-content; padding: 4px 0; }
+.history-tools > summary:hover, .history-tool > summary:hover { color: var(--ink); }
+.history-tools-list { margin: 8px 0 0 4px; padding-left: 12px; border-left: 1px solid var(--line); }
+.history-tool { margin: 0 0 12px; }
+.history-tool:last-child { margin-bottom: 0; }
+.history-commentary { margin: 0 0 12px; color: var(--mute); font-size: 13px; }
+.history-commentary:last-child { margin-bottom: 0; }
 .history-tool .message-body { margin-top: 8px; color: var(--text); }
 .message-label time, .history-tool time { margin-left: 4px; font-size: 11px; color: var(--mute); font-weight: 400; }
 /* Native settings and creation are distinct from the conversation composer. */
@@ -358,6 +365,9 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .options-heading>button { align-self: flex-start; margin: 0; background: none; border-color: transparent; font-size: 22px; line-height: 1; padding: 5px 8px; }
 .native-settings-values, .creation-destination { display: grid; gap: 8px; padding: 12px; background: var(--bg); border: 1px solid var(--line-soft); border-radius: 9px; }
 .native-settings-values>div, .creation-destination>div { display: grid; grid-template-columns: 84px minmax(0,1fr); gap: 12px; font-size: 12px; }
+.native-model-form fieldset { margin: 0; padding: 0; border: 0; }
+.model-effort-label { display: block; font-size: 12px; color: var(--mute); margin: 14px 0 6px; }
+.native-model-form select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .native-settings-values span, .creation-destination span { color: var(--mute); }
 .native-settings-values strong, .creation-destination strong { font-weight: 500; overflow-wrap: anywhere; }
 .settings-note { font-size: 12px; line-height: 1.7; color: var(--mute); margin: 12px 0; }

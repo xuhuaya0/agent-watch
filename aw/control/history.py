@@ -75,8 +75,11 @@ def message(row, offset):
     # Bound each item while preserving an explicit truncation indicator.
     raw = body.encode('utf-8')
     body = raw[:48000].decode('utf-8', errors='ignore')
-    return {'id': str(offset), 'role': role, 'label': label, 'text': body,
-            'timestamp': str(row.get('timestamp') or '')[:80], 'truncated': len(raw) > 48000}
+    result = {'id': str(offset), 'role': role, 'label': label, 'text': body,
+              'timestamp': str(row.get('timestamp') or '')[:80], 'truncated': len(raw) > 48000}
+    if role == 'assistant' and p.get('phase') == 'commentary':
+        result['phase'] = 'commentary'
+    return result
 
 
 @contextmanager

@@ -21,6 +21,7 @@ SCHEMA.update(latestThreadSettings={'approvalPolicy':True, 'approvalsReviewer':T
               'sandboxPolicy':True, 'permissions':True, 'activePermissionProfile':True,
               'model':True, 'effort':True},
               latestModel=True, latestReasoningEffort=True,
+              workspaceKind=True,
               threadRuntimeStatus={'type':True})
 
 

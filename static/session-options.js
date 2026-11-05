@@ -1,35 +1,40 @@
-// Read-only native state and separate, explicitly scoped actions. No model or
+// Native state and separate, explicitly scoped actions. No model or
 // permission choices are invented here; only offered capabilities can be sent.
-const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''};
+const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,policyCurrent:null,value:null,modelRevision:null,modelCurrent:null,currentEffort:null,modelValue:null,effortValue:null,confirmed:false,advanced:false,changed:false,message:''};
 function harnessName(cap) {return ({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap?.tool||workspace.detail?.tool]||'原应用';}
 function permissionLabel(cap) {
  const policy=cap.policy;
  if(cap.settings?.permission)return cap.settings.permission;
- if(policy && policy.scope!=='session-next-turn')return policy.options.find(option=>option.value===policy.current)?.label;
-}
-function hasSessionSettings(cap) {
- return Boolean(cap && (cap.policy || cap.settings?.model || cap.settings?.reasoning || cap.settings?.permission || cap.settings?.note));
+ if(policy && policy.scope!=='session-next-turn')return policy.options.find(option=>option.value===policy.current)?.label||(policy.current==='custom'?'自定义组合':undefined);
 }
 function settingsSummaryHtml(cap) {
- if(!hasSessionSettings(cap))return '';
- const model=cap.settings?.model;
+ const model=cap.model?.options?.find(option=>option.value===cap.model.current)?.label||cap.settings?.model||cap.model?.current;
  const permission=permissionLabel(cap);
- const permissionText=permission && (cap.settings?.scope==='project'?'项目权限 · '+permission:permission);
- const shortPermission=cap.tool==='codex'?permissionText?.split(' · ')[0]:permissionText;
- const modelText=model && (cap.tool==='antigravity'?'记录模型 · '+model:model);
- const title=[modelText,permissionText].filter(Boolean).join(' · ')||'会话设置';
- return `<button type="button" class="composer-settings" aria-label="会话设置" aria-haspopup="dialog" title="${esc(title)}" aria-description="${esc(title)}" onclick="openSessionOptions('settings')">
-  ${modelText?`<span class="composer-model">${esc(modelText)}</span>`:''}${shortPermission?`<span class="composer-permission">${esc(shortPermission)}</span>`:''}${modelText||permissionText?'':'会话设置'}<span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`;
+ const shortPermission=cap.tool==='codex'?permission?.split(' · ')[0]:permission;
+ const entries=[['model',cap.tool==='antigravity'&&!cap.model?'记录模型':'模型',model,model],['permission',cap.settings?.scope==='project'||cap.policy?.scope==='project-permissions'?'项目权限':'权限',shortPermission,permission]];
+ return `<div class="composer-setting-controls">${entries.map(([kind,label,value,full])=>`<button type="button" class="composer-settings" aria-label="${label}：${esc(full||'尚未读取')}" aria-haspopup="dialog" title="${label}：${esc(full||'尚未读取')}" onclick="openSessionOptions('${kind}')"><span class="composer-setting-label">${label}</span><span class="composer-${kind}">${esc(value||'未读取')}</span><span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`).join('')}</div>`;
 }
-function settingsHtml(cap,disabled) {
- const s=cap.settings||{},h=harnessName(cap),p=cap.policy;
+function modelEfforts(option) {return (option?.efforts||[]).map(value=>typeof value==='string'?{value,label:value}:value);}
+function modelSettingsHtml(cap,disabled) {
+ const model=cap.model,s=cap.settings||{},h=harnessName(cap);
+ if(!model?.options?.length) {
+  const note=s.model?(cap.tool==='antigravity'?'这是原生会话记录中的模型，可能不同于下一轮使用的模型。':'此连接仅提供模型信息。'):'原应用尚未提供可确认的模型信息。';
+  return `<div class="native-settings-values"><div><span>${cap.tool==='antigravity'?'记录模型':'当前模型'}</span><strong>${esc(s.model||model?.current||'尚未读取')}</strong></div>${s.reasoning?`<div><span>推理强度</span><strong>${esc(s.reasoning)}</strong></div>`:''}</div><p class="settings-note">${note}请在 ${esc(h)} 中查看或切换。</p>`;
+ }
+ const value=sessionOptions.modelRevision===model.revision?sessionOptions.modelValue:model.current;
+ const effort=sessionOptions.modelRevision===model.revision?sessionOptions.effortValue:model.effort;
+ const selected=model.options.find(option=>option.value===value),efforts=modelEfforts(selected);
+ const changed=value!==model.current||(efforts.length&&effort!==model.effort);
+ const valid=Boolean(selected)&&(!efforts.length||efforts.some(option=>option.value===effort));
+ const choices=model.options.map(option=>`<label class="permission-choice${option.value===value?' selected':''}"><input type="radio" name="model" value="${esc(option.value)}"${option.value===value?' checked':''} onchange="chooseSessionModel(this.value)"><span>${esc(option.label)}</span>${option.value===model.current?'<small>当前</small>':''}</label>`).join('');
+ const reasoning=efforts.length?`<label class="model-effort-label" for="model-effort">推理强度</label><select id="model-effort" name="effort"${disabled} onchange="chooseModelEffort(this.value)">${efforts.some(option=>option.value===effort)?'':'<option value="" disabled selected>请选择推理强度</option>'}${efforts.map(option=>`<option value="${esc(option.value)}"${option.value===effort?' selected':''}>${esc(option.label)}</option>`).join('')}</select>`:'';
+ return `<form class="native-model-form" onsubmit="event.preventDefault();sendModel(this,${jsArg(model.revision)})"><p class="settings-note">仅此会话的后续轮次 · 使用原应用提供的模型。</p><fieldset${disabled}><legend class="sr-only">选择模型</legend>${choices}</fieldset>${!model.options.some(option=>option.value===model.current)?`<p class="settings-note">当前：${esc(s.model||model.current||'尚未读取')}（仅显示）</p>`:''}${reasoning}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="model-apply" class="primary" type="submit"${disabled||!changed||!valid?' disabled':''}>应用到此会话</button></div></form>`;
+}
+function permissionSettingsHtml(cap,disabled) {
+ const s=cap.settings||{},p=cap.policy;
  const permission=permissionLabel(cap);
- const nativeSettings=cap.tool==='codex'?'模型和完整权限模式在 Codex 中选择。':`模型在 ${esc(h)} 中选择。`;
- return `<div class="native-settings-values"><div><span>${cap.tool==='antigravity'?'原生记录模型':'当前模型'}</span><strong>${esc(s.model||'原应用尚未提供')}</strong></div>${s.reasoning?`<div><span>推理强度</span><strong>${esc(s.reasoning)}</strong></div>`:''}<div><span>${s.scope==='project'?'项目权限':'权限范围'}</span><strong>${esc(permission||'原应用尚未提供')}</strong></div></div>
- <p class="settings-note">${nativeSettings}</p>
- ${s.note&&cap.tool!=='codex'?`<p class="settings-note">${esc(s.note)}</p>`:''}
- ${cap.reason && cap.reply?`<p class="settings-note">${esc(cap.reason)}</p>`:''}
- ${p?(p.scope==='session-next-turn'?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>高级 · 审批规则</summary>${policyForm(p,disabled)}</details>`:policyForm(p,disabled)):'<p class="settings-note">当前权限仅供查看。</p>'}`;
+ return `<div class="native-settings-values"><div><span>${s.scope==='project'||p?.scope==='project-permissions'?'项目权限':'当前权限'}</span><strong>${esc(permission||'尚未读取')}</strong></div></div>
+ ${p?(p.scope==='session-next-turn'?`<p class="settings-note">当前连接仅支持单独调整审批规则。完整权限模式请在 ${esc(harnessName(cap))} 中选择。</p><details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>高级 · 审批规则</summary>${policyForm(p,disabled)}</details>`:policyForm(p,disabled)):`<p class="settings-note">${permission?'当前权限仅供查看。':'原应用尚未提供可确认的权限信息。'}请在 ${esc(harnessName(cap))} 中查看或切换。</p>`}`;
 }
 function policyForm(policy,disabled) {
  const project=policy.scope==='project-permissions',presets=policy.scope==='session-permissions';
@@ -41,7 +46,9 @@ function policyForm(policy,disabled) {
  const selected=policy.options.find(o=>o.value===value);
  const current=policy.options.find(o=>o.value===policy.current)?.label||(policy.current==='custom'?'自定义组合':policy.current);
  const changed=value!==policy.current;
- const choices=policy.options.map(o=>`<label class="permission-choice${o.value===value?' selected':''}"><input type="radio" name="policy" value="${esc(o.value)}"${o.value===value?' checked':''} onchange="chooseSessionPolicy(this.value)"><span>${esc(o.label)}</span>${o.value===policy.current?'<small>当前</small>':''}</label>`).join('');
+ const choice=o=>`<label class="permission-choice${o.value===value?' selected':''}"><input type="radio" name="policy" value="${esc(o.value)}"${o.value===value?' checked':''} onchange="chooseSessionPolicy(this.value)"><span>${esc(o.label)}</span>${o.value===policy.current?'<small>当前</small>':''}</label>`;
+ const advanced=presets?policy.options.filter(o=>o.group==='advanced'):[];
+ const choices=policy.options.filter(o=>!advanced.includes(o)).map(choice).join('')+(advanced.length?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>其他权限</summary>${advanced.map(choice).join('')}</details>`:'');
  const description=selected?.description||(policy.scope==='session-next-turn'?(value==='never'?'需要批准的操作将被拒绝，不会自动获得权限。':'由 Codex 按当前审批者设置处理需要批准的操作。'):'');
  return `<form class="native-policy-form" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(policy.revision)})"><div class="settings-section-heading"><h3>${title}</h3><span class="scope-badge">${project?'整个项目':'此会话'}</span></div><p class="settings-note">${esc(note)}</p><fieldset${disabled}><legend class="sr-only">选择${title}</legend>${choices}</fieldset>${!policy.options.some(o=>o.value===policy.current)?`<p class="settings-note">当前：${esc(current)}（仅显示）</p>`:''}<p id="policy-description" class="policy-description">${esc(description)}</p>${project?`<label class="project-confirm"><input type="checkbox" name="confirmProject"${sessionOptions.confirmed?' checked':''}${disabled} onchange="sessionOptions.confirmed=this.checked;updatePolicyApply()">确认更改项目「${esc(target)}」的权限</label>`:''}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="policy-apply" class="primary" type="submit"${disabled||!changed||(project&&!sessionOptions.confirmed)?' disabled':''}>${project?'应用到整个项目':'应用到此会话'}</button></div></form>`;
 }
@@ -55,11 +62,10 @@ function creationForm(cap,draft,disabled) {
 function openSessionOptions(kind) {
  const data=interaction.byTask.get(workspace.selected);
  if(!data?.connected||!data.capability)return;
- if(kind!=='create' && kind!=='settings')return;
+ if(!['create','model','permission'].includes(kind))return;
  if(kind==='create' && !data.capability.create)return;
- if(kind==='settings' && !hasSessionSettings(data.capability))return;
  if(Array.isArray(workspace.tasks) && !workspace.tasks.some(task=>(task.ui_key||task.key)===workspace.selected))return;
- Object.assign(sessionOptions,{id:workspace.selected,kind,signature:'',policyRevision:null,value:null,confirmed:false,advanced:false,changed:false,message:''});
+ Object.assign(sessionOptions,{id:workspace.selected,kind,signature:'',policyRevision:null,policyCurrent:null,value:null,modelRevision:null,modelCurrent:null,currentEffort:null,modelValue:null,effortValue:null,confirmed:false,advanced:false,changed:false,message:''});
  renderSessionOptions();
  const dialog=document.getElementById('session-options');dialog.onkeydown=trapSessionOptionsFocus;dialog.showModal();
 }
@@ -93,8 +99,23 @@ function trapSessionOptionsFocus(event) {
 }
 function closeSessionOptions() {document.getElementById('session-options')?.close();sessionOptionsClosed();}
 function sessionOptionsClosed() {sessionOptions.id=null;sessionOptions.kind=null;sessionOptions.signature='';}
+function sessionOptionsActionKind() {return sessionOptions.kind==='permission'?'policy':sessionOptions.kind;}
+function chooseSessionModel(value) {
+ const model=interaction.byTask.get(sessionOptions.id)?.capability?.model;
+ const selected=model?.options.find(option=>option.value===value);if(!selected)return;
+ const efforts=modelEfforts(selected);
+ sessionOptions.modelValue=value;
+ if(!efforts.some(option=>option.value===sessionOptions.effortValue))sessionOptions.effortValue=efforts.find(option=>option.value===selected.default_effort)?.value||efforts[0]?.value||null;
+ sessionOptions.message='';sessionOptions.changed=false;renderSessionOptions(true);
+ document.querySelector('#session-options input[name="model"]:checked')?.focus({preventScroll:true});
+}
+function chooseModelEffort(value) {
+ const model=interaction.byTask.get(sessionOptions.id)?.capability?.model;
+ if(!modelEfforts(model?.options.find(option=>option.value===sessionOptions.modelValue)).some(option=>option.value===value))return;
+ sessionOptions.effortValue=value;sessionOptions.message='';sessionOptions.changed=false;renderSessionOptions(true);
+}
 function chooseSessionPolicy(value) {
- sessionOptions.value=value;sessionOptions.confirmed=false;sessionOptions.message='';renderSessionOptions(true);
+ sessionOptions.value=value;sessionOptions.confirmed=false;sessionOptions.message='';sessionOptions.changed=false;renderSessionOptions(true);
  document.querySelector('#session-options input[name="policy"]:checked')?.focus({preventScroll:true});
 }
 function updatePolicyApply() {
@@ -117,21 +138,34 @@ function renderSessionActions() {
 function renderSessionOptions(force=false) {
  const id=sessionOptions.id;if(!id)return;
  const data=interaction.byTask.get(id),cap=data?.capability;
- const signature=JSON.stringify([data?.connected,cap?.settings,cap?.policy,cap?.create,interactionBusy(id)]);
+ const kind=sessionOptions.kind,actionKind=sessionOptionsActionKind();
+ const facts=kind==='model'?[cap?.model,cap?.settings?.model,cap?.settings?.reasoning]:kind==='permission'?[cap?.policy,cap?.settings?.permission,cap?.settings?.scope]:[cap?.create];
+ const signature=JSON.stringify([data?.connected,cap?.tool,facts,interactionBusy(id)]);
  const el=document.getElementById('session-options-body');if(!el)return;
- if(!force&&signature===sessionOptions.signature){const feedback=el.querySelector('.interaction-feedback');if(feedback)feedback.innerHTML=interactionFeedbackHtml(id,sessionOptions.kind==='settings'?'policy':'create');return;}
+ if(!force&&signature===sessionOptions.signature){const feedback=el.querySelector('.interaction-feedback');if(feedback)feedback.innerHTML=interactionFeedbackHtml(id,actionKind);return;}
  const p=cap?.policy;
- if(sessionOptions.policyRevision!==p?.revision) {
-  sessionOptions.changed=Boolean(sessionOptions.policyRevision);
-  sessionOptions.policyRevision=p?.revision;sessionOptions.value=p?.current;sessionOptions.confirmed=false;
+ if(kind==='permission'&&p&&sessionOptions.policyRevision!==p.revision) {
+  // A revision also changes after our own successful write. Warn only when
+  // an unapplied choice is replaced by a DIFFERENT native current value.
+  sessionOptions.changed=Boolean(sessionOptions.policyRevision&&sessionOptions.value!==sessionOptions.policyCurrent&&sessionOptions.value!==p.current);
+  sessionOptions.policyRevision=p.revision;sessionOptions.policyCurrent=p.current;sessionOptions.value=p.current;sessionOptions.confirmed=false;
+ }
+ const model=cap?.model;
+ if(kind==='model'&&model&&sessionOptions.modelRevision!==model.revision) {
+  const chosen=model.options.find(option=>option.value===sessionOptions.modelValue);
+  const dirty=sessionOptions.modelValue!==sessionOptions.modelCurrent||sessionOptions.effortValue!==sessionOptions.currentEffort;
+  const matches=model.current===sessionOptions.modelValue&&(!modelEfforts(chosen).length||model.effort===sessionOptions.effortValue);
+  sessionOptions.changed=Boolean(sessionOptions.modelRevision&&dirty&&!matches);
+  sessionOptions.modelRevision=model.revision;sessionOptions.modelCurrent=model.current;sessionOptions.currentEffort=model.effort;sessionOptions.modelValue=model.current;sessionOptions.effortValue=model.effort;
  }
  sessionOptions.signature=signature;
- const title=sessionOptions.kind==='create'?`新建 ${harnessName(cap)} 会话`:'会话设置';
- const body=!data?.connected||!cap?'<p class="settings-note">交互连接暂时不可用，草稿已保留。连接恢复后可继续。</p>':sessionOptions.kind==='create'?(cap?.create?creationForm(cap,interactionDraft(id),interactionBusy(id)?' disabled':''):'<p class="settings-note">原应用当前未提供新建入口。</p>'):settingsHtml(cap,interactionBusy(id)?' disabled':'');
+ const title=kind==='create'?`新建 ${harnessName(cap)} 会话`:kind==='model'?'模型':cap?.policy?.scope==='project-permissions'||cap?.settings?.scope==='project'?'项目权限':'权限';
+ const disabled=interactionBusy(id)?' disabled':'';
+ const body=!data?.connected||!cap?'<p class="settings-note">交互连接暂时不可用，草稿已保留。连接恢复后可继续。</p>':kind==='create'?(cap.create?creationForm(cap,interactionDraft(id),disabled):'<p class="settings-note">原应用当前未提供新建入口。</p>'):kind==='model'?modelSettingsHtml(cap,disabled):permissionSettingsHtml(cap,disabled);
  // The dialog sits outside the polled detail pane, so ordinary conversation
  // updates do not recreate fields or steal the caret.
  const active=el.contains(document.activeElement)?document.activeElement:null;
  const focusId=active?.id,caret=active&&typeof active.selectionStart==='number'?[active.selectionStart,active.selectionEnd]:null;
- el.innerHTML=`<div class="options-heading"><div><small>${esc(harnessName(cap))}</small><h2 id="session-options-title">${title}</h2></div><button type="button" aria-label="关闭" onclick="closeSessionOptions()">×</button></div>${sessionOptions.changed&&sessionOptions.kind==='settings'?'<p class="settings-change" role="status">原应用状态已更新，请重新确认选择。</p>':''}${body}<div class="options-error" role="alert">${esc(sessionOptions.message||'')}</div><div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id,sessionOptions.kind==='settings'?'policy':'create')}</div>`;
+ el.innerHTML=`<div class="options-heading"><div><small>${esc(harnessName(cap))}</small><h2 id="session-options-title">${title}</h2></div><button type="button" aria-label="关闭" onclick="closeSessionOptions()">×</button></div>${sessionOptions.changed&&kind!=='create'?'<p class="settings-change" role="status">原应用状态已更新，请重新确认选择。</p>':''}${body}<div class="options-error" role="alert">${esc(sessionOptions.message||'')}</div><div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id,actionKind)}</div>`;
  if(focusId){const input=document.getElementById(focusId);input?.focus({preventScroll:true});if(input&&caret)input.setSelectionRange(...caret);}
 }

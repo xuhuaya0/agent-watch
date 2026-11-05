@@ -176,6 +176,44 @@ test('newer matching native capture replaces the delivered echo, not an old iden
  run(ctx,'workspace.detail.extra.latest_turn.notification="Different message"');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
  run(ctx,'workspace.detail={key:"b",activity_at:12,extra:{latest_turn:{notification:"Same message"}}}');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
 });
+test('delivered native history replaces the echo before the collector catches up and stays acknowledged',async()=>{
+ const {ctx,outgoing}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'old-user',role:'user',text:'Repeat this',timestamp:'2000-01-01T00:00:00Z'}]}]]);
+ ctx.data=cap;run(ctx,'interaction.byTask.set("a",data);setReplyDraft("Repeat this")');let release,command;
+ ctx.apiFetch=(url,options)=>new Promise(resolve=>{command={id:JSON.parse(options.body).id,kind:'reply',state:'delivered'};release=resolve;});
+ ctx.fetch=async()=>({ok:true,json:async()=>({...cap,commands:[command]})});
+ const sending=run(ctx,'sendReply()');
+ assert.deepEqual(Array.from(run(ctx,'interaction.outgoing.get("a").previousHistoryIds')),['old-user']);
+ const created=run(ctx,'interaction.outgoing.get("a").createdAt');
+ ctx.histories.get('a').messages.push({id:'new-user',role:'user',text:'Repeat this',timestamp:new Date(Math.floor(created/1000)*1000).toISOString()});
+ run(ctx,'renderInteraction()');assert.match(outgoing.innerHTML,/发送中/);
+ release({ok:true,json:async()=>({command})});await sending;
+ assert.equal(outgoing.innerHTML,'');assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
+ ctx.histories.get('a').messages=[];run(ctx,'renderInteraction()');assert.equal(outgoing.innerHTML,'');
+});
+test('history echo matching rejects old ids, older or invalid times, wrong roles and other conversations',()=>{
+ const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[]}]]);
+ run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Same text",createdAt:1000599,baselineAt:0,state:"delivered",previousHistoryIds:["old"]})');
+ const invalid=[
+  {id:'old',role:'user',text:'Same text',timestamp:new Date(1001000).toISOString()},
+  {id:'new',role:'user',text:'Same text',timestamp:new Date(999000).toISOString()},
+  {id:'new',role:'user',text:'Same text',timestamp:''},
+  {id:'new',role:'user',text:'Same text',timestamp:'not-a-date'},
+  {id:'new',role:'assistant',text:'Same text',timestamp:new Date(1001000).toISOString()},
+  {id:'new',role:'user',text:'Different text',timestamp:new Date(1001000).toISOString()},
+ ];
+ for(const row of invalid){ctx.histories.get('a').messages=[row];assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);}
+ const valid={id:'fresh',role:'user',text:'Same text',timestamp:new Date(1000000).toISOString()};
+ ctx.histories.set('b',{loaded:true,messages:[valid]});ctx.histories.get('a').messages=[];assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
+ ctx.histories.get('a').messages=[valid];ctx.histories.get('a').loaded=false;assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
+ ctx.histories.get('a').loaded=true;assert.equal(run(ctx,'outgoingHtml("a")'),'');
+});
+test('matching native history never hides sending, queued, uncertain or failed messages',()=>{
+ const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'new',role:'user',text:'Visible',timestamp:'2000-01-01T00:00:00Z'}]}]]);
+ for(const state of ['sending','queued','dispatched','rejected','expired','cancelled','unknown']){
+  ctx.state=state;run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Visible",createdAt:1000,state,previousHistoryIds:[],confirmedInHistory:true})');
+  assert.match(run(ctx,'outgoingHtml("a")'),/Visible/);
+ }
+});
 
 test('resolved question leaves no stale controls even while its form has focus',async()=>{
  const {ctx,node}=setup();ctx.data={...cap,capability:{reply:false,requests:[{id:'r',revision:'v',kind:'question',prompt:'Question',questions:[{id:'q',question:'Color?',options:['Blue'],custom:true}]}]}};
@@ -196,7 +234,7 @@ test('creation shows device directory and submits a distinct action with revisio
 });
 test('policy only exposes native choices and rejects a changed revision',async()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'on-request',revision:'v2',scope:'session-next-turn',options:[{value:'on-request',label:'Ask'},{value:'never',label:'Reject required approvals'}]}}};
- run(ctx,'interaction.byTask.set("a",data)');assert.match(run(ctx,'settingsHtml(data.capability,"")'),/后续轮次/);
+ run(ctx,'interaction.byTask.set("a",data)');assert.match(run(ctx,'permissionSettingsHtml(data.capability,"")'),/后续轮次/);
  let calls=0;ctx.apiFetch=async()=>{calls++};ctx.form={elements:{policy:{value:'never'}}};
  await run(ctx,'sendPolicy(form,"v1")');assert.equal(calls,0);
  ctx.form.elements.policy.value='full-access';await run(ctx,'sendPolicy(form,"v2")');assert.equal(calls,0);
@@ -211,7 +249,7 @@ test('new conversation links never cross devices',()=>{
 
 test('DeepSeek presets disclose sandbox changes and keep custom display-only',()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'custom',revision:'preset-v1',scope:'session-permissions',options:[{value:'workspace-write',label:'Workspace',description:'<native description>'}]}}};
- run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'settingsHtml(data.capability,"")');
+ run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'permissionSettingsHtml(data.capability,"")');
  assert.match(html,/同时切换沙盒与审批设置/);
  assert.match(html,/自定义组合（仅显示）/);
  assert.doesNotMatch(html,/value="custom"/);
@@ -230,7 +268,7 @@ test('Codex desktop draft shows the native submit step; created rollout links by
 
 test('Antigravity displays its bound creation project and requires confirmation for a project policy',async()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',create:{location:'native-project',project_id:'project-id',project_name:'Example <project>',revision:'c1'},policy:{current:'ask',scope:'project-permissions',project_name:'Example <project>',options:[{value:'ask',label:'Ask'},{value:'review',label:'Review'}],revision:'p1'}}};
- run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'creationForm(data.capability,interactionDraft("a"),"")+settingsHtml(data.capability,"")');
+ run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'creationForm(data.capability,interactionDraft("a"),"")+permissionSettingsHtml(data.capability,"")');
  assert.match(html,/Antigravity/);assert.match(html,/Example &lt;project>/);assert.match(html,/应用到整个项目/);
  ctx.form={elements:{policy:{value:'review'},confirmProject:{checked:false}}};
  let calls=0;ctx.apiFetch=()=>{calls++};await run(ctx,'sendPolicy(form,"p1")');assert.equal(calls,0);
@@ -248,12 +286,12 @@ test('reply area does not mix creation or editable policy controls',()=>{
  run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'interactionHtml("a")');
  assert.match(html,/Native Model/);assert.match(html,/Workspace/);
  assert.doesNotMatch(html,/sendCreate|sendPolicy|native-policy|native-create/);
- run(ctx,'openSessionOptions("settings")');const settings=run(ctx,'settingsHtml(data.capability,"")');
- assert.match(settings,/高级 · 审批规则/);assert.match(settings,/完整权限模式在 Codex 中选择/);
+ run(ctx,'openSessionOptions("permission")');const settings=run(ctx,'permissionSettingsHtml(data.capability,"")');
+ assert.match(settings,/高级 · 审批规则/);assert.match(settings,/完整权限模式请在 Codex 中选择/);
 });
 test('settings selection survives polls and resets confirmation on native revision changes',()=>{
  const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',policy:{scope:'project-permissions',project_name:'Example',current:'a',revision:'v1',options:[{value:'a',label:'First',description:'first description'},{value:'b',label:'Second',description:'second description'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("settings");chooseSessionPolicy("b");sessionOptions.confirmed=true');
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");sessionOptions.confirmed=true');
  assert.equal(dialog.open,true);assert.match(body.innerHTML,/value="b" checked/);
  assert.match(body.innerHTML,/second description/);assert.doesNotMatch(body.innerHTML,/first description/);
  const original=body.innerHTML;run(ctx,'renderSessionActions()');assert.equal(body.innerHTML,original);assert.equal(run(ctx,'sessionOptions.confirmed'),true);
@@ -263,14 +301,34 @@ test('settings selection survives polls and resets confirmation on native revisi
 });
 test('settings dialog disables native choices while an operation is pending',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{scope:'session-permissions',current:'a',revision:'v',options:[{value:'a',label:'A'},{value:'b',label:'B'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("settings");chooseSessionPolicy("b");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
  assert.match(body.innerHTML,/<fieldset disabled>/);assert.match(body.innerHTML,/id="policy-apply"[^>]+disabled/);
 });
-test('model metadata is escaped and never presented as a fabricated selection catalog',()=>{
- const {ctx}=setup();ctx.metadata={tool:'dsh',settings:{model:'<model>',permission:'<scope>',reasoning:'<effort>',note:'<note>',scope:'session'}};
- const html=run(ctx,'settingsHtml(metadata,"")');
- assert.match(html,/&lt;model>/);assert.match(html,/&lt;effort>/);assert.match(html,/&lt;scope>/);assert.match(html,/&lt;note>/);
- assert.doesNotMatch(html,/<model>|<scope>|<select/);
+test('a confirmed own permission change updates current selection without a stale warning',async()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'v1',options:[{value:'a',label:'A'},{value:'b',label:'B'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");interaction.pending.set("a",{id:"change",action:{kind:"policy",value:"b"}})');
+ ctx.data.capability.policy={...ctx.data.capability.policy,current:'b',revision:'v2'};
+ ctx.data.commands=[{id:'change',kind:'policy',state:'resolved',detail:'原应用已确认此会话后续轮次的权限模式'}];
+ ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});await run(ctx,'refreshInteraction()');
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="b" checked/);
+ assert.match(body.innerHTML,/原应用已确认此会话后续轮次的权限模式/);
+ assert.equal(run(ctx,'interaction.pending.has("a")'),false);
+});
+test('clean permission snapshots update silently but a pending action cannot mask a different external value',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'v1',options:[{value:'a',label:'A'},{value:'b',label:'B'},{value:'c',label:'C'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");data.capability.policy.current="c";data.capability.policy.revision="v2";renderSessionActions()');
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+ run(ctx,'chooseSessionPolicy("b");interaction.pending.set("a",{id:"change",action:{kind:"policy",value:"b"}});data.capability.policy.current="a";data.capability.policy.revision="v3";renderSessionActions()');
+ assert.match(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="a" checked/);
+ run(ctx,'interaction.pending.clear();chooseSessionPolicy("c")');assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+});
+test('model and permission dialogs keep read-only information separate and escape native values',()=>{
+ const {ctx}=setup();ctx.metadata={tool:'dsh',settings:{model:'<model>',permission:'<scope>',reasoning:'<effort>',note:'Mixed information',scope:'session'}};
+ const model=run(ctx,'modelSettingsHtml(metadata,"")'),permission=run(ctx,'permissionSettingsHtml(metadata,"")');
+ assert.match(model,/&lt;model>/);assert.match(model,/&lt;effort>/);assert.match(model,/仅提供模型信息/);
+ assert.doesNotMatch(model,/<model>|<select|&lt;scope>|Mixed information|sendPolicy/);
+ assert.match(permission,/&lt;scope>/);assert.match(permission,/当前权限仅供查看/);
+ assert.doesNotMatch(permission,/&lt;model>|&lt;effort>|Mixed information|sendModel/);
 });
 
 
@@ -286,7 +344,7 @@ test('receipt and settings changes preserve the focused reply field',()=>{
 
 test('a removed native session closes its settings and hides stale actions',()=>{
  const {ctx,dialog,actions}=setup();ctx.data=cap;
- run(ctx,'interaction.byTask.set("a",data);workspace.tasks=[{key:"a"}];openSessionOptions("settings");workspace.tasks=[];renderSessionActions()');
+ run(ctx,'interaction.byTask.set("a",data);workspace.tasks=[{key:"a"}];openSessionOptions("permission");workspace.tasks=[];renderSessionActions()');
  assert.equal(dialog.open,false);assert.equal(actions.innerHTML,'');
 });
 
@@ -314,14 +372,17 @@ test('composer offers settings from native facts and creation requires the selec
  run(ctx,'interaction.byTask.set("a",data);renderSessionActions()');
  const html=run(ctx,'interactionHtml("a")');
  assert.match(html,/placeholder="向 Antigravity 发送系统通知…"/);
- assert.match(html,/composer-footer[\s\S]*composer-settings[\s\S]*记录模型 · Example model[\s\S]*项目权限 · Request Review[\s\S]*composer-send/);
+ assert.match(html,/composer-footer[\s\S]*openSessionOptions\('model'\)[\s\S]*记录模型[\s\S]*Example model[\s\S]*openSessionOptions\('permission'\)[\s\S]*项目权限[\s\S]*Request Review[\s\S]*composer-send/);
  assert.equal(actions.innerHTML,'');
  run(ctx,'data.capability.create={revision:"native-v1"};renderSessionActions()');
  assert.match(actions.innerHTML,/新建会话/);assert.doesNotMatch(actions.innerHTML,/会话设置/);
  run(ctx,'workspace.selected="b";renderSessionActions()');assert.equal(actions.innerHTML,'');
- assert.equal(run(ctx,'settingsSummaryHtml({tool:"codex"})'),'');
+ assert.match(run(ctx,'settingsSummaryHtml({tool:"codex"})'),/模型：尚未读取[\s\S]*权限：尚未读取/);
  const codex=run(ctx,'settingsSummaryHtml({tool:"codex",settings:{model:"Example",permission:"工作区可写 · 联网受限 · 按需审批"}})');
- assert.match(codex,/composer-permission">工作区可写<\/span>/);assert.match(codex,/aria-description="Example · 工作区可写 · 联网受限 · 按需审批"/);
+ assert.match(codex,/composer-permission">工作区可写<\/span>/);
+ const buttons=codex.match(/<button[\s\S]*?<\/button>/g);assert.equal(buttons.length,2);
+ assert.match(buttons[0],/aria-label="模型：Example"/);assert.doesNotMatch(buttons[0],/工作区可写|权限/);
+ assert.match(buttons[1],/aria-label="权限：工作区可写 · 联网受限 · 按需审批"/);assert.doesNotMatch(buttons[1],/Example|模型/);
 });
 test('reply keyboard shortcut observes IME and the outstanding operation guard',()=>{
  const {ctx,button}=setup();let submissions=0;
@@ -344,9 +405,124 @@ test('standard delivered receipts show acceptance once and retain special delive
  ctx.data.commands[0].state='unknown';ctx.data.commands[0].detail='设备断线，正在核实';
  assert.match(run(ctx,'interactionFeedbackHtml("a")'),/结果未知.*设备断线/);
 });
+test('standard model and permission confirmations appear once while nonstandard details stay visible',()=>{
+ const {ctx}=setup();ctx.data={...cap,commands:[]};run(ctx,'interaction.byTask.set("a",data)');
+ for(const kind of ['model','policy']){
+  ctx.kind=kind;ctx.data.commands=[{id:'change',kind,state:'resolved',detail:'原应用已确认此会话后续轮次的设置'}];
+  let html=run(ctx,'interactionFeedbackHtml("a",kind)');assert.equal((html.match(/原应用已确认/g)||[]).length,1);assert.match(html,/后续轮次的设置/);
+  ctx.data.commands[0].detail='确认成功，但原生界面未能唤醒';
+  html=run(ctx,'interactionFeedbackHtml("a",kind)');assert.match(html,/原应用已确认 · 确认成功，但原生界面未能唤醒/);
+  ctx.data.commands[0].state='rejected';ctx.data.commands[0].detail='model_changed';
+  assert.match(run(ctx,'interactionFeedbackHtml("a",kind)'),/原应用未接收 · 原生模型或运行状态已变化/);
+ }
+});
 test('a repeated question prompt appears once and native-only request guidance stays visible',()=>{
  const {ctx}=setup();
  ctx.data={...cap,capability:{reply:false,reason:'此请求请在 Codex 原应用处理',requests:[{kind:'question',id:'q',revision:'v1',prompt:'选择布局',questions:[{id:'one',question:'选择布局',options:['宽松','紧凑']}]}]}};
  run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'interactionHtml("a")');
  assert.equal((html.match(/选择布局/g)||[]).length,1);assert.match(html,/<legend>选择布局<\/legend>/);assert.match(html,/请在 Codex 原应用处理/);
+});
+
+const nativeModels={current:'model-a',effort:'low',revision:'models-v1',options:[
+ {value:'model-a',label:'Native A',efforts:['low','high'],default_effort:'low'},
+ {value:'model-b',label:'Native <B>',efforts:['medium','high'],default_effort:'medium'},
+ {value:'model-c',label:'Native C',efforts:[]}
+]};
+test('matching native model confirmation survives a temporary capability gap without a false warning',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b");interaction.pending.set("a",{id:"change",action:{kind:"model",model:"model-b",effort:"medium"}})');
+ const model=ctx.data.capability.model;delete ctx.data.capability.model;run(ctx,'renderSessionActions()');
+ ctx.data.capability.model={...model,current:'model-b',effort:'medium',revision:'v2'};
+ ctx.data.commands=[{id:'change',kind:'model',state:'resolved',detail:'原应用已确认此会话后续轮次的模型设置'}];
+ run(ctx,'interaction.pending.clear();renderSessionActions()');
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/原应用已确认此会话后续轮次的模型设置/);
+ assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/value="medium" selected/);
+});
+test('model warnings require an overwritten choice and still detect a mismatched effort during submission',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");data.capability.model.effort="high";data.capability.model.revision="v2";renderSessionActions()');
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+ run(ctx,'chooseSessionModel("model-b");chooseModelEffort("medium");interaction.pending.set("a",{id:"change",action:{kind:"model",model:"model-b",effort:"medium"}});data.capability.model.current="model-b";data.capability.model.effort="high";data.capability.model.revision="v3";renderSessionActions()');
+ assert.match(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="high" selected/);
+ run(ctx,'interaction.pending.clear();chooseModelEffort("medium")');assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+});
+test('model selection uses native choices, validates effort and survives unrelated permission polls',()=>{
+ const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),settings:{permission:'Permission-only marker'}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b")');
+ assert.equal(dialog.open,true);assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/Native &lt;B>/);
+ assert.match(body.innerHTML,/value="medium" selected/);assert.doesNotMatch(body.innerHTML,/Permission-only|name="policy"|value="low"|<B>/);
+ const before=body.innerHTML;run(ctx,'data.capability.settings.permission="Changed permission";renderSessionActions()');assert.equal(body.innerHTML,before);
+ run(ctx,'chooseModelEffort("high");renderSessionActions()');assert.match(body.innerHTML,/value="high" selected/);
+ run(ctx,'chooseModelEffort("fabricated");chooseSessionModel("absent-model")');assert.equal(run(ctx,'sessionOptions.effortValue'),'high');assert.equal(run(ctx,'sessionOptions.modelValue'),'model-b');
+ run(ctx,'chooseSessionModel("model-c")');assert.doesNotMatch(body.innerHTML,/<select/);assert.equal(run(ctx,'sessionOptions.effortValue'),null);
+ run(ctx,'data.capability.model.revision="models-v2";renderSessionActions()');assert.equal(run(ctx,'sessionOptions.modelValue'),'model-a');assert.match(body.innerHTML,/原应用状态已更新/);
+});
+test('model and permission entry points handle unknown and read-only state without fabricated controls',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity'}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');assert.match(body.innerHTML,/尚未提供可确认的模型信息/);assert.doesNotMatch(body.innerHTML,/sendModel|sendPolicy|权限/);
+ run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/尚未提供可确认的权限信息/);assert.doesNotMatch(body.innerHTML,/sendModel|sendPolicy|模型/);
+ run(ctx,'data.capability.settings={model:"Recorded A",permission:"Project permission",scope:"project"};openSessionOptions("model")');
+ assert.match(body.innerHTML,/可能不同于下一轮使用的模型/);assert.doesNotMatch(body.innerHTML,/Project permission|sendModel/);
+ run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/<h2 id="session-options-title">项目权限<\/h2>/);assert.doesNotMatch(body.innerHTML,/Recorded A|模型/);
+});
+test('full session permission presets are directly selectable without the legacy approval section',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{model:'Model-only marker'},policy:{scope:'session-permissions',current:'custom',revision:'p',options:[{value:'preset-a',label:'Native preset',description:'Native scope'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
+ assert.match(body.innerHTML,/name="policy" value="preset-a"/);assert.match(body.innerHTML,/自定义组合（仅显示）/);
+ assert.doesNotMatch(body.innerHTML,/advanced-settings|value="custom"|Model-only marker|sendModel/);
+});
+test('native advanced permission profiles stay folded separately from the primary choices',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'p',options:[{value:'a',label:'Primary A'},{value:'b',label:'Primary B'},{value:'c',label:'Other native profile',group:'advanced'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
+ const [primary,advanced]=body.innerHTML.split('<details class="advanced-settings"');
+ assert.match(primary,/Primary A/);assert.match(primary,/Primary B/);assert.doesNotMatch(primary,/Other native profile/);
+ assert.match(advanced,/^ ontoggle=/);assert.match(advanced,/<summary>其他权限<\/summary>[\s\S]*Other native profile/);
+ run(ctx,'sessionOptions.advanced=true;chooseSessionPolicy("c");renderSessionActions()');
+ assert.match(body.innerHTML,/<details class="advanced-settings" open/);assert.match(body.innerHTML,/value="c" checked/);
+});
+test('model submission rejects stale revisions, unsupported efforts, unchanged settings and busy sessions',async()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};ctx.form={elements:{model:{value:'model-b'},effort:{value:'medium'}}};
+ run(ctx,'interaction.byTask.set("a",data)');let calls=0;ctx.apiFetch=async()=>{calls++};
+ await run(ctx,'sendModel(form,"old")');
+ ctx.form.elements.effort.value='low';await run(ctx,'sendModel(form,"models-v1")');
+ ctx.form.elements.model.value='not-native';await run(ctx,'sendModel(form,"models-v1")');
+ ctx.form.elements.model.value='model-c';await run(ctx,'sendModel(form,"models-v1")');
+ ctx.form.elements.model.value='model-a';await run(ctx,'sendModel(form,"models-v1")');
+ ctx.form.elements.model.value='model-b';ctx.form.elements.effort.value='medium';
+ run(ctx,'data.commands=[{state:"dispatched"}]');await run(ctx,'sendModel(form,"models-v1")');
+ run(ctx,'data.commands=[];data.connected=false');await run(ctx,'sendModel(form,"models-v1")');assert.equal(calls,0);
+});
+test('model actions send only the native tokens and require effort only when the model offers it',async()=>{
+ for(const [value,effort] of [['model-b','high'],['model-c',undefined]]){
+  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+  ctx.form={elements:{model:{value},...(effort?{effort:{value:effort}}:{})}};run(ctx,'interaction.byTask.set("a",data)');
+  let body;ctx.apiFetch=async(u,o)=>{body=JSON.parse(o.body);return {ok:true,json:async()=>({command:{id:body.id,state:'queued',kind:'model'}})}};
+  ctx.fetch=async()=>({ok:true,json:async()=>({...ctx.data,commands:[{id:body.id,state:'queued',kind:'model'}]})});
+  await run(ctx,'sendModel(form,"models-v1")');assert.deepEqual(body.action,{kind:'model',revision:'models-v1',model:value,...(effort?{effort}:{})});
+  assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);
+ }
+});
+test('model fields disable while pending and restore native readonly state after capability loss',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
+ assert.match(body.innerHTML,/<fieldset disabled>/);assert.match(body.innerHTML,/<select[^>]* disabled/);assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
+ run(ctx,'interaction.pending.clear();delete data.capability.model;renderSessionActions()');assert.doesNotMatch(body.innerHTML,/sendModel|model-apply/);assert.match(body.innerHTML,/尚未提供可确认的模型信息/);
+});
+test('missing current effort and models outside the native catalog are never silently defaulted',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ delete ctx.data.capability.model.effort;
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
+ assert.match(body.innerHTML,/<option value="" disabled selected>请选择推理强度/);
+ assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
+ run(ctx,'chooseModelEffort("high")');assert.doesNotMatch(body.innerHTML,/id="model-apply"[^>]* disabled/);
+ run(ctx,'data.capability.model.current="retired-native-model";data.capability.model.revision="v2";renderSessionActions()');
+ assert.match(body.innerHTML,/retired-native-model（仅显示）/);assert.doesNotMatch(body.innerHTML,/value="retired-native-model"/);
+ assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);assert.doesNotMatch(body.innerHTML,/<select/);
+});
+test('model receipts and errors stay in their own dialog and never appear as chat activity',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)},commands:[{id:'model-change',kind:'model',state:'resolved',detail:'已更新后续轮次模型'}]};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");controlNotice("Native model unavailable","a","model")');
+ assert.match(body.innerHTML,/Native model unavailable/);assert.match(body.innerHTML,/最近模型设置.*已更新后续轮次模型/);
+ assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');assert.equal(run(ctx,'interactionFeedbackHtml("a","policy")'),'');
+ run(ctx,'openSessionOptions("permission")');assert.doesNotMatch(body.innerHTML,/Native model unavailable|最近模型设置/);
 });

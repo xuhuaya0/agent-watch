@@ -1,8 +1,9 @@
-"""Read-only summaries of settings published by the native desktop owner.
+"""Summaries and model choices published by the native desktop owner.
 
 Approval policy is only one part of permissions. Never infer a native permission
 preset or an available model catalog from these values.
 """
+import hashlib
 import re
 
 
@@ -10,7 +11,7 @@ REASONING = {'none': '无', 'minimal': '最低', 'low': '低', 'medium': '中',
              'high': '高', 'xhigh': '很高', 'max': '最高', 'ultra': 'Ultra'}
 SANDBOX = {'readOnly': '只读', 'workspaceWrite': '工作区可写',
            'dangerFullAccess': '完整文件访问', 'externalSandbox': '外部沙盒'}
-REVIEWER = {'user': '由你审批', 'auto_review': '自动审查'}
+REVIEWER = {'user': '由你审批', 'auto_review': '自动审查', 'guardian_subagent': '自动审查'}
 APPROVAL = {'on-request': '按需审批', 'never': '需要批准时拒绝',
             'untrusted': '不受信任的操作需审批', 'on-failure': '失败后申请审批'}
 
@@ -52,3 +53,56 @@ def summary(state):
         return None
     return {**out, 'scope': 'session',
             'note': '模型及完整权限预设请在 Codex 中调整。'}
+
+
+def valid_model_capability(value):
+    from .broker import text
+    if (not isinstance(value, dict)
+            or not {'current', 'revision', 'options'} <= value.keys() <= {'current', 'effort', 'revision', 'options'}
+            or not text(value.get('current'), 160) or not text(value.get('revision'))
+            or ('effort' in value and not text(value['effort'], 32))):
+        return False
+    options = value['options']
+    if not isinstance(options, list) or not 1 <= len(options) <= 100:
+        return False
+    seen = set()
+    for option in options:
+        if (not isinstance(option, dict)
+                or not {'value', 'label', 'efforts'} <= option.keys() <= {'value', 'label', 'efforts', 'default_effort'}
+                or not text(option.get('value'), 160) or not text(option.get('label'), 200)
+                or option['value'] in seen):
+            return False
+        efforts = option['efforts']
+        if (not isinstance(efforts, list) or len(efforts) > 12
+                or any(not text(effort, 32) for effort in efforts)
+                or len(efforts) != len(set(efforts))
+                or ('default_effort' in option and option['default_effort'] not in efforts)):
+            return False
+        seen.add(option['value'])
+    return True
+
+
+def model_capability(state, catalog, native):
+    from .broker import encoded
+    from .codex_policy import native_capability
+    history = state.get('history') or {}
+    if (not catalog or not isinstance(native, dict) or state.get('requests')
+            or history.get('threadRuntimeStatus', {}).get('type') != 'idle'):
+        return None
+    model, effort = native.get('model'), native.get('reasoningEffort')
+    required = (catalog.get('requirements', {}).get('autoReview') or {}).get('requiredOnModels') or []
+    options = []
+    for option in catalog['models']:
+        if re.sub(r'^[A-Za-z0-9_-]+/', '', option['value']) in required:
+            # A reviewer name alone is insufficient: full-access/never can
+            # retain that name while bypassing the required sandboxed mode.
+            permission = native_capability(state, {**catalog, 'selected_model': option['value']})
+            if not permission or permission['current'] != 'guardian-approvals':
+                continue
+        options.append(option)
+    result = {'current': model, 'revision': hashlib.sha256(encoded(
+        [catalog['revision'], native, history.get('latestThreadSettings')]).encode()).hexdigest(),
+        'options': options}
+    if effort is not None:
+        result['effort'] = effort
+    return result if valid_model_capability(result) else None

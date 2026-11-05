@@ -60,9 +60,11 @@ def main():
             scope=CodexScope(path)
             history=CodexHistory(cx.get('data_root', '~/.codex'), scope)
             from aw.control.codex_create import DesktopDraft, desktop_draft_app
+            from aw.control.codex_catalog import native_catalog
             app = desktop_draft_app()
             providers['codex']=CodexDesktop(cx['socket_path'],scope,background=not args.once,history=history,queue_sender=native_queue_sender(history.root, cx.get('executable')),
-                                           draft=DesktopDraft(app) if app else None)
+                                           draft=DesktopDraft(app) if app else None,
+                                           catalog=native_catalog(history.root))
             if args.once:providers['codex'].refresh()
         else:
             providers['codex']=Codex(cx['executable'],cx['socket_path'],CodexScope(path))

@@ -47,11 +47,11 @@ entire page smoke check. Reload after changing assets.
 | --- | --- | --- |
 | UI-01 | Normal Sessions, Projects, Devices, settings | Sessions alone shows the list. The chat header identifies title, device, Harness and state. Secondary details open on demand |
 | UI-02 | Attention, running, completed, pinned and older chats | Group priority, no duplicates, native title and distinct fixed identity badges; archive/pin semantics preserved |
-| UI-03 | Long title/path, many messages, code | The transcript scrolls independently. Its header and composer remain reachable at desktop and narrow widths |
+| UI-03 | Long title/path, many messages, code | The transcript scrolls independently. Its header and composer remain reachable. Tool records and commentary share collapsed execution groups that can be expanded |
 | UI-04 | Empty data and filters with no match | Meaningful empty state, clear filters/recovery; not a loading or network error presented as no data |
 | UI-05 | Offline collection or disconnected control | Different conditions are identifiable; no enabled unavailable action; drafts retained |
 | UI-06 | Native question and single approval | Exact offered choices; no persistent approval implication; stale choice cannot be submitted |
-| UI-07 | Settings for three Harnesses | The composer shows a short native model and scope when available. Open it to verify full facts, editable choices and project scope |
+| UI-07 | Model and permissions for three Harnesses | Separate compact entries open independent dialogs. Check native choices, effort compatibility, project scope, busy/stale rejection and read-only older providers; one change must preserve the other setting |
 | UI-08 | New conversation | Open from the list header for a supported destination. Check the device, Harness and draft/send behavior in the dialog |
 | UI-09 | Live updates while typing and reading | Draft, caret, selected chat, scroll and expanded reading context retained; changed native revision invalidates action |
 | UI-10 | Delayed/failed/uncertain action | Immediate in-context feedback; no duplicate retry; failed/unknown receipt never implies completion |
@@ -64,8 +64,8 @@ empty/default screenshot. Restore temporary viewport overrides afterwards.
 
 For UI-09, open a fresh long chat in `refresh` and check its latest message is
 visible. Scroll to a numbered message and type a draft. After two scans, check
-the message position, input focus and caret. Load an older page while reading,
-switch chats and return, then exercise “有新内容” when offered. In `offline`,
+the message position, input focus, caret and an expanded execution group. Load an
+older page while reading, switch chats and return, then exercise “有新内容” when offered. In `offline`,
 repeat the return with a captured reply while its full detail loads.
 
 The preview supplies reproducible data, not every race condition. Code-level

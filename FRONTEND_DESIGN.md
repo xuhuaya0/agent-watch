@@ -20,7 +20,7 @@ necessarily on the device that receives an action.
 | Session list | Select a non-archived chat. Offer New conversation in its header when the selected destination supports it | Message bodies and permission forms |
 | Chat header | Native title, device, Harness and state. Put project, connection details and secondary actions under session information | Repeated metadata in the transcript |
 | Transcript | Independently scrollable messages, tool records and outbound delivery status | Center settings and new-chat forms |
-| Chat composer | Keep the current reply or native request reachable below the transcript. Show a compact settings entry with the reported model and permission scope | Unavailable actions and full permission descriptions |
+| Chat composer | Keep the current reply or native request reachable below the transcript. Show separate compact model and permission entries with reported values | Unavailable actions and full permission descriptions |
 | Session settings | Native facts, supported changes and their scope | Invented model catalogs, approval rules relabeled as full permissions |
 | New-conversation dialog | Destination and first message or native draft | Sending into the currently selected conversation |
 | Projects / Devices | Discover a location and navigate to its sessions | A mandatory second column |
@@ -29,6 +29,9 @@ necessarily on the device that receives an action.
 The three-column layout is specific to Sessions. Projects, Devices and settings
 use the available content width. Narrow screens alternate between list and
 detail with an explicit way back; they do not squeeze three columns together.
+Keep user messages and assistant results prominent. Combine intervening tool
+records and commentary into execution groups, collapsed by default; preserve
+each group's expansion through refresh.
 
 The session list remains compact: fixed-width device badge, separate fixed-width
 Harness badge, title, unread indication and time. Device and Harness are distinct
@@ -89,6 +92,12 @@ Use the same visual component for the same kind of decision across Harnesses.
 Preserve native differences in labels, choices and scope. Equal styling does not
 imply equal capabilities. Do not hide an integration gap by substituting a
 different native operation.
+
+Model and permission choices have independent dialogs and receipts. Show only
+the native choices allowed for the current provider and policy, and revalidate
+their revision before applying. Preserve permissions when changing a model and
+preserve the model when changing permissions. Older provider snapshots may show
+read-only facts; their presence alone does not enable new controls.
 
 ## Interaction state contract
 

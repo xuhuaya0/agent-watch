@@ -61,10 +61,28 @@ class HistoryTests(unittest.TestCase):
         rows=[{'type':'response_item','payload':{'type':'message','role':'developer','content':'secret instructions'}},
               {'type':'response_item','payload':{'type':'reasoning','summary':'private'}},
               {'type':'response_item','payload':{'type':'message','role':'assistant','phase':'analysis','content':'hidden'}},
+              {'type':'response_item','payload':{'type':'message','role':'assistant','channel':'analysis','content':'hidden channel'}},
+              {'type':'response_item','payload':{'type':'message','role':'assistant','phase':'commentary','channel':'analysis','content':'hidden mixed phase'}},
               {'type':'response_item','payload':{'type':'message','role':'user','content':'<environment_context>noise</environment_context>Actual'}},
               {'type':'event_msg','payload':{'type':'user_message','message':'Actual'}}]
         self.path.write_text('\n'.join(map(json.dumps,rows))+'\n')
         self.assertEqual([m['text'] for m in self.reader.read(SID)['messages']],['Actual'])
+
+    def test_commentary_phase_is_preserved_only_for_assistant_messages(self):
+        payloads = [
+            {'type': 'message', 'role': 'assistant', 'phase': 'commentary', 'content': 'Progress update'},
+            {'type': 'message', 'role': 'user', 'phase': 'commentary', 'content': 'User message'},
+            {'type': 'function_call_output', 'phase': 'commentary', 'output': 'Tool result'},
+            {'type': 'message', 'role': 'assistant', 'phase': 'final', 'content': 'Final result'},
+        ]
+        rows = [{'type': 'response_item', 'payload': payload} for payload in payloads]
+        self.path.write_text('\n'.join(map(json.dumps, rows)) + '\n')
+        messages = self.reader.read(SID)['messages']
+        self.assertEqual([m['text'] for m in messages],
+                         ['Progress update', 'User message', 'Tool result', 'Final result'])
+        self.assertEqual([m['role'] for m in messages], ['assistant', 'user', 'tool', 'assistant'])
+        self.assertEqual(messages[0]['phase'], 'commentary')
+        self.assertTrue(all('phase' not in m for m in messages[1:]))
 
     def test_bad_or_replaced_cursor_fails(self):
         self.write();page=self.reader.read(SID);self.path.unlink();self.write(1)

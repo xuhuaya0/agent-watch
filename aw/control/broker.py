@@ -83,13 +83,18 @@ def normalize_sessions(rows):
                     or ('scope' in settings and settings['scope'] not in ('session', 'project'))):
                 raise ControlError('invalid_settings_capability', 400)
             clean['settings'] = dict(settings)
+        if 'model' in row:
+            from .codex_settings import valid_model_capability
+            if row['tool'] != 'codex' or not valid_model_capability(row['model']):
+                raise ControlError('invalid_model_capability', 400)
+            clean['model'] = row['model']
         if 'create' in row:
             create = row['create']
             if not valid_create_capability(row['tool'], create):
                 raise ControlError('invalid_create_capability', 400)
             clean['create'] = dict(create)
         if 'policy' in row:
-            from .codex_policy import OPTIONS
+            from .codex_policy import valid_capability as valid_codex_policy
             from .dsh_permissions import valid_capability
             policy = row['policy']
             if row['tool'] == 'antigravity':
@@ -98,10 +103,7 @@ def normalize_sessions(rows):
             elif row['tool'] == 'dsh':
                 valid = valid_capability(policy)
             else:
-                valid = (row['tool'] == 'codex' and isinstance(policy, dict)
-                         and set(policy) == {'current','revision','scope','options'}
-                         and policy.get('scope') == 'session-next-turn' and policy.get('options') == OPTIONS
-                         and policy.get('current') in ('on-request','never') and text(policy.get('revision')))
+                valid = row['tool'] == 'codex' and valid_codex_policy(policy)
             if not valid:
                 raise ControlError('invalid_policy_capability',400)
             clean['policy'] = dict(policy)
@@ -154,6 +156,18 @@ def validate_action(session, action):
     if not isinstance(action, dict):
         raise ControlError('invalid_action', 400)
     kind = action.get('kind')
+    if kind == 'model':
+        model = session.get('model')
+        if not model or action.get('revision') != model['revision']:
+            raise ControlError('model_changed')
+        option = next((item for item in model['options'] if item['value'] == action.get('model')), None)
+        fields = {'kind', 'revision', 'model'}
+        if option and option['efforts']:
+            fields.add('effort')
+        if (not option or set(action) != fields
+                or (option['efforts'] and action.get('effort') not in option['efforts'])):
+            raise ControlError('invalid_model', 400)
+        return
     if kind == 'policy':
         policy = session.get('policy')
         if not policy or action.get('revision') != policy['revision']:

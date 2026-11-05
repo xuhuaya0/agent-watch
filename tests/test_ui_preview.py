@@ -94,10 +94,62 @@ class PreviewTests(unittest.TestCase):
         self.assertGreater(len(first['messages']), 20)
         self.assertEqual(first['messages'][:-1], refreshed['messages'][:-1])
         self.assertNotEqual(first['messages'][-1]['text'], refreshed['messages'][-1]['text'])
+        process = first['messages'][-4:-1]
+        self.assertEqual([m['role'] for m in process], ['tool', 'assistant', 'tool'])
+        self.assertEqual(process[1]['phase'], 'commentary')
+        self.assertTrue(all(m['text'] for m in process))
         older = fixture.route('GET', path + '?cursor=' + refreshed['next_cursor'])[2]
         self.assertIsNone(older['next_cursor'])
         self.assertTrue(older['messages'])
         self.assertTrue({m['id'] for m in older['messages']}.isdisjoint(m['id'] for m in refreshed['messages']))
+
+    def test_codex_model_and_full_permissions_follow_capability_contract_without_native_writes(self):
+        from aw.control.codex_settings import valid_model_capability
+        from aw.control.codex_policy import valid_capability
+        fixture = Preview()
+        cap = fixture.route('GET', '/api/control/tasks/cx-ready')[2]['capability']
+        self.assertTrue(valid_model_capability(cap['model']))
+        self.assertTrue(valid_capability(cap['policy']))
+        self.assertEqual(cap['policy']['scope'], 'session-permissions')
+        self.assertEqual(sum(option.get('group') != 'advanced' for option in cap['policy']['options']), 3)
+        self.assertEqual(sum(option.get('group') == 'advanced' for option in cap['policy']['options']), 1)
+        self.assertTrue(all(option['value'].startswith('example-') for option in cap['model']['options']))
+        self.assertTrue(any(not option['efforts'] for option in cap['model']['options']))
+        for action in ({'kind':'model', 'revision':cap['model']['revision'], 'model':'example-model-b', 'effort':'medium'},
+                       {'kind':'policy', 'revision':cap['policy']['revision'], 'value':'demo-read-only'}):
+            status, _, response = fixture.route('POST', '/api/control/tasks/cx-ready', {'action':action})
+            self.assertEqual(status, 409)
+            self.assertEqual(response['error'], 'preview_read_only')
+        self.assertEqual(cap, fixture.route('GET', '/api/control/tasks/cx-ready')[2]['capability'])
+        running = fixture.route('GET', '/api/control/tasks/cx-running')[2]['capability']
+        self.assertNotIn('model', running)
+        self.assertIn('model', running['settings'])
+
+    def test_readonly_and_unknown_settings_are_distinct_for_all_harnesses(self):
+        fixture = Preview()
+        for scenario in ('readonly', 'unknown_settings'):
+            fixture.select(scenario)
+            for sid in ('cx-ready', 'ag-ready', 'ds-ready'):
+                cap = fixture.route('GET', '/api/control/tasks/' + sid)[2]['capability']
+                self.assertTrue(cap['reply'])
+                self.assertTrue({'model', 'policy', 'create'}.isdisjoint(cap))
+                if scenario == 'readonly':
+                    self.assertIn('model', cap['settings'])
+                    self.assertIn('permission', cap['settings'])
+                else:
+                    self.assertNotIn('settings', cap)
+
+    def test_changing_models_updates_revision_and_compatible_reasoning_effort(self):
+        now = [1800000000]
+        fixture = Preview('changed', clock=lambda: now[0])
+        first = fixture.route('GET', '/api/control/tasks/cx-ready')[2]['capability']
+        now[0] += 15
+        changed = fixture.route('GET', '/api/control/tasks/cx-ready')[2]['capability']
+        self.assertNotEqual(first['model']['revision'], changed['model']['revision'])
+        self.assertNotEqual(first['model']['current'], changed['model']['current'])
+        selected = next(option for option in changed['model']['options'] if option['value'] == changed['model']['current'])
+        self.assertIn(changed['model']['effort'], selected['efforts'])
+        self.assertEqual(changed['settings']['model'], selected['label'])
 
 
 if __name__ == '__main__':unittest.main()

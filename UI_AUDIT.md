@@ -33,17 +33,22 @@ as login and settings save. Their normal-path existence is not evidence that
 network failure, duplicate clicks or recovery work correctly. No credential
 rotation, password change or device removal was performed for this audit.
 
-## Native integration gaps are separate from visual consistency
+## Native integration and verification scope
 
-Codex model switching and complete native permission-preset parity remain
-unimplemented. Displaying model/permission facts and grouping the two supported
-approval rules under advanced settings does not close those gaps.
+Codex now reads authoritative native model and permission catalogs with provider
+and policy restrictions, and applies changes through the existing desktop owner.
+Model and permissions have separate entries and dialogs. Older provider facts
+remain readable without enabling unsupported changes. Tool records and
+commentary share execution groups collapsed by default.
 
-Closure requires an authoritative native choice catalog, the applicable account
-and policy restrictions, accurate preset semantics, native-state read-back and
-dedicated action acceptance within its authorized scope. A cached model list or
-a styled substitute selector is insufficient. Version-specific native evidence
-and other platform limitations belong in [COMPATIBILITY.md](COMPATIBILITY.md).
+On 2026-11-05, a dedicated session on macOS desktop 26.1029.61003 (24614) passed
+browser → Hub → worker → native-owner model/effort and read-only permission
+changes. Native turn context, a fixed reply and permission read-back were
+checked; the full original state was restored and matched. This verifies the
+tested transitions. Full access, automatic review and other permission changes
+were not exercised; Windows Codex remains unverified, and Antigravity/DeepSeek
+model switching has not been added. Exact evidence and limitations belong in
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Browser evidence recorded in this baseline
 
@@ -95,3 +100,19 @@ and device worker against an in-memory Harness. Browser actions submitted a
 keyboard reply, one answer, one approval, and one rejection. Each appeared in
 the intended transcript with its corresponding result. Native applications
 were outside the scope of these frontend checks.
+
+## Separate model and permission controls
+
+On 2026-11-05, the current browser checks confirmed separate model and permission
+entries at desktop size and 390×844. The model dialog used the supplied model and
+effort catalog; selecting a model without reasoning removed the effort selector.
+A rejected synthetic submission retained that selection and showed its error in
+the dialog. Antigravity retained a read-only recorded model and its explicitly
+project-scoped permission form.
+
+In the refresh fixture, two consecutive tools and an assistant commentary record
+started in one collapsed group. Opening the group exposed the process record;
+opening an individual tool exposed its output. Polling retained the expanded
+group and reply draft. Final replies stayed outside the group. These checks use
+synthetic records; the dedicated native model and read-only permission checks
+are recorded separately above and in COMPATIBILITY.md.

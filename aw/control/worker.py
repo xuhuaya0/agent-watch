@@ -110,12 +110,18 @@ class Worker:
                 raise ControlError('native_session_unavailable')
             validate_action(current, command['action'])
             result = provider.execute(command)
+            if result == 'model_updated' and command['action']['kind'] == 'model':
+                receipt.update(state='resolved', detail='原应用已确认此会话后续轮次的模型设置')
+                self.save()
+                return True
             if result == 'policy_updated' and command['action']['kind'] == 'policy':
                 detail = {
                     'codex': '原应用已确认此会话后续轮次的审批策略；沙盒和审批者保持原值',
                     'dsh': '原应用已确认此会话的权限预设（沙盒与审批设置）；新会话默认值未修改',
                     'antigravity': '原应用已确认目标项目的权限设置，该项目中的会话共用此设置',
                 }[command['tool']]
+                if command['tool'] == 'codex' and current['policy']['scope'] == 'session-permissions':
+                    detail = '原应用已确认此会话后续轮次的权限模式'
                 receipt.update(state='resolved', detail=detail)
                 self.save()
                 return True

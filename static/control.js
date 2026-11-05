@@ -7,6 +7,8 @@ CONTROL_ERRORS.native_session_archived='会话已在原应用中归档，消息�
 CONTROL_ERRORS.control_paused='此设备的面板交互已暂停，可在设置中恢复';
 CONTROL_ERRORS.policy_changed='原生权限或运行状态已变化，请刷新后重试';
 CONTROL_ERRORS.invalid_policy='原应用不支持此权限选项';
+CONTROL_ERRORS.model_changed='原生模型或运行状态已变化，请刷新后重试';
+CONTROL_ERRORS.invalid_model='请选择原应用提供的模型和推理强度';
 CONTROL_ERRORS.create_unavailable='新建入口已变更或不可用，请刷新后重试';
 let controlDeviceLoad=0;
 async function loadControlDevices() {
@@ -58,6 +60,14 @@ function receiptDetail(receipt) {
  if(receipt.state==='resolved' && detail==='原应用已结束该请求；请查看原应用的最终结果')return '请在原应用查看最终结果';
  return CONTROL_ERRORS[detail]||detail;
 }
+function historyContainsOutgoing(id,message) {
+ const history=typeof histories!=='undefined'?histories.get(id):null;
+ if(!history?.loaded||!Array.isArray(message.previousHistoryIds))return false;
+ const submittedSecond=Math.floor(message.createdAt/1000);
+ return history.messages.some(row=>row.role==='user'&&row.text===message.text&&
+  row.id&&!message.previousHistoryIds.includes(row.id)&&
+  Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond);
+}
 function outgoingHtml(id) {
  const message=interaction.outgoing.get(id);if(!message)return '';
  const captured=capturedOutgoing(id),turn=captured?.turn;
@@ -65,6 +75,12 @@ function outgoingHtml(id) {
  // native activity record as well as delivery before replacing the local echo.
  if(message.state==='delivered'&&captured?.at>message.baselineAt&&
     [turn?.notification,turn?.user].includes(message.text))return '';
+ // Native history can arrive before the collector's latest-turn snapshot.
+ // Require delivery plus a new message identity and a matching timestamp/text;
+ // an old identical reply, a missing timestamp or a failed send is not proof.
+ if(message.state==='delivered'&&(message.confirmedInHistory||historyContainsOutgoing(id,message))) {
+  message.confirmedInHistory=true;return '';
+ }
  const labels={sending:'发送中',queued:'等待设备接收',dispatched:'正在送达',delivered:'已送达',rejected:'发送失败',expired:'已过期，未发送',cancelled:'已取消',unknown:'送达情况待确认'};
  const warning=['rejected','expired','cancelled','unknown'].includes(message.state);
  const detail=receiptDetail(message);
@@ -82,7 +98,7 @@ function createdSessionHtml(id,receipt) {
 }
 function interactionFeedbackHtml(id,kind=null) {
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
- const matches=actionKind=>kind?kind===actionKind:actionKind!=='policy'&&actionKind!=='create';
+ const matches=actionKind=>kind?kind===actionKind:!['policy','model','create'].includes(actionKind);
  const local=pending&&matches(pending.action?.kind)?pending:null;
  const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>matches(c.kind));
  if((kind?local:pending)?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
@@ -93,15 +109,18 @@ function interactionFeedbackHtml(id,kind=null) {
  if(!kind && !local && outgoing?.previousReceiptIds?.includes(latest?.id))return '';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
  const actionKind=local?.action?.kind||latest?.kind;
- const label=({reply:'回复',answer:'回答问题',approval:'单次审批',create:'新建会话',policy:'权限设置'})[actionKind]||'操作';
+ const label=({reply:'回复',answer:'回答问题',approval:'单次审批',create:'新建会话',policy:'权限设置',model:'模型设置'})[actionKind]||'操作';
  const detail=latest?receiptDetail(latest):'';
  const when=latest?.created?' · '+new Date(latest.created*1000).toLocaleTimeString():'';
- return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(CONTROL_STATES[latest.state]||latest.state)}${detail?' · '+esc(detail):''}</p>${createdSessionHtml(id,latest)}`:'';
+ const settingConfirmed=latest?.state==='resolved'&&['model','policy'].includes(actionKind);
+ const state=settingConfirmed?'原应用已确认':CONTROL_STATES[latest?.state]||latest?.state;
+ const status=settingConfirmed&&detail.startsWith('原应用已确认')?detail:state+(detail?' · '+detail:'');
+ return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(status)}</p>${createdSessionHtml(id,latest)}`:'';
 }
 function controlNotice(message,id=workspace.selected,kind=null) {
  const dialog=document.getElementById('session-options');
  if(typeof sessionOptions!=='undefined'&&dialog?.open&&sessionOptions.id===id&&
-    (!kind||kind===(sessionOptions.kind==='settings'?'policy':'create'))) {
+    (!kind||kind===sessionOptionsActionKind())) {
   sessionOptions.message=message;renderSessionOptions(true);
  }else toast(message);
 }
@@ -241,6 +260,7 @@ async function submitNative(action) {
   interaction.outgoing.set(id,{
    id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,
    previousReceiptIds:(before?.commands||[]).map(command=>command.id),
+   previousHistoryIds:typeof histories!=='undefined'?(histories.get(id)?.messages||[]).map(message=>message.id):[],
    state:'sending',detail:'',notification:before?.capability?.tool==='antigravity'
   });
  }
@@ -284,4 +304,15 @@ function sendPolicy(form,revision) {
  if(value===policy.current){controlNotice('已使用该权限选项');return;}
  const project=policy.scope==='project-permissions'?{project_id:policy.project_id}:{};
  return submitNative({kind:'policy',revision,value,...project});
+}
+
+function sendModel(form,revision) {
+ const id=workspace.selected,data=interaction.byTask.get(id),model=data?.capability?.model;
+ if(!data?.connected||!model||model.revision!==revision){controlNotice(CONTROL_ERRORS.model_changed,id,'model');return;}
+ if(interactionBusy(id)){controlNotice(CONTROL_ERRORS.operation_in_progress,id,'model');return;}
+ const value=form.elements.model?.value,selected=model.options.find(option=>option.value===value);
+ const efforts=modelEfforts(selected),effort=form.elements.effort?.value;
+ if(!selected||(efforts.length?!efforts.some(option=>option.value===effort):Boolean(effort))){controlNotice(CONTROL_ERRORS.invalid_model,id,'model');return;}
+ if(value===model.current&&(!efforts.length||effort===model.effort)){controlNotice('已使用该模型设置',id,'model');return;}
+ return submitNative({kind:'model',revision,model:value,...(efforts.length?{effort}:{})});
 }

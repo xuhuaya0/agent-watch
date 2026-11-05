@@ -28,6 +28,7 @@ VERSIONS = {'initialize': 0, 'thread-owner-discovery': 1,
             'thread-follower-submit-user-input': 1}
 VERSIONS['thread-follower-steer-turn'] = 1
 VERSIONS['thread-follower-update-thread-settings'] = 2
+VERSIONS['thread-follower-read-model-settings'] = 1
 # The desktop's native framing limit; long histories can exceed 90 MiB. A
 # snapshot is transient: only requests and a minimal question projection survive.
 MAX_FRAME = 256 * 1024 * 1024
@@ -201,12 +202,14 @@ def patch_requests(requests, patches):
 
 
 class CodexDesktop:
-    def __init__(self, socket_path, scope, rpc_factory=DesktopRpc, background=True, history=None, queue_sender=None, draft=None):
+    def __init__(self, socket_path, scope, rpc_factory=DesktopRpc, background=True, history=None, queue_sender=None, draft=None, catalog=None):
         self.socket_path, self.scope, self.rpc_factory = socket_path, scope, rpc_factory
         self.rpc = None
         self.history_reader = history
         self.queue_sender = queue_sender
         self.draft = draft
+        self.catalog = catalog
+        self.native_settings = {}
         self.states, self.owners = {}, {}
         self.next_probe = {}
         self.owner_checked = {}
@@ -221,6 +224,7 @@ class CodexDesktop:
                 self.states.clear()
                 self.owners.clear()
                 self.owner_checked.clear()
+                self.native_settings.clear()
                 self.condition.notify_all()
                 return
             if message.get('method') == 'client-status-changed':
@@ -230,6 +234,7 @@ class CodexDesktop:
                         if owner == p.get('clientId'):
                             self.owners.pop(sid, None)
                             self.states.pop(sid, None)
+                            self.native_settings.pop(sid, None)
                 return
             if message.get('method') != 'thread-stream-state-changed':
                 return
@@ -275,6 +280,7 @@ class CodexDesktop:
             for sid in set(self.owners) - ids:
                 self.rpc.follow(sid, self.owners.pop(sid), False)
                 self.states.pop(sid, None)
+                self.native_settings.pop(sid, None)
         def probe(sid):
             if self.stop.is_set():
                 return
@@ -292,10 +298,12 @@ class CodexDesktop:
                 # re-transfer a long conversation's full history every poll.
                 if needs_snapshot:
                     self.rpc.follow(sid, owner)
+                self.refresh_settings(sid, owner)
             except Exception:
                 with self.condition:
                     self.owners.pop(sid, None)
                     self.states.pop(sid, None)
+                    self.native_settings.pop(sid, None)
                     self.next_probe[sid] = time.monotonic() + 60
         due = [sid for sid in ordered_ids if self.next_probe.get(sid, 0) <= time.monotonic()]
         # Cold histories cannot delay already owned conversations indefinitely.
@@ -323,6 +331,30 @@ class CodexDesktop:
                     failure = category
             self.stop.wait(2)
 
+    def refresh_settings(self, sid, owner, fresh=False):
+        if not self.catalog:
+            return
+        directories = getattr(self.scope, 'creation_directories', lambda: {})()
+        cwd = directories.get(sid)
+        value = None
+        try:
+            native = self.rpc.call('thread-follower-read-model-settings',
+                {'conversationId': sid}, owner=owner)['result']['settings']
+            catalog = self.catalog.get(cwd, native.get('modelProvider'), fresh=fresh) if isinstance(native, dict) else None
+            if catalog:
+                catalog = {**catalog, 'selected_model': native.get('model')}
+                value = {'owner': owner, 'catalog': catalog, 'model': native,
+                         'cwd': cwd, 'checked': time.monotonic()}
+        except (ControlError, KeyError, TypeError, TimeoutError, OSError):
+            pass
+        with self.condition:
+            if self.owners.get(sid) == owner:
+                if value:
+                    current = (self.states.get(sid, {}).get('history') or {}).get('latestThreadSettings') or {}
+                    value['catalog'].update(selected_approval_policy=current.get('approvalPolicy'),
+                                             selected_reviewer=current.get('approvalsReviewer'))
+                self.native_settings[sid] = value
+
     def row(self, sid, state):
         # Reuse the app-server request schema; the desktop publishes exactly the
         # original server request objects, including their native IDs.
@@ -335,12 +367,34 @@ class CodexDesktop:
         requests = [entry['request'] for entry in mapper.requests.values()]
         unsupported = len(requests) != len(state['requests'])
         requests.extend(pending(state.get('history', {})))
-        from .codex_policy import capability
-        from .codex_settings import summary
-        policy = capability(state) if not requests else None
+        from .codex_policy import capability, native_capability
+        from .codex_settings import summary, model_capability
+        # Once native catalogs are configured, unavailable or stale metadata
+        # must revoke edits, never broaden them to the older approval-only API.
+        policy = capability(state) if not requests and self.catalog is None else None
         settings = summary(state)
+        model = None
+        options = self.native_settings.get(sid)
+        latest = state.get('history') or {}
+        latest_values = latest.get('latestThreadSettings') or {}
+        latest_model = latest_values.get('model') or latest.get('latestModel')
+        if (options and options['owner'] == self.owners.get(sid)
+                and time.monotonic() - options['checked'] <= 30
+                and (not latest_model or latest_model == options['model'].get('model'))):
+            if not requests:
+                policy = native_capability(state, options['catalog'])
+                model = model_capability(state, options['catalog'], options['model'])
+            if settings:
+                if model:
+                    settings['model'] = model['current']
+                    settings.pop('note', None)
+                if policy and policy['scope'] == 'session-permissions':
+                    selected = next((item for item in policy['options'] if item['value'] == policy['current']), None)
+                    if selected:
+                        settings['permission'] = selected['label']
         return normalize_sessions([{'tool': 'codex', 'session_id': sid, 'history': self.history_reader is not None,
                                     **({'policy':policy} if policy else {}),
+                                    **({'model':model} if model else {}),
                                     **({'settings':settings} if settings else {}),
                                     'reply': not state['requests'] and not requests, 'requests': requests,
                                     'reason': '此请求请在 Codex 原应用处理' if unsupported else ''}])[('codex', sid)]
@@ -404,6 +458,8 @@ class CodexDesktop:
             if sid not in self.states:
                 self.rpc.follow(sid, owner)
                 self.condition.wait_for(lambda: sid in self.states or not self.rpc.connected, timeout=15)
+        self.refresh_settings(sid, owner)
+        with self.condition:
             return self._with_creation([self.row(sid, self.states[sid])]) if sid in self.states else []
 
     def execute(self, command):
@@ -435,6 +491,8 @@ class CodexDesktop:
             asynchronous = next((r for r in pending(self.states[sid].get('history', {}))
                                  if r['id'] == action.get('request_id')), None)
         params = {'conversationId': sid}
+        if action['kind'] == 'model' or (action['kind'] == 'policy' and rows[0]['policy']['scope'] == 'session-permissions'):
+            return self.update_settings(sid, owner, action)
         if action['kind'] == 'policy':
             from .codex_policy import unchanged_permissions
             with self.condition:
@@ -483,6 +541,56 @@ class CodexDesktop:
             ended = self.condition.wait_for(lambda: sid not in self.states or not any(
                 r.get('id') == native['id'] for r in self.states[sid]['requests']), timeout=8)
             return 'resolved' if ended and sid in self.states else 'unknown'
+
+    def update_settings(self, sid, owner, action):
+        from .codex_policy import FIELDS, native_capability, settings_for
+        self.refresh_settings(sid, owner, fresh=True)
+        with self.condition:
+            if sid not in self.scope() or self.owners.get(sid) != owner or sid not in self.states:
+                raise ControlError('native_session_unavailable')
+            state = self.states[sid]
+            validate_action(self.row(sid, state), action)
+            options = self.native_settings.get(sid)
+            if not options:
+                raise ControlError('model_changed' if action['kind'] == 'model' else 'policy_changed')
+            before = copy.deepcopy(state['history'].get('latestThreadSettings') or {})
+            previous_model = dict(options['model'])
+            if action['kind'] == 'model':
+                patch = {'model': action['model'], 'effort': action.get('effort')}
+            else:
+                patch = settings_for(action['value'], options['catalog'])
+            if not patch:
+                raise ControlError('policy_changed')
+        result = self.rpc.call('thread-follower-update-thread-settings',
+            {'conversationId': sid, 'threadSettings': patch, 'activeTurnId': None}, owner=owner)['result']
+        if not isinstance(result, dict) or result.get('applied') is not True:
+            return 'unknown'
+        # This native read waits for the owner's pending settings update, and
+        # verifies the model that the next real turn will inherit.
+        self.refresh_settings(sid, owner)
+        with self.condition:
+            options = self.native_settings.get(sid)
+            if not options or self.owners.get(sid) != owner:
+                return 'unknown'
+            native = options['model']
+            def confirmed():
+                state = self.states.get(sid)
+                if not state:
+                    return True
+                if action['kind'] == 'model':
+                    values = state['history'].get('latestThreadSettings') or {}
+                    return (native.get('model') == action['model']
+                            and native.get('reasoningEffort') == action.get('effort')
+                            and all(values.get(key) == before.get(key) for key in FIELDS))
+                policy = native_capability(state, options['catalog'])
+                return policy and policy['current'] == action['value']
+            done = self.condition.wait_for(confirmed, timeout=8)
+            if not done or sid not in self.states or self.owners.get(sid) != owner:
+                return 'unknown'
+            if action['kind'] == 'policy' and any(native.get(key) != previous_model.get(key)
+                                                for key in ('model', 'reasoningEffort')):
+                return 'unknown'
+            return 'model_updated' if action['kind'] == 'model' else 'policy_updated'
 
     def close(self):
         self.stop.set()

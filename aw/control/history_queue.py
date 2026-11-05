@@ -65,7 +65,8 @@ class HistoryReads:
                 cursor = result.get('next_cursor')
                 if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 160):
                     raise ControlError('invalid_history_result', 400)
-                result = {'messages': [{k: m[k] for k in ('id','role','text','label','timestamp','truncated') if k in m}
+                result = {'messages': [{**{k: m[k] for k in ('id','role','text','label','timestamp','truncated') if k in m},
+                                       **({'phase': 'commentary'} if m.get('phase') == 'commentary' and m['role'] == 'assistant' else {})}
                                        for m in messages], 'next_cursor': cursor,
                           'source': {'codex':'codex_rollout', 'antigravity':'antigravity_transcript', 'dsh':'dsh_session'}[tool]}
             row['result'] = result

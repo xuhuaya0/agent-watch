@@ -1,6 +1,6 @@
 # Compatibility and acceptance matrix
 
-Updated: 2026-11-04. This is a record of observed support, not a promise that
+Updated: 2026-11-05. This is a record of observed support, not a promise that
 every desktop release implements the same protocol. A passing CI test exercises
 fixtures and simulated transports; it is not native application acceptance.
 
@@ -53,17 +53,18 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek creates in the selected directory. Antigravity creates in the selected native project, retaining only the source model choice. Both Windows provider paths verified. Codex macOS opens a prefilled native draft requiring user submission | Full Codex creation is implemented for an existing shared app-server but native acceptance is pending. No arbitrary directory, permission copy or second engine. See transport-specific evidence below |
-| Permission-policy changes | Codex changes an idle session's next-turn on-request / never policy, preserving sandbox and reviewer. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex and DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching has regression coverage but needs native acceptance. Full Codex profiles and global settings are not exposed |
+| Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner | One model/effort change and restoration verified on macOS. Other choices and Windows require native acceptance. Antigravity and DeepSeek model switching is not implemented |
+| Permission changes | Codex offers permitted native presets for an idle session's next turn. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex read-only and restoration verified; Full access, automatic review and other Codex transitions need native acceptance. DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching needs native acceptance. Global settings are not exposed |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | The new-conversation first turn uses native user input; existing-chat user-style reply dispatch still needs separate validation |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
 | Full Antigravity / DeepSeek history | Bounded on-demand transcript/native API pagination implemented; skips internal records, checks scope/archive before and after reads | Two-page native reads verified on Windows; Hub history delivery verified; archived-session revocation and browser rendering still need acceptance. Attachments remain placeholders |
 
-Agent Watch does not invent permanent-approval or automatic-approval actions,
-and provides no arbitrary shell execution endpoint. DeepSeek permission choices
-come from its native catalog: selecting a native full-access or Auto preset can
-change sandbox and approval behavior for that session, as in its own UI. The
-panel labels this separately from Codex approval-only changes. A message may still cause the native Agent to act
+Agent Watch provides no arbitrary shell execution endpoint. Codex and DeepSeek
+permission choices come from native state and catalogs; a permitted Full access
+or automatic-review preset can change sandbox and approval behavior. The panel
+distinguishes these session settings from one-time request decisions and from
+Antigravity's project scope. A message may still cause the native Agent to act
 according to its existing policy. “Native application received” is not “Agent
 finished”, and uncertain delivery is not retried automatically.
 
@@ -266,25 +267,44 @@ click or a cross-preset permission transition was exercised.
 ## Native settings display and browser checks
 
 The web reader separates replies and one-shot requests from session settings
-and new-conversation actions. Settings and creation use independent dialogs.
+and new-conversation actions. Model and permissions have separate entries and
+dialogs; creation opens from the session-list header.
 Native labels and scope are retained; the UI does not invent permission presets
 or an available model catalog.
 
-- Codex desktop: read-only model, reasoning effort, sandbox, reviewer and
-  approval-policy facts come from the native owner snapshot/patch. This path was
-  checked against a running macOS desktop session. The two editable approval
-  rules are advanced controls, not the desktop permission preset picker. Native
-  model selection and complete permission preset parity are still pending.
+- Codex desktop: model, reasoning effort and permitted native permission presets
+  can be changed for an idle connected session. Choices are restricted by the
+  native catalog, provider and managed policy. Native owner state supplies the
+  current values; an unmatched current state remains custom. Each write checks
+  the current revision and confirms native state before reporting success.
 - Antigravity: model labels come from native configuration mapped to recorded
   conversation model selections. They do not represent unsent UI changes.
   Project permission state remains visible while a write action is unavailable.
 - DeepSeek: the next model selection and native catalog provide labels when that
   projection is present. A missing projection does not imply the global default.
   Permission labels remain visible while the session is busy.
+- Older provider snapshots retain readable facts without gaining model or full
+  permission controls that they did not advertise.
+
+Codex catalog reads use a bounded, short-lived metadata-only app-server from the
+same native installation, account and working directory, with provider matching.
+It reads configuration, requirements, model and permission catalogs, then exits;
+it never starts or resumes a conversation. Model and permission writes continue
+through the existing desktop owner. Catalog failure disables those changes.
+
+On 2026-11-05, macOS desktop 26.1029.61003 (build 24614) passed a dedicated
+browser → Hub → worker → desktop-owner test. Selecting `gpt-6.1-sol` with `low`
+effort was confirmed in native `turn_context` and a fixed test reply. Selecting
+read-only returned profile `:read-only`, sandbox `readOnly`, networking disabled
+and reviewer `user`, while preserving the model. The complete original model,
+effort and permission state was then restored and matched native read-back.
+Full access, automatic review and other permission transitions were not executed
+in this test. Windows Codex remains unverified.
 
 A local synthetic browser fixture verified desktop and narrow-screen layout,
 separate creation destinations, project confirmation, and preservation of reply
 text, focus/caret and unapplied settings during live detail refreshes. No native
 message or permission change was submitted for these UI checks. Regression tests
 cover late failed polls, stale revisions, disabled controls and bounded metadata.
-These checks do not establish native model switching or full permission parity.
+Those synthetic checks are separate from the dedicated native action above;
+they do not establish availability of every model or permission transition.

@@ -22,7 +22,8 @@ SCENARIOS = {
     'normal': '完整工作台', 'attention': '问题与单次审批', 'offline': '设备与桥接离线',
     'empty': '无会话', 'long': '长标题与长消息', 'login': '登录',
     'setup': '首次设置', 'failure': '读取失败', 'auth_failure': '登录状态读取失败', 'pending': '操作等待与未知回执',
-    'refresh': '刷新时保留输入', 'changed': '原生权限版本变化', 'slow': '慢响应与切页',
+    'refresh': '刷新时保留输入', 'changed': '模型与权限版本变化', 'slow': '慢响应与切页',
+    'readonly': '模型与权限只读', 'unknown_settings': '模型与权限未读取',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -51,6 +52,9 @@ def reader_history(older, update):
                          'text': f'第 {turn} 轮检查结果\n\n已核对本轮的设备、会话和回复。'})
     if not older:
         messages.append({'id': 't1', 'role': 'tool', 'text': '合成工具输出，可展开查看。'})
+        messages.append({'id': 'progress-1', 'role': 'assistant', 'phase':'commentary',
+                         'text':'合成过程记录：已读完示例输入，正在核对下一项。'})
+        messages.append({'id': 't2', 'role': 'tool', 'text':'第二条合成工具输出，与上一条过程记录连续分组。'})
         messages.append({'id': 'latest', 'role': 'assistant', 'text': f'最新进展，第 {update} 次更新。'})
     return {'ready': True, 'messages': messages, 'next_cursor': None if older else 'earlier'}
 
@@ -99,8 +103,15 @@ class Preview:
                            'scope':'project' if tool == 'antigravity' else 'session'}
         if tool == 'codex':
             cap['settings'].update(reasoning='高', permission='工作区可写 · 联网受限 · 由你审批 · 按需审批')
-            cap['policy'] = {'scope':'session-next-turn','current':'on-request','revision':'demo-policy',
-                             'options':[choice('on-request','需要时询问审批'), choice('never','不询问审批（需要批准的操作将拒绝）')]}
+            cap['model'] = {'current':'example-model-a','effort':'high','revision':'demo-model', 'options':[
+                {'value':'example-model-a','label':'Example Model A','efforts':['low','high'],'default_effort':'low'},
+                {'value':'example-model-b','label':'Example Model B','efforts':['medium','high'],'default_effort':'medium'},
+                {'value':'example-model-c','label':'Example Model C','efforts':[]}]}
+            cap['policy'] = {'scope':'session-permissions','current':'demo-workspace','revision':'demo-policy',
+                'options':[choice('demo-workspace','示例：请求审批','合成工作区权限及审批预设'),
+                           choice('demo-auto-review','示例：代为审批','仅展示合成权限选项，不会执行原生操作'),
+                           choice('demo-full','示例：完整访问','合成完整访问权限预设，不是实际配置'),
+                           {**choice('demo-read-only','示例：只读','合成的其他原生权限配置'), 'group':'advanced'}]}
             cap['create'] = {'cwd':'/example/project','revision':'demo-create','mode':'draft'}
         elif tool == 'antigravity':
             cap['settings'].update(permission='Request Review', project_name='Example Project',
@@ -121,7 +132,7 @@ class Preview:
                            choice('full-access','Full Access','完整文件访问') ]}
             cap['create'] = {'cwd':'C:/Example/Project','revision':'demo-create'}
         if task['state'] == 'running':
-            cap.pop('policy');cap.pop('create');cap['reason'] = '演示：会话正在运行，等待本轮结束。'
+            cap.pop('policy');cap.pop('create');cap.pop('model', None);cap['reason'] = '演示：会话正在运行，等待本轮结束。'
         if task['state'] == 'waiting_input':
             cap['reply'] = False;cap.pop('policy', None)
             cap['requests'] = [{'id':'demo-question','revision':'demo-v1','kind':'question','prompt':'选择合成示例的显示方案',
@@ -136,7 +147,17 @@ class Preview:
             cap['policy']['revision'] = f'demo-policy-{generation}'
             selected = cap['policy']['options'][generation % 2]
             cap['policy']['current'] = selected['value']
-            if tool != 'codex':cap['settings']['permission'] = selected['label']
+            cap['settings']['permission'] = selected['label']
+            if 'model' in cap:
+                cap['model']['revision'] = f'demo-model-{generation}'
+                selected_model = cap['model']['options'][generation % 2]
+                cap['model']['current'] = selected_model['value']
+                cap['model']['effort'] = selected_model['default_effort']
+                cap['settings']['model'] = selected_model['label']
+                cap['settings']['reasoning'] = selected_model['default_effort']
+        if self.scenario in ('readonly', 'unknown_settings'):
+            for field in ('model', 'policy', 'create'):cap.pop(field, None)
+            if self.scenario == 'unknown_settings':cap.pop('settings', None)
         return cap
 
     def machines(self):
@@ -166,7 +187,7 @@ class Preview:
                 '<main style="max-width:640px;margin:48px auto;font:16px/1.7 system-ui;padding:24px"><h1>Agent Watch 合成预览</h1>'
                 '<p>只读取仓库中的静态文件，不连接真实设备、Hub 或原生应用。登录可填写任意演示字符串，勿使用真实密码。</p>'
                 '<p>所有控制、凭据与配置写操作均拒绝；已读与“知道了”仅保存在本进程内存。</p>'
-                '<p>刷新场景中，滚到第 18 轮检查结果或填写回复草稿，观察两次轮询后的阅读位置。权限版本场景每 15 秒更新一次。</p><ul>'+links+'</ul></main></html>')
+                '<p>刷新场景中，滚到第 18 轮检查结果或填写回复草稿，观察两次轮询后的阅读位置。模型与权限版本场景每 15 秒更新一次。所有模型与权限选项均为合成示例。</p><ul>'+links+'</ul></main></html>')
         if method == 'GET' and path.startswith('/static/'):
             file = (STATIC/path.removeprefix('/static/')).resolve()
             if file.parent == STATIC and file.suffix in ('.js','.css') and file.is_file():
