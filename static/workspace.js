@@ -91,8 +91,17 @@ function toast(message) {
   const el=document.getElementById('workspace-toast');el.textContent=message;el.style.display='block';
   clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.style.display='none',4000);
 }
+// A returning reader may first see a short list summary. Direct input takes
+// precedence over a saved position waiting for the full response.
+const readerPane = document.getElementById('session-detail');
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown', 'focusin']) {
+  readerPane.addEventListener(type, () => { readerPane.pendingOffset = null; }, {passive:true});
+}
 function saveScroll() {
-  if (workspace.selected) workspace.scroll.set(workspace.selected,document.getElementById('session-detail').scrollTop);
+  const pane = document.getElementById('session-detail');
+  if (workspace.page === 'sessions' && pane.clientHeight && pane.dataset.session === workspace.selected) {
+    workspace.scroll.set(workspace.selected, pane.pendingOffset ?? pane.scrollTop);
+  }
 }
 function navigate(page) {
   if(page!=='sessions'&&typeof closeSessionOptions==='function')closeSessionOptions();
@@ -157,12 +166,18 @@ function applyListState() {
   el.classList.toggle('mobile-detail',workspace.mobileDetail);
 }
 function toggleList() {workspace.listCollapsed=!workspace.listCollapsed;applyListState();}
-function showList() {workspace.listCollapsed=false;workspace.mobileDetail=false;applyListState();}
+function showList() {saveScroll();workspace.listCollapsed=false;workspace.mobileDetail=false;applyListState();}
 function selectSession(id) {
   if(typeof closeSessionOptions==='function')closeSessionOptions();
-  saveScroll();workspace.selected=id;workspace.detail=null;workspace.detailSignature='';workspace.renderedSignature='';
+  if (workspace.selected !== id) {
+    saveScroll();
+    workspace.selected = id;
+    workspace.detail = null;
+    workspace.detailSignature = '';
+    workspace.renderedSignature = '';
+  }
   workspace.mobileDetail=true;applyListState();navigate('sessions');
-  renderDetail();refreshDetail();if(typeof refreshInteraction==='function')refreshInteraction();
+  refreshDetail();if(typeof refreshInteraction==='function')refreshInteraction();
 }
 async function updatePreference(id,patch) {
   const task=workspace.tasks.find(t=>taskId(t)===id);if(!task)return;
@@ -228,11 +243,32 @@ async function copyText(text) {
 }
 function copyCode(button) {copyText(button.parentElement.querySelector('code').textContent);}
 function copyReply() {const t=workspace.detail;if(t)copyText(t.extra?.latest_turn?.assistant || t.detail || '');}
+// Keep history and reply controls mounted while a poll changes surrounding facts.
+function setDetailHtml(id, html) {
+  const region = document.getElementById(id);
+  if (region.renderedHtml === html) return;
+  region.innerHTML = html;
+  region.renderedHtml = html;
+}
+function detailAnchor(pane) {
+  if (!pane.scrollTop || !pane.clientHeight) return null;
+  const viewport = pane.getBoundingClientRect();
+  for (const region of pane.children) {
+    const rect = region.getBoundingClientRect();
+    if (rect.height && rect.bottom > viewport.top && rect.top < viewport.bottom) {
+      return {region, top:rect.top};
+    }
+  }
+  return null;
+}
 function renderDetail() {
   if(workspace.page!=='sessions')return;
   const el=document.getElementById('session-detail');const brief=workspace.tasks.find(t=>taskId(t)===workspace.selected);
   document.getElementById('detail-location').textContent=brief?[brief.project,brief.machine].filter(Boolean).join(' / '):'';
   if(!brief){
+    saveScroll();
+    delete el.dataset.session;
+    el.pendingOffset = null;
     el.innerHTML='<div class="blank-state">'+icon('conversations')+'<h2>'+ (workspace.selected?'会话当前未上报':'选择一个会话')+'</h2><p>'+(workspace.selected?'选择仍保留，等待该设备下次上报，或从列表打开其他会话。':'从列表查看最近消息与结果。')+'</p></div>';
     workspace.renderedSignature='';if(typeof renderSessionActions==='function')renderSessionActions();return;
   }
@@ -240,36 +276,51 @@ function renderDetail() {
   const signature=JSON.stringify([workspace.selected,workspace.detailSignature,brief.extra?.native_pin,brief.acked,brief.machine_online]);
   const duration=fmt(Math.max(0,Math.floor(Date.now()/1000-(t.turn_started_at || t.state_since || Date.now()/1000))));
   if(signature===workspace.renderedSignature){if(typeof ensureHistory==='function')ensureHistory();const age=document.getElementById('detail-duration');if(age)age.textContent=duration;return;}
-  const first=workspace.renderedSignature==='';const top=first?(workspace.scroll.get(workspace.selected)||0):el.scrollTop;
-  const opened=new Set([...el.querySelectorAll('.subagents[open]')].map(n=>n.dataset.taskKey));
+  const opening = el.dataset.session !== workspace.selected;
+  const anchor = opening ? null : detailAnchor(el);
+  const hasHistory = ['codex','antigravity','dsh'].includes(t.tool);
+  if (opening) {
+    el.dataset.session = workspace.selected;
+    el.pendingOffset = null;
+    el.innerHTML = `<div id="detail-intro"></div>
+      ${hasHistory ? '<section id="session-history" aria-label="会话记录"></section>' : ''}
+      <section id="latest-messages"></section>
+      <p id="detail-pin" class="native-pin-note"></p><div id="detail-subagents"></div>
+      <section id="session-control" class="session-control" aria-label="原会话交互"></section>
+      <p id="detail-capture" class="capture-note"></p>`;
+  }
   const pin=t.extra?.native_pin;
   const turn=t.extra?.latest_turn;const user=turn?.user ?? t.prompt;const reply=turn?.assistant ?? t.detail;
   const live=['running','stalled'].includes(t.state);
-  const retainedControl=el.querySelector('#session-control');
-  const focused=retainedControl?.contains(document.activeElement)?document.activeElement:null;
-  const caret=focused&&typeof focused.selectionStart==='number'?[focused.selectionStart,focused.selectionEnd]:null;
-  el.innerHTML=`<div class="conversation-head"><h1>${esc(t.title)}</h1>
+  setDetailHtml('detail-intro', `<div class="conversation-head"><h1>${esc(t.title)}</h1>
     <div class="conversation-facts"><span class="status-tag ${esc(t.state)}">${esc(ZH[t.state] || t.state)}</span><span class="fact">${esc(t.machine)}</span><span class="fact">${esc(t.tool_short || t.tool)}</span><span>${t.machine_online===false?'设备离线':'设备在线'} · ${esc((t.machine_ips || []).join(' / '))}</span></div>
     <div class="conversation-facts" style="margin-top:9px"><span>${activityAt(t)?'最近活动 '+esc(new Date(activityAt(t)*1000).toLocaleString()):'活动时间未知'}</span>${t.extra?.cwd?`<span title="${esc(t.extra.cwd)}">· ${esc(t.extra.cwd)}</span>`:''}</div>
     <div class="conversation-actions">${t.state!=='running'&&t.state!=='idle'&&!t.acked?`<button onclick="ack(${jsArg(t.key)})">知道了</button>`:''}</div></div>
     ${live?`<div class="conversation-facts" style="margin-bottom:20px">已运行 <span id="detail-duration">${duration}</span></div>`:''}
-    ${t.detail&&live?`<div class="activity-note ${t.state==='stalled'?'warning':''}">${esc(t.detail)}</div>`:''}
-    ${['codex','antigravity','dsh'].includes(t.tool)?'<section id="session-history" aria-label="会话记录"></section>':''}
-    <section id="latest-messages">
+    ${t.detail&&live?`<div class="activity-note ${t.state==='stalled'?'warning':''}">${esc(t.detail)}</div>`:''}`);
+  setDetailHtml('latest-messages', `
     <article class="message user-message"><div class="message-label">${icon('user')}最近用户消息</div><div class="message-body">${user?markdown(user):'<p>未采集到用户消息</p>'}</div></article>
     ${turn?.notification?`<article class="message user-message"><div class="message-label">${icon('activity')}最近外部消息 · 原生系统通知</div><div class="message-body">${markdown(turn.notification)}</div></article>`:''}
-    <article class="message"><div class="message-label">${icon('activity')}${turn?'最新回复':'最新结果摘要'}${reply?'<button onclick="copyReply()">'+icon('copy')+'复制</button>':''}</div><div class="message-body">${reply?markdown(reply):'<p>'+(live?'Agent 正在处理，结果到达后会更新。':'这条会话尚未采集到回复正文。')+'</p>'}</div></article>
-    </section>
-    <p class="native-pin-note">${pin?.known?(pin.pinned?'已在原 Harness 中置顶 · 修改请前往原应用':'未在原 Harness 中置顶'):'此采集端尚未提供原 Harness 的置顶状态'}</p>
-    ${renderSubagents(t.extra?.subagents,taskId(t))}
-    <section id="session-control" class="session-control" aria-label="原会话交互"></section>
-    <p class="capture-note">${workspace.detail?'':'正在读取详情… '}${t.extra?.metadata_only?'仅有原应用的会话索引，本机暂时没有正文日志。':turn?(turn.truncated?'内容较长，当前显示已采集的部分。':'显示当前采集到的最近一轮内容。'):'该采集端提供摘要，更新采集端后可查看较完整的回复。'} ${['codex','antigravity','dsh'].includes(t.tool)?'历史记录通过原应用按需读取；连接状态和可用内容见会话记录。':''}</p>`;
-  for(const n of el.querySelectorAll('.subagents'))n.open=opened.has(n.dataset.taskKey);
-  el.scrollTop=top;workspace.renderedSignature=signature;
-  if(retainedControl?.dataset.task===workspace.selected)el.querySelector('#session-control').replaceWith(retainedControl);
-  if(focused?.isConnected){focused.focus({preventScroll:true});if(caret)focused.setSelectionRange(...caret);}
+    <article class="message"><div class="message-label">${icon('activity')}${turn?'最新回复':'最新结果摘要'}${reply?'<button onclick="copyReply()">'+icon('copy')+'复制</button>':''}</div><div class="message-body">${reply?markdown(reply):'<p>'+(live?'Agent 正在处理，结果到达后会更新。':'这条会话尚未采集到回复正文。')+'</p>'}</div></article>`);
+  document.getElementById('detail-pin').textContent = pin?.known ? (pin.pinned ? '已在原 Harness 中置顶 · 修改请前往原应用' : '未在原 Harness 中置顶') : '此采集端尚未提供原 Harness 的置顶状态';
+  const subs = document.getElementById('detail-subagents');
+  const subagentHtml = renderSubagents(t.extra?.subagents, taskId(t));
+  if (subs.renderedHtml !== subagentHtml) {
+    const opened = new Set([...subs.querySelectorAll('.subagents[open]')].map(n => n.dataset.taskKey));
+    setDetailHtml('detail-subagents', subagentHtml);
+    for (const item of subs.querySelectorAll('.subagents')) item.open = opened.has(item.dataset.taskKey);
+  }
+  document.getElementById('detail-capture').textContent = `${workspace.detail?'':'正在读取详情… '}${t.extra?.metadata_only?'仅有原应用的会话索引，本机暂时没有正文日志。':turn?(turn.truncated?'内容较长，当前显示已采集的部分。':'显示当前采集到的最近一轮内容。'):'该采集端提供摘要，更新采集端后可查看较完整的回复。'} ${hasHistory?'历史记录通过原应用按需读取；连接状态和可用内容见会话记录。':''}`;
+  workspace.renderedSignature = signature;
   if(typeof renderInteraction==='function')renderInteraction();
+  // Adjust only for layout above the reader. History owns its own subsequent updates.
+  if (anchor) el.scrollTop += anchor.region.getBoundingClientRect().top - anchor.top;
   if(typeof ensureHistory==='function')ensureHistory();
+  if (opening || (workspace.detail && el.pendingOffset != null)) {
+    const target = opening ? (workspace.scroll.get(workspace.selected) || 0) : el.pendingOffset;
+    el.scrollTop = target;
+    el.pendingOffset = !workspace.detail && target > el.scrollTop + 1 ? target : null;
+  }
 }
 function openProject(key) {workspace.project=key;workspace.device='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}
 function openDeviceTasks(key) {workspace.device=key;workspace.project='';workspace.query='';workspace.tool='';workspace.state='';document.getElementById('session-search').value='';navigate('sessions');showList();}

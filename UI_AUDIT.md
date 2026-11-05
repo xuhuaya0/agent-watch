@@ -69,3 +69,15 @@ Screen-reader behavior, the full zoom/breakpoint matrix, all keyboard sequences,
 and real native writes were **not verified** by this baseline. Keep those limits
 visible when citing these results. Add evidence and update individual findings
 as work closes; do not replace this record with an undifferentiated “UI passed.”
+
+## Follow-up on live reading (UI-09)
+
+The original short-draft check missed a reset in a long conversation. On an
+activity update, the reader temporarily removed its history and restored the
+scroll offset while only a short summary was mounted. In the browser the offset
+fell from 2479 px to 131 px. The detail view now keeps history and reply controls
+mounted and history updates reuse messages by ID. On the long `refresh` fixture,
+a middle paragraph kept its screen position across multiple polls at 1280×720
+and 390×844. The desktop reply and question drafts retained focus, caret and
+screen position. Switching away from a long offline reply and returning restored
+the same paragraph after the full detail arrived.

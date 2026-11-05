@@ -62,6 +62,13 @@ Inspect at 1280×800 and 390×844, and around an affected breakpoint (760 or 110
 px) when changing layout. Include long content and keyboard checks, not only an
 empty/default screenshot. Restore temporary viewport overrides afterwards.
 
+For UI-09 use the `refresh` scenario with a long history. Scroll to a numbered
+reply in the middle, note its position on screen, and compare it after at least
+two scan timestamps advance. Repeat with a draft at the bottom, checking the
+input's screen position, focus, text and caret. Load an older page and check
+that the previously visible message stays in place. In `offline`, switch away
+from a long captured reply and back while the full detail is fetched.
+
 The preview supplies reproducible data, not every race condition. Code-level
 tests cover delayed response ordering and stale request identities; a focused
 browser exercise verifies their observable effects. If a particular failure

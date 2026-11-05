@@ -267,11 +267,11 @@ test('model metadata is escaped and never presented as a fabricated selection ca
 });
 
 
-test('focused reply receives new model metadata without replacing the draft',()=>{
+test('receipt and settings changes preserve the focused reply field',()=>{
  const {ctx,node,summary}=setup();ctx.data={...cap,capability:{...cap.capability,settings:{scope:'session',model:'Before'}}};
  run(ctx,'interaction.byTask.set("a",data);setReplyDraft("Draft");renderInteraction(true)');
  const original=node.innerHTML;node.contains=()=>true;
- run(ctx,'data.capability.settings.model="After";renderInteraction()');
+ run(ctx,'data.capability.settings.model="After";data.capability.create={revision:"new"};data.capability.policy={revision:"v2",options:[]};renderInteraction(true)');
  assert.match(summary.innerHTML,/After/);assert.equal(node.innerHTML,original);
  assert.equal(run(ctx,'interactionDraft("a").text'),'Draft');
 });

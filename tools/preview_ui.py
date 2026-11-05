@@ -41,6 +41,20 @@ def choice(value, label, description=''):
     return {'value': value, 'label': label, 'description': description}
 
 
+def reader_history(older, update):
+    """Two bounded pages with stable landmarks and a changing final message."""
+    messages = []
+    turns = range(1, 13) if older else range(13, 25)
+    for turn in turns:
+        messages.append({'id': f'user-{turn}', 'role': 'user', 'text': f'请核对第 {turn} 轮的修改。'})
+        messages.append({'id': f'result-{turn}', 'role': 'assistant',
+                         'text': f'第 {turn} 轮检查结果\n\n已核对本轮的设备、会话和回复。'})
+    if not older:
+        messages.append({'id': 't1', 'role': 'tool', 'text': '合成工具输出，可展开查看。'})
+        messages.append({'id': 'latest', 'role': 'assistant', 'text': f'最新进展，第 {update} 次更新。'})
+    return {'ready': True, 'messages': messages, 'next_cursor': None if older else 'earlier'}
+
+
 class Preview:
     def __init__(self, scenario='normal', clock=time.time):
         self.clock, self.started, self.lock = clock, clock(), threading.RLock()
@@ -60,6 +74,10 @@ class Preview:
             device = 'demo-mac' if tool == 'codex' else 'demo-pc'
             timestamp = self.clock() - age if state == 'running' or self.scenario == 'refresh' else self.started - age
             if self.scenario == 'long':title += '：验证非常长的中文标题、英文标识 ExampleProjectAndModuleName 以及多设备信息的截断与换行'
+            reply = '合成结果：修改已检查，可继续阅读或查看设置。'
+            if self.scenario == 'offline' and sid == 'ag-ready':
+                reply = '\n\n'.join(f'第 {n} 段缓存回复。设备离线时，仍然可以阅读已采集的结果。'
+                                    for n in range(1, 61))
             result.append({'key':sid, 'ui_key':sid, 'session_id':sid, 'tool':tool,
                 'tool_short':{'codex':'CX','antigravity':'AG','dsh':'DS'}[tool],
                 'title':title, 'machine':machine, 'machine_id':device,
@@ -71,7 +89,7 @@ class Preview:
                 'prompt':'请检查这次修改，并给出简短结果。', 'detail':'这是一段合成结果，用于检查阅读和交互布局。',
                 'extra':{'cwd':'/example/project' if tool == 'codex' else 'C:/Example/Project',
                          'native_pin':{'known':True,'pinned':sid == 'cx-pinned','order':0},
-                         'latest_turn':{'user':'请检查这次修改。','assistant':'合成结果：修改已检查，可继续阅读或查看设置。'}}})
+                         'latest_turn':{'user':'请检查这次修改。','assistant':reply}}})
         return result
 
     def capability(self, task):
@@ -148,7 +166,7 @@ class Preview:
                 '<main style="max-width:640px;margin:48px auto;font:16px/1.7 system-ui;padding:24px"><h1>Agent Watch 合成预览</h1>'
                 '<p>只读取仓库中的静态文件，不连接真实设备、Hub 或原生应用。登录可填写任意演示字符串，勿使用真实密码。</p>'
                 '<p>所有控制、凭据与配置写操作均拒绝；已读与“知道了”仅保存在本进程内存。</p>'
-                '<p>刷新场景每次轮询更新活动时间；权限版本场景每 15 秒改变原生版本，用于检查草稿、光标、滚动与设置选择。</p><ul>'+links+'</ul></main></html>')
+                '<p>刷新场景中，滚到第 18 轮检查结果或填写回复草稿，观察两次轮询后的阅读位置。权限版本场景每 15 秒更新一次。</p><ul>'+links+'</ul></main></html>')
         if method == 'GET' and path.startswith('/static/'):
             file = (STATIC/path.removeprefix('/static/')).resolve()
             if file.parent == STATIC and file.suffix in ('.js','.css') and file.is_file():
@@ -167,6 +185,9 @@ class Preview:
         if method == 'GET' and path == '/api/tasks':
             if self.scenario == 'failure':return 503, 'application/json', {'error':'demo_unavailable'}
             tasks = self.tasks()
+            # The center sends the full captured turn only on the detail endpoint.
+            for task in tasks:
+                task['extra'].pop('latest_turn')
             return 200, 'application/json', {'tasks':tasks,'machines':self.machines(),'errors':{},'scanned_at':self.clock(),
                 'counts':{'attention':sum(t['state'] in ('waiting_input','waiting_approval') for t in tasks),
                           'running':sum(t['state']=='running' for t in tasks),'done':sum(t['state']=='done' and self.clock()-t['activity_at']<7200 for t in tasks)}}
@@ -181,6 +202,12 @@ class Preview:
                                             'commands':commands,'reason':'' if connected else '演示：原应用控制桥已离线'}
         if method == 'GET' and path.startswith('/api/history/tasks/') and task:
             if self.scenario == 'offline':return 409, 'application/json', {'error':'history_unavailable'}
+            if self.scenario == 'refresh':
+                cursor = parse_qs(parsed.query).get('cursor', [None])[0]
+                if cursor not in (None, 'earlier'):
+                    return 409, 'application/json', {'error': 'history_cursor_expired'}
+                update = int((self.clock() - self.started) // 5)
+                return 200, 'application/json', reader_history(cursor == 'earlier', update)
             content = '合成结果：本轮修改已经检查。\n\n- 项目、设备和 Harness 可区分\n- 继续回复保持原会话上下文'
             if self.scenario == 'long':content += '\n\n' + ('长内容用于检查滚动、换行、代码与较早记录。\n\n' * 50) + '\n```text\n' + 'long_identifier_'*25 + '\n```'
             return 200, 'application/json', {'ready':True,'messages':[{'id':'u1','role':'user','text':'请检查本轮修改。'},

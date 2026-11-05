@@ -24,8 +24,10 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual({t['state'] for t in data['tasks']},{'done','running','waiting_input','waiting_approval'})
         for task in data['tasks']:
             self.assertIn(task['machine_ips'][0],('192.0.2.10','192.0.2.20'))
+            self.assertNotIn('latest_turn', task['extra'])
             detail = fixture.route('GET','/api/tasks/'+task['key'])[2]
             self.assertEqual(detail['task']['key'],task['key'])
+            self.assertIn('latest_turn', detail['task']['extra'])
             control = fixture.route('GET','/api/control/tasks/'+task['key'])[2]
             self.assertEqual(control['capability']['tool'],task['tool'])
             history = fixture.route('GET','/api/history/tasks/'+task['key'])[2]
@@ -61,6 +63,8 @@ class PreviewTests(unittest.TestCase):
         fixture.select('offline')
         self.assertFalse(fixture.route('GET','/api/control/tasks/cx-ready')[2]['connected'])
         self.assertEqual(fixture.route('GET','/api/history/tasks/cx-ready')[2]['error'],'history_unavailable')
+        cached_reply = fixture.route('GET', '/api/tasks/ag-ready')[2]['task']['extra']['latest_turn']['assistant']
+        self.assertIn('第 30 段缓存回复', cached_reply)
         fixture.select('auth_failure');self.assertEqual(fixture.route('GET','/api/auth/status')[0],503)
         fixture.select('failure');self.assertEqual(fixture.route('GET','/api/tasks')[0],503)
         fixture.select('empty');self.assertEqual(fixture.route('GET','/api/tasks')[2]['tasks'],[])
@@ -79,6 +83,21 @@ class PreviewTests(unittest.TestCase):
         changed = fixture.route('GET','/api/control/tasks/ag-ready')[2]['capability']['policy']
         self.assertNotEqual(initial['revision'],changed['revision'])
         self.assertNotEqual(initial['current'],changed['current'])
+
+    def test_reader_can_compare_a_stable_midpage_landmark_across_updates_and_prepend(self):
+        now = [1800000000]
+        fixture = Preview('refresh', clock=lambda: now[0])
+        path = '/api/history/tasks/cx-ready'
+        first = fixture.route('GET', path)[2]
+        now[0] += 5
+        refreshed = fixture.route('GET', path)[2]
+        self.assertGreater(len(first['messages']), 20)
+        self.assertEqual(first['messages'][:-1], refreshed['messages'][:-1])
+        self.assertNotEqual(first['messages'][-1]['text'], refreshed['messages'][-1]['text'])
+        older = fixture.route('GET', path + '?cursor=' + refreshed['next_cursor'])[2]
+        self.assertIsNone(older['next_cursor'])
+        self.assertTrue(older['messages'])
+        self.assertTrue({m['id'] for m in older['messages']}.isdisjoint(m['id'] for m in refreshed['messages']))
 
 
 if __name__ == '__main__':unittest.main()

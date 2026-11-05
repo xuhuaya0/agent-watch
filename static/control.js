@@ -116,11 +116,11 @@ function renderInteraction(force=false) {
  const id=workspace.selected,el=document.getElementById('session-control');if(!id||!el)return;
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
- const structure=JSON.stringify([id,data?.connected,data?.capability?.reply,data?.capability?.create,data?.capability?.policy,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
+ const structure=JSON.stringify([id,data?.connected,data?.capability?.reply,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;
  // Keep focused drafts and selection on ordinary polls. A resolved approval may
  // still remove its card; submission revalidates every ID at both Hub and worker.
- if(!force && el.contains(document.activeElement) && el.dataset.task===id && el.dataset.interactionStructure===structure) {
+ if(el.contains(document.activeElement) && el.dataset.task===id && el.dataset.interactionStructure===structure) {
   // Status must advance even while the textarea or Send button retains focus.
   // Update controls in place so newer text and its caret are not replaced.
   const feedback=el.querySelector('.interaction-feedback');

@@ -1,15 +1,29 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('fs'),vm=require('vm');
+class HistoryElement {
+ constructor(tag='div') {this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.html='';this.open=false;}
+ get innerHTML(){return this.html+this.children.map(node=>node.innerHTML).join('');}
+ set innerHTML(value){this.replaceChildren();this.html=value;}
+ get firstElementChild(){return this.children[0]||null;}
+ get lastElementChild(){return this.children.at(-1)||null;}
+ get nextElementSibling(){return this.parentElement?.children[this.parentElement.children.indexOf(this)+1]||null;}
+ get tools(){return this.children.flatMap(node=>node.tagName==='DETAILS'?[node]:node.tools);}
+ get isConnected(){return Boolean(this.parentElement?.isConnected||this.root);}
+ getBoundingClientRect(){return {top:0,bottom:0};}
+ contains(node){return node===this||this.children.some(child=>child.contains(node));}
+ remove(){if(this.parentElement){this.parentElement.children.splice(this.parentElement.children.indexOf(this),1);this.parentElement=null;}}
+ insertBefore(node,ref){node.remove();node.parentElement=this;this.children.splice(ref?this.children.indexOf(ref):this.children.length,0,node);}
+ replaceChildren(...nodes){for(const child of [...this.children])child.remove();for(const child of nodes)this.insertBefore(child,null);}
+}
 function setup(){
- const history={dataset:{},tools:[],html:'',get innerHTML(){return this.html},set innerHTML(value){
-  this.html=value;this.tools=[...value.matchAll(/<details class="history-tool" data-history-id="([^"]+)" data-history-session="([^"]+)"/g)].map(([,id,session])=>({dataset:{historyId:id,historySession:session},open:false}));
- },querySelectorAll(){return this.tools}};
- const elements={'session-history':history,'latest-messages':{hidden:false},'session-detail':{scrollHeight:100,scrollTop:20}};
- const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id]},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
+ const elements=Object.fromEntries(['session-detail','session-history','latest-messages','session-control'].map(id=>[id,new HistoryElement()]));
+ const pane=elements['session-detail'];pane.root=true;pane.scrollTop=20;pane.clientHeight=0;
+ pane.replaceChildren(elements['session-history'],elements['latest-messages'],elements['session-control']);
+ const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id],createElement:tag=>new HistoryElement(tag)},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
  vm.runInContext(fs.readFileSync('static/history.js','utf8'),ctx);return{ctx,elements,run:s=>vm.runInContext(s,ctx)};
 }
 test('history escapes content and never renders a reasoning role',()=>{
- const {run}=setup();const html=run(`historyHtml({messages:[{role:'user',label:'<img>',text:'<script>',id:'1',timestamp:''}],loaded:true,busy:false})`);
+ const {run}=setup();const html=run(`historyMessageBody({role:'user',label:'<img>',text:'<script>',id:'1',timestamp:''},'a')`);
  assert.doesNotMatch(html,/<img>|<script>/);assert.match(html,/&lt;script>/);
 });
 test('late history cannot overwrite the selected chat',async()=>{
@@ -68,4 +82,72 @@ test('loaded assistant replies keep copy controls and copy the exact selected bo
  run('copyHistoryReply(button)');assert.deepEqual(copied,['**Exact Markdown**\n\n```text\n<result>\n```']);
  ctx.button.dataset.historyId='tool';run('copyHistoryReply(button)');assert.equal(copied.length,1);
  ctx.button.dataset.historyId='answer-2';run('workspace.selected="b";copyHistoryReply(button)');assert.equal(copied.length,1);
+});
+
+function readingLayout(elements) {
+ const pane=elements['session-detail'],list=elements['session-history'].lastElementChild;
+ pane.clientHeight=200;
+ pane.getBoundingClientRect=()=>({top:0,bottom:200});
+ const rectAt=index=>({top:100+index*100-pane.scrollTop,bottom:200+index*100-pane.scrollTop});
+ for(const row of list.children)row.getBoundingClientRect=()=>rectAt(list.children.indexOf(row));
+ list.getBoundingClientRect=()=>({top:rectAt(0).top,bottom:rectAt(list.children.length).top});
+ elements['session-control'].getBoundingClientRect=()=>rectAt(list.children.length);
+ return {pane,list};
+}
+function initialMessages(run) {
+ run(`Object.assign(historyState('a'),{messages:['a','b','c','d','e'].map(id=>({id,role:'assistant',text:id})),loaded:true,next:'cursor'});renderHistory()`);
+}
+test('explicit older pagination at the top preserves the first visible message',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);
+ const {pane,list}=readingLayout(elements);pane.scrollTop=0;
+ const firstVisible=list.firstElementChild,before=firstVisible.getBoundingClientRect().top;
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'older',role:'assistant',text:'older'}],next_cursor:null})});
+ await run('loadHistory(false)');
+ assert.equal(list.children[1],firstVisible);
+ assert.equal(firstVisible.getBoundingClientRect().top,before);
+ assert.equal(pane.scrollTop,100);
+});
+test('automatic history replacement at the top keeps the header visible',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);
+ const {pane,list}=readingLayout(elements);pane.scrollTop=0;
+ const messages=['new','a','b','c','d','e'].map(id=>({id,role:'assistant',text:id}));
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages,next_cursor:null})});
+ await run('loadHistory(true,true)');
+ assert.equal(list.firstElementChild.dataset.historyId,'new');assert.equal(pane.scrollTop,0);
+});
+test('a delayed older page anchors the message visible at arrival, preserving its DOM node',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);
+ const {pane,list}=readingLayout(elements);
+ pane.scrollTop=0;
+ const reading=list.children[2];
+ let respond;ctx.apiFetch=()=>new Promise(resolve=>respond=resolve);
+ const loading=run('loadHistory(false)');
+ pane.scrollTop=325; // User scrolled from the top to the third message while waiting.
+ const before=reading.getBoundingClientRect().top;
+ respond({ok:true,json:async()=>({ready:true,messages:[{id:'older',role:'assistant',text:'older'}],next_cursor:null})});
+ await loading;
+ assert.equal(list.children[3],reading);assert.equal(reading.getBoundingClientRect().top,before);
+ assert.equal(pane.scrollTop,425);
+});
+test('live refresh retains a page when the visible message has left the latest native window',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);
+ const {pane,list}=readingLayout(elements);pane.scrollTop=250;
+ const reading=list.children[1];
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'latest',role:'assistant',text:'latest'}],next_cursor:'new'})});
+ await run('loadHistory(true,true)');
+ assert.equal(list.children[1],reading);assert.equal(pane.scrollTop,250);
+ assert.match(elements['session-history'].innerHTML,/有新内容/);
+ await run('loadHistory(true)');
+ assert.equal(list.children[0].dataset.historyId,'latest');assert.equal(run("historyState('a').updated"),false);
+});
+test('history arriving above a focused reply keeps the reply at its original viewport offset',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);
+ const {pane,list}=readingLayout(elements);pane.scrollTop=520;
+ const input=new HistoryElement('textarea');elements['session-control'].insertBefore(input,null);ctx.document.activeElement=input;
+ input.getBoundingClientRect=()=>({top:110+100*list.children.length-pane.scrollTop,bottom:180+100*list.children.length-pane.scrollTop});
+ const before=input.getBoundingClientRect().top;
+ const messages=['new','a','b','c','d','e'].map(id=>({id,role:'assistant',text:id}));
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages,next_cursor:null})});
+ await run('loadHistory(true,true)');
+ assert.equal(ctx.document.activeElement,input);assert.equal(input.getBoundingClientRect().top,before);
 });
