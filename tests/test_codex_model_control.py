@@ -286,7 +286,7 @@ class ModelControlTests(unittest.TestCase):
             receipt = worker.state['receipts'][0]
             self.assertEqual(receipt['state'], 'resolved')
             self.assertIn('模型设置', receipt['detail'])
-            self.assertEqual(json.loads(path.read_text())['receipts'][0], receipt)
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8'))['receipts'][0], receipt)
             worker.step()
             self.assertEqual(len(self.writes()), 1)
 
