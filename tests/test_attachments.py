@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import struct
 import tempfile
+from types import SimpleNamespace
 import unittest
 import zlib
 from unittest.mock import patch
@@ -82,6 +83,56 @@ class AttachmentTests(unittest.TestCase):
             self.reader.read_attachment('synthetic-session', item['id'])
         refreshed = self.descriptor()
         self.assertNotEqual(refreshed['id'], item['id'])
+
+    def test_stat_and_fstat_may_have_different_ctime_for_the_same_unchanged_image(self):
+        original = os.fstat
+        def different_ctime(fd):
+            info = original(fd)
+            values = {key: getattr(info, key) for key in
+                      ('st_mode', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            values['st_ctime_ns'] += 1000000000
+            return SimpleNamespace(**values)
+        # Reproduce Windows' path creation-time vs handle change-time distinction.
+        with patch('aw.control.attachments.os.fstat', different_ctime):
+            item = self.descriptor()
+            self.assertEqual(self.descriptor()['id'], item['id'])
+            media = self.reader.read_attachment('synthetic-session', item['id'])['media']
+            self.assertEqual(validate_media(media), png())
+
+    def test_same_size_mutation_with_restored_mtime_and_unchanged_ctime_is_rejected(self):
+        # FAT/older Windows ctime may not change, and changes can be beyond a header probe.
+        self.picture.write_bytes(png() + b'A' * 70000)
+        before, original = self.picture.stat(), os.fstat
+        def unchanged_ctime(fd):
+            info = original(fd)
+            values = {key: getattr(info, key) for key in
+                      ('st_mode', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns')}
+            return SimpleNamespace(**values, st_ctime_ns=before.st_ctime_ns)
+        with patch('aw.control.attachments.os.fstat', unchanged_ctime):
+            item = self.descriptor()
+            with self.picture.open('r+b') as stream:
+                stream.seek(-1, os.SEEK_END)
+                stream.write(b'B')
+            os.utime(self.picture, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(self.picture.stat().st_size, before.st_size)
+            self.assertEqual(self.picture.stat().st_mtime_ns, before.st_mtime_ns)
+            with self.assertRaisesRegex(ControlError, 'attachment_changed'):
+                self.reader.read_attachment('synthetic-session', item['id'])
+            refreshed = self.descriptor()
+            self.assertNotEqual(refreshed['id'], item['id'])
+
+    def test_file_mutation_during_attachment_read_is_rejected(self):
+        item, original, calls = self.descriptor(), os.fstat, 0
+        def mutate_after_read(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.picture.write_bytes(png() + b'changed during read')
+            return original(fd)
+        with patch('aw.control.attachments.os.fstat', mutate_after_read):
+            with self.assertRaisesRegex(ControlError, 'attachment_changed'):
+                self.reader.attachments.read('synthetic-session', item['id'], self.source)
+        self.assertEqual(calls, 2)
 
     def test_replacement_between_stat_and_header_probe_is_not_registered(self):
         original = os.open

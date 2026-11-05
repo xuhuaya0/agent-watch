@@ -1,5 +1,6 @@
 """Session-bound raster attachments discovered in native messages, never paths from HTTP."""
 import base64
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -96,8 +97,15 @@ def image_references(text):
     return list(dict.fromkeys(source for source in found if source and len(source) <= 2048))[:8]
 
 
+def _identity(info):
+    # Windows stat() can expose creation time while fstat() exposes change time.
+    # Only compare their common identity fields across these two APIs.
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
 def _fingerprint(info):
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+    # Keep ctime for comparisons between observations made through fstat().
+    return (*_identity(info), info.st_ctime_ns)
 
 
 class Attachments:
@@ -133,14 +141,17 @@ class Attachments:
                 fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
                 with os.fdopen(fd, 'rb') as stream:
                     opened = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(opened.st_mode) or _fingerprint(opened) != _fingerprint(info):
+                    if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(info):
                         raise ControlError('attachment_changed')
-                    mime, width, height = image_info(stream.read(65536))
-                    if _fingerprint(os.fstat(stream.fileno())) != _fingerprint(info):
+                    fingerprint = _fingerprint(opened)
+                    data = stream.read(MAX_BYTES + 1)
+                    if (len(data) != opened.st_size or len(data) > MAX_BYTES
+                            or _fingerprint(os.fstat(stream.fileno())) != fingerprint):
                         raise ControlError('attachment_changed')
-                fingerprint = _fingerprint(info)
+                    mime, width, height = image_info(data)
+                digest = hashlib.sha256(data).digest()
                 native = native_path.stat()
-                binding = (sid, source, fingerprint, native.st_dev, native.st_ino)
+                binding = (sid, source, fingerprint, native.st_dev, native.st_ino, digest)
                 existing = next(((key, value) for key, value in self.entries.items() if value['binding'] == binding), None)
                 if existing:
                     identity, entry = existing
@@ -167,7 +178,7 @@ class Attachments:
         entry = self.entries.get(identity) if isinstance(identity, str) and ID.fullmatch(identity) else None
         if not entry or entry['binding'][0] != sid:
             raise ControlError('attachment_unavailable')
-        _, source, fingerprint, device, inode = entry['binding']
+        _, source, fingerprint, device, inode, digest = entry['binding']
         try:
             native = native_path.stat()
             if (native.st_dev, native.st_ino) != (device, inode):
@@ -180,7 +191,8 @@ class Attachments:
                 if not stat.S_ISREG(opened.st_mode) or _fingerprint(opened) != fingerprint:
                     raise ControlError('attachment_changed')
                 data = stream.read(MAX_BYTES + 1)
-                if len(data) > MAX_BYTES or _fingerprint(os.fstat(stream.fileno())) != fingerprint:
+                if (len(data) > MAX_BYTES or _fingerprint(os.fstat(stream.fileno())) != fingerprint
+                        or hashlib.sha256(data).digest() != digest):
                     raise ControlError('attachment_changed')
             mime, _, _ = image_info(data)
             if mime != entry['mime']:
