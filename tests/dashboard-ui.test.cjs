@@ -8,7 +8,7 @@ function context(){
  const nodes={};
  const node=()=>({listeners:{},addEventListener(type,fn){this.listeners[type]=fn},value:'',checked:false,hidden:false,style:{},dataset:{},scrollTop:0,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},contains(){return false},setAttribute(){},focus(){},scrollIntoView(){}});
  const document={activeElement:null,addEventListener(){},getElementById(id){return nodes[id] ||=node()},querySelectorAll(){return []},querySelector(){return null}};
- const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,location:{origin:'http://example.test'},window:{},navigator:{}});
+ const ctx=vm.createContext({document,setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},console,URL,location:{origin:'http://example.test'},window:{},navigator:{}});
  vm.runInContext(app,ctx);vm.runInContext(inline,ctx);return {ctx,nodes};
 }
 const task=(id,more={})=>({key:id,ui_key:id,title:'Task '+id,state:'done',tool:'codex',tool_short:'CX',machine:'Mac',machine_id:'mac-id',activity_at:10,extra:{},ui:{},...more});
@@ -62,6 +62,58 @@ test('markdown and nested subagents escape raw HTML',()=>{
  const result=run(ctx,'markdown(text)');assert.match(result,/<h2>Result<\/h2>/);assert.match(result,/<strong>Bold<\/strong>/);assert.match(result,/&lt;img/);assert.doesNotMatch(result,/<img|<script/);
  ctx.subs=[{id:'x',label:'Review <script>',state:'done',subagents:[{id:'n',label:'Tests',state:'running'}]}];
  const nested=run(ctx,'renderSubagents(subs,"main")');assert.equal((nested.match(/<details/g)||[]).length,2);assert.doesNotMatch(nested,/<details[^>]*\sopen/);assert.match(nested,/Review &lt;script&gt;/);
+});
+test('Markdown HTTPS links and raster images render safely with balanced destinations and no referrer',()=>{
+ const {ctx}=context();ctx.text='[Code **submitted**](https://example.test/commit/a?x=1&y=2)\n\n![Preview](https://example.test/images/a(1).png "Title")';
+ const result=run(ctx,'markdown(text)');
+ assert.match(result,/<a href="https:\/\/example.test\/commit\/a\?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">Code <strong>submitted<\/strong><\/a>/);
+ assert.match(result,/<img[^>]+src="https:\/\/example.test\/images\/a\(1\).png"[^>]+alt="Preview"[^>]+loading="lazy"[^>]+referrerpolicy="no-referrer"/);
+ assert.doesNotMatch(result,/!\[Preview\]|\[Code/);
+});
+test('ordinary HTTP panel links are navigable without automatically requesting their destination',()=>{
+ const {ctx}=context();ctx.text='[Center panel](http://192.0.2.10:8090/)';
+ const result=run(ctx,'markdown(text)');
+ assert.match(result,/<a href="http:\/\/192.0.2.10:8090\/" target="_blank" rel="noopener noreferrer">Center panel<\/a>/);
+ assert.doesNotMatch(result,/<img|<iframe|<script|src=/);
+});
+test('Markdown cannot turn script, data, file, HTTP, network-path or credential URLs into active resources',()=>{
+ const {ctx}=context();
+ for(const target of ['javascript:alert(1)','data:text/html;base64,PHNjcmlwdD4=','file:///example/image.png','http://example.test/image.png','//example.test/image.png','https://user:password@example.test/image.png','https://example.test/\\evil.png','https://example.test/image.svg']){
+  ctx.target=target;const image=run(ctx,'markdown("![Preview]("+target+")")');
+  assert.doesNotMatch(image,/<img|href=/);
+ }
+ ctx.text='<img src=x onerror=alert(1)>\n\n[<script>](https://example.test/"onmouseover="x)';
+ const result=run(ctx,'markdown(text)');assert.doesNotMatch(result,/<script|<img| onmouseover=/);assert.match(result,/&lt;img/);
+});
+test('code stays literal while local file links become non-download chips',()=>{
+ const {ctx}=context();ctx.text='`[Example](https://example.test)`\n\n```text\n![Preview](/example/image.png)\n```\n\n[Report](/example/report.txt)';
+ const result=run(ctx,'markdown(text)');assert.doesNotMatch(result,/href=|src=|data-attachment-id/);
+ assert.match(result,/<code>\[Example\]/);assert.match(result,/原设备文件/);assert.match(result,/Report/);
+});
+test('local image loading requires a matching session attachment descriptor and never puts its path in a URL',()=>{
+ const {ctx}=context();ctx.text='![Native preview](</example/image (1).png>)';
+ assert.match(run(ctx,'markdown(text)'),/本地图片 · 需原设备提供/);
+ ctx.media={sessionId:'device/codex/example',attachments:[{id:'A'.repeat(32),source:'/example/image (1).png',name:'image.png',mime:'image/png',width:640,height:480}]};
+ const result=run(ctx,'markdown(text,media)');assert.match(result,/data-attachment-id="A{32}"/);assert.match(result,/aspect-ratio:640\/480/);
+ assert.doesNotMatch(result,/(?:src|href)="\/example|file:/);
+ ctx.media.attachments[0].source='/example/other.png';assert.doesNotMatch(run(ctx,'markdown(text,media)'),/data-attachment-id/);
+ ctx.media.attachments=[{source:'/example/image (1).png',name:'image.png',error:'attachment_unavailable'}];
+ assert.match(run(ctx,'markdown(text,media)'),/原设备图片暂不可用/);
+});
+test('local image bytes use the authenticated session route and failures leave a retryable message',async()=>{
+ const {ctx}=context();let requested='';
+ ctx.URL=class extends URL {static createObjectURL(){return 'blob:synthetic-image'}static revokeObjectURL(){}};
+ const button={disabled:false,hidden:false},status={textContent:''},link={hidden:true};
+ const image={set src(value){this.loaded=value;this.onload()}};
+ ctx.mediaNode={isConnected:true,dataset:{attachmentSession:'device/codex/example',attachmentId:'A'.repeat(32)},querySelector(selector){return {button,'.attachment-status':status,a:link,img:image}[selector]}};
+ run(ctx,'workspace.selected="device/codex/example"');
+ ctx.fetch=async url=>{requested=url;return {ok:true,headers:{get:()=> 'image/png'},blob:async()=>({size:100})}};
+ await run(ctx,'fetchMessageAttachment(mediaNode)');
+ assert.equal(requested,'/api/attachments/tasks/device%2Fcodex%2Fexample?id='+'A'.repeat(32));
+ assert.equal(link.href,'blob:synthetic-image');assert.equal(link.hidden,false);assert.equal(button.hidden,true);assert.equal(status.textContent,'');
+ ctx.mediaNode.dataset.attachmentId='B'.repeat(32);ctx.fetch=async()=>({ok:false,status:401});button.hidden=false;
+ await run(ctx,'fetchMessageAttachment(mediaNode)');
+ assert.equal(ctx.mediaNode.dataset.attachmentState,'error');assert.equal(button.disabled,false);assert.equal(status.textContent,'请重新登录');
 });
 test('stale detail response cannot replace a newly selected session',async()=>{
  const {ctx}=context();seed(ctx,[task('a'),task('b')]);let resolve;ctx.fetch=()=>new Promise(r=>resolve=r);

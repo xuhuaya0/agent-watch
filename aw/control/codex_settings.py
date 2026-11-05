@@ -58,12 +58,13 @@ def summary(state):
 def valid_model_capability(value):
     from .broker import text
     if (not isinstance(value, dict)
-            or not {'current', 'revision', 'options'} <= value.keys() <= {'current', 'effort', 'revision', 'options'}
+            or not {'current', 'revision', 'options'} <= value.keys() <= {'current', 'current_label', 'effort', 'revision', 'options'}
             or not text(value.get('current'), 160) or not text(value.get('revision'))
+            or ('current_label' in value and not text(value['current_label'], 200))
             or ('effort' in value and not text(value['effort'], 32))):
         return False
     options = value['options']
-    if not isinstance(options, list) or not 1 <= len(options) <= 100:
+    if not isinstance(options, list) or not 0 <= len(options) <= 100:
         return False
     seen = set()
     for option in options:
@@ -82,26 +83,52 @@ def valid_model_capability(value):
     return True
 
 
-def model_capability(state, catalog, native):
+def model_selection(model, catalog, provider):
+    """Map only an unambiguous alias within the native provider's catalog."""
+    catalog = catalog if isinstance(catalog, dict) else {}
+    rows = catalog.get('models', [])
+    exact = [row for row in rows if row['value'] == model]
+    if len(exact) == 1:
+        return exact[0]['value'], exact[0]['label']
+    if not isinstance(provider, str) or not provider or catalog.get('provider', provider) != provider:
+        return model, model
+    prefix = provider + '/'
+    def key(value):
+        if value.startswith(prefix) and '/' not in value[len(prefix):]:
+            return value[len(prefix):]
+        return value if '/' not in value else None
+    identity = key(model) if isinstance(model, str) else None
+    aliases = [row for row in rows if identity is not None and key(row['value']) == identity]
+    return (aliases[0]['value'], aliases[0]['label']) if len(aliases) == 1 else (model, model)
+
+
+def same_model(a, b, catalog, provider):
+    return a == b or model_selection(a, catalog, provider)[0] == model_selection(b, catalog, provider)[0]
+
+
+def model_capability(state, catalog, native, editable=True):
     from .broker import encoded
-    from .codex_policy import native_capability
+    from .codex_policy import matches_selection
     history = state.get('history') or {}
-    if (not catalog or not isinstance(native, dict) or state.get('requests')
-            or history.get('threadRuntimeStatus', {}).get('type') != 'idle'):
+    if not isinstance(native, dict) or not native.get('model'):
         return None
     model, effort = native.get('model'), native.get('reasoningEffort')
+    catalog = catalog if isinstance(catalog, dict) else {}
+    current, label = model_selection(model, catalog, native.get('modelProvider'))
+    runtime = history.get('threadRuntimeStatus') or {}
+    editable = (editable and not state.get('requests') and runtime.get('type') == 'idle'
+                and bool(catalog.get('revision')))
     required = (catalog.get('requirements', {}).get('autoReview') or {}).get('requiredOnModels') or []
     options = []
-    for option in catalog['models']:
+    for option in catalog.get('models', []) if editable else []:
         if re.sub(r'^[A-Za-z0-9_-]+/', '', option['value']) in required:
             # A reviewer name alone is insufficient: full-access/never can
             # retain that name while bypassing the required sandboxed mode.
-            permission = native_capability(state, {**catalog, 'selected_model': option['value']})
-            if not permission or permission['current'] != 'guardian-approvals':
+            if not matches_selection(state, 'guardian-approvals', {**catalog, 'selected_model': option['value']}):
                 continue
         options.append(option)
-    result = {'current': model, 'revision': hashlib.sha256(encoded(
-        [catalog['revision'], native, history.get('latestThreadSettings')]).encode()).hexdigest(),
+    result = {'current': current, 'current_label': label, 'revision': hashlib.sha256(encoded(
+        [catalog.get('revision'), native, history.get('latestThreadSettings'), runtime, bool(editable)]).encode()).hexdigest(),
         'options': options}
     if effort is not None:
         result['effort'] = effort

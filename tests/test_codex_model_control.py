@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -108,6 +109,87 @@ class ModelControlTests(unittest.TestCase):
         self.assertFalse(any(name in ('thread/start', 'thread/resume', 'turn/start')
                              for name, _, _ in self.provider.rpc.calls))
 
+    def test_next_turn_native_model_and_effort_override_older_history_even_while_busy(self):
+        self.provider.rpc.updated = True
+        self.provider.rpc.readback = {'model': 'model-b', 'reasoningEffort': 'high'}
+        row = self.provider.session_snapshot(SID)[0]
+        self.assertEqual(row['model']['current'], 'model-b')
+        self.assertEqual(row['model']['current_label'], 'Model B')
+        self.assertEqual(row['settings']['model'], 'Model B')
+        self.assertEqual(row['settings']['reasoning'], '高')
+        self.assertEqual(self.provider.states[SID]['history']['latestThreadSettings']['model'], 'model-a')
+        self.provider.rpc.history['threadRuntimeStatus']['type'] = 'active'
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        row = self.provider.snapshot()[0]
+        self.assertEqual(row['model']['current'], 'model-b')
+        self.assertEqual(row['model']['options'], [])
+        self.assertEqual(row['policy']['options'], [])
+        self.assertEqual(self.writes(), [])
+
+    def test_directory_missing_current_model_is_preserved_without_inventing_a_writable_choice(self):
+        self.provider.rpc.updated = True
+        self.provider.rpc.readback = {'model': 'retired-model', 'reasoningEffort': 'ultra'}
+        row = self.provider.session_snapshot(SID)[0]
+        self.assertEqual(row['model']['current'], 'retired-model')
+        self.assertEqual(row['model']['current_label'], 'retired-model')
+        self.assertEqual(row['model']['effort'], 'ultra')
+        self.assertNotIn('retired-model', [item['value'] for item in row['model']['options']])
+        with self.assertRaisesRegex(ControlError, 'invalid_model'):
+            validate_action(row, {'kind': 'model', 'revision': row['model']['revision'],
+                                 'model': 'retired-model', 'effort': 'ultra'})
+
+    def test_unique_provider_alias_is_selected_and_accepted_in_native_readback(self):
+        command = self.command()
+        self.provider.rpc.readback = {'model': 'openai/model-b'}
+        self.assertEqual(self.provider.execute(command), 'model_updated')
+        row = self.provider.session_snapshot(SID)[0]
+        self.assertEqual(row['model']['current'], 'model-b')
+        self.assertEqual(row['model']['current_label'], 'Model B')
+
+    def test_late_native_read_cannot_replace_a_newer_confirmed_selection(self):
+        arrived, release = threading.Event(), threading.Event()
+        original = self.provider.rpc.call
+        first = True
+        def delayed(method, *args, **kwargs):
+            nonlocal first
+            response = original(method, *args, **kwargs)
+            if method == 'thread-follower-read-model-settings' and first:
+                first = False
+                arrived.set()
+                self.assertTrue(release.wait(2))
+            return response
+        self.provider.rpc.call = delayed
+        reader = threading.Thread(target=self.provider.refresh_settings, args=(SID, self.provider.rpc.owner))
+        reader.start()
+        try:
+            self.assertTrue(arrived.wait(2))
+            self.provider.rpc.history['latestThreadSettings'].update(model='model-b', effort='high')
+            self.provider.refresh_settings(SID, self.provider.rpc.owner)
+        finally:
+            release.set(); reader.join(2)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(self.provider.snapshot()[0]['model']['current'], 'model-b')
+
+    def test_only_native_settings_changes_revoke_cached_reads_and_schedule_prompt_refresh(self):
+        self.provider.next_probe[SID] = float('inf')
+        cached = self.provider.native_settings[SID]
+        self.provider.rpc.history['turns'] = []
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        self.assertIs(self.provider.native_settings[SID], cached)
+        self.assertEqual(self.provider.next_probe[SID], float('inf'))
+        self.provider.rpc.history['latestThreadSettings'].update(model='model-b', effort='high')
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        self.assertEqual(self.provider.next_probe[SID], 0)
+        row = self.provider.snapshot()[0]
+        self.assertNotIn('model', row)
+        self.assertNotIn('model', row['settings'])
+        self.assertEqual(row['policy']['options'], [])
+        self.provider.refresh()
+        row = self.provider.snapshot()[0]
+        self.assertEqual(row['model']['current'], 'model-b')
+        self.assertEqual(row['model']['effort'], 'high')
+        self.assertEqual(self.writes(), [])
+
     def test_fresh_catalog_revision_rejects_previously_valid_selection(self):
         command = self.command()
         self.catalog.before_fresh = lambda: self.catalog.data.update(revision='catalog-v2')
@@ -189,7 +271,9 @@ class ModelControlTests(unittest.TestCase):
     def test_native_null_settings_revokes_model_capability_without_breaking_the_session(self):
         self.provider.rpc.settings_available = False
         row = self.provider.session_snapshot(SID)[0]
-        self.assertNotIn('model', row)
+        self.assertEqual(row['model']['current'], 'model-a')
+        self.assertEqual(row['model']['options'], [])
+        self.assertIn('上次确认值', row['settings']['note'])
         self.assertTrue(row['reply'])
         self.assertEqual(self.writes(), [])
 
@@ -201,15 +285,15 @@ class ModelControlTests(unittest.TestCase):
         action = {'kind': 'policy', 'revision': row['policy']['revision'], 'value': 'auto'}
         self.catalog.data = None
         row = self.provider.session_snapshot(SID)[0]
-        self.assertNotIn('policy', row)
-        self.assertNotIn('model', row)
+        self.assertEqual(row['policy']['options'], [])
+        self.assertEqual(row['model']['options'], [])
         self.assertTrue(row['reply'])
         with self.assertRaisesRegex(ControlError, 'policy_changed'):
             self.provider.execute({'session_id': SID, 'action': action})
         self.assertEqual(self.writes(), [])
 
     def test_missing_expired_or_mismatched_metadata_never_exposes_legacy_policy(self):
-        for broken in ('missing', 'expired', 'owner', 'model', 'native-unavailable'):
+        for broken in ('missing', 'expired', 'owner', 'native-unavailable'):
             with self.subTest(broken=broken):
                 self.provider.rpc.settings_available = True
                 self.provider.session_snapshot(SID)
@@ -220,14 +304,16 @@ class ModelControlTests(unittest.TestCase):
                     value['checked'] -= 31
                 elif broken == 'owner':
                     value['owner'] = 'another-owner'
-                elif broken == 'model':
-                    value['model']['model'] = 'different-model'
                 else:
                     self.provider.rpc.settings_available = False
                     self.provider.session_snapshot(SID)
                 row = self.provider.snapshot()[0]
-                self.assertNotIn('policy', row)
-                self.assertNotIn('model', row)
+                self.assertEqual(row['policy']['options'], [])
+                self.assertEqual(row['policy']['scope'], 'session-permissions')
+                if broken in ('missing', 'owner'):
+                    self.assertNotIn('model', row)
+                else:
+                    self.assertEqual(row['model']['options'], [])
         self.assertEqual(self.writes(), [])
 
     def test_required_model_needs_the_complete_allowed_guardian_mode_before_dispatch(self):

@@ -93,7 +93,10 @@ Preserve native differences in labels, choices and scope. Equal styling does not
 imply equal capabilities. Do not hide an integration gap by substituting a
 different native operation.
 
-Model and permission choices have independent dialogs and receipts. Show only
+Model and permission choices have independent dialogs and receipts. Opening a
+picker selects the native current value without writing it. A current value
+outside the writable catalog remains a visible, checked read-only item; it must
+not be replaced by the first option or hidden in a collapsed section. Show only
 the native choices allowed for the current provider and policy, and revalidate
 their revision before applying. Preserve permissions when changing a model and
 preserve the model when changing permissions. Older provider snapshots may show
@@ -126,6 +129,9 @@ across updates. Withdraw stale actions as soon as their native request changes.
 
 Feedback belongs to the initiating action. A dialog must contain its own visible
 error/status region; a page toast behind a modal backdrop is not sufficient.
+Enter sends the reply once; Shift + Enter inserts a newline. Ctrl/Command +
+Enter remains a send shortcut. IME composition and held-key repeats never send.
+
 No success toast may precede a successful response. Settings saves must leave
 unsaved values recoverable after failure.
 

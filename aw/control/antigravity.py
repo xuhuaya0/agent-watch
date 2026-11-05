@@ -69,6 +69,11 @@ class Antigravity:
             raise ControlError('history_unavailable')
         return self.history.read(sid, cursor)
 
+    def read_attachment(self, sid, attachment_id):
+        if self.history is None:
+            raise ControlError('attachment_unavailable')
+        return self.history.read_attachment(sid, attachment_id)
+
     def _session_snapshot(self, sid):
         """Fresh native check for ONE target immediately before dispatch."""
         if sid not in self.session_ids():

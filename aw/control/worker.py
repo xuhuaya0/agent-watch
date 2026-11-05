@@ -85,7 +85,12 @@ class Worker:
                     provider = self.providers.get(read['tool'])
                     if not provider or not hasattr(provider, 'read_history'):
                         raise ControlError('history_unavailable')
-                    result = provider.read_history(read['session_id'], read.get('cursor'))
+                    if 'attachment_id' in read:
+                        if not hasattr(provider, 'read_attachment'):
+                            raise ControlError('attachment_unavailable')
+                        result = provider.read_attachment(read['session_id'], read['attachment_id'])
+                    else:
+                        result = provider.read_history(read['session_id'], read.get('cursor'))
                 except ControlError as exc:
                     result = {'error': exc.code}
                 except Exception:

@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 import threading
 import time
+import struct
+import zlib
 from urllib.parse import parse_qs, unquote, urlsplit
 
 STATIC = Path(__file__).resolve().parents[1] / 'static'
@@ -24,6 +26,7 @@ SCENARIOS = {
     'setup': '首次设置', 'failure': '读取失败', 'auth_failure': '登录状态读取失败', 'pending': '操作等待与未知回执',
     'refresh': '刷新时保留输入', 'changed': '模型与权限版本变化', 'slow': '慢响应与切页',
     'readonly': '模型与权限只读', 'unknown_settings': '模型与权限未读取',
+    'media': '消息链接与原设备图片',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -40,6 +43,14 @@ SPECS = [
 
 def choice(value, label, description=''):
     return {'value': value, 'label': label, 'description': description}
+
+
+def media_fixture():
+    def chunk(kind, content):
+        return struct.pack('>I', len(content)) + kind + content + struct.pack('>I', zlib.crc32(kind + content))
+    rows = (b'\0' + b'\x26\x88\x80' * 640) * 360
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 640, 360, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
 def reader_history(older, update):
@@ -223,6 +234,12 @@ class Preview:
                                             'commands':commands,'reason':'' if connected else '演示：原应用控制桥已离线'}
         if method == 'GET' and path.startswith('/api/history/tasks/') and task:
             if self.scenario == 'offline':return 409, 'application/json', {'error':'history_unavailable'}
+            if self.scenario == 'media':
+                return 200, 'application/json', {'ready':True, 'messages':[
+                    {'id':'u1', 'role':'user', 'text':'请查看合成链接和图片。'},
+                    {'id':'a1', 'role':'assistant', 'text':'[代码已提交](https://example.test/commit/example)\n\n![原设备图片](</example/image (1).png>)\n\n![缺失图片](/example/missing.png)\n\n[本地文件](/example/report.txt)\n\n```text\n![代码中的示例](/example/not-a-reference.png)\n```',
+                     'attachments':[{'id':'A'*32, 'source':'/example/image (1).png', 'name':'image (1).png', 'mime':'image/png', 'width':640, 'height':360},
+                                    {'source':'/example/missing.png', 'name':'missing.png', 'error':'attachment_unavailable'}]}], 'next_cursor':None}
             if self.scenario == 'refresh':
                 cursor = parse_qs(parsed.query).get('cursor', [None])[0]
                 if cursor not in (None, 'earlier'):
@@ -234,6 +251,10 @@ class Preview:
             return 200, 'application/json', {'ready':True,'messages':[{'id':'u1','role':'user','text':'请检查本轮修改。'},
                  {'id':'t1','role':'tool','text':'合成工具输出，不包含真实执行记录。'},
                  {'id':'a1','role':'assistant','text':content}], 'next_cursor':None}
+        if method == 'GET' and path.startswith('/api/attachments/tasks/') and task:
+            if self.scenario == 'media' and parse_qs(parsed.query).get('id') == ['A'*32]:
+                return 200, 'image/png', media_fixture()
+            return 404, 'application/json', {'error':'attachment_unavailable'}
         if method == 'GET' and path == '/api/settings':
             return 200, 'application/json', {'machine':'Example Hub','port':8090,'autostart':False,
                 'local_ips':['192.0.2.30'],'adapters':{tool:{'enabled':True} for tool in ('codex','antigravity','dsh')},
@@ -269,7 +290,7 @@ def handler(preview):
             if preview.scenario == 'slow' and self.command == 'GET' and self.path == '/api/settings':
                 time.sleep(2)  # Browser acceptance: navigate away before this response.
             with preview.lock:status,kind,data = preview.route(self.command,self.path)
-            encoded = (json.dumps(data,ensure_ascii=False) if kind == 'application/json' else data).encode()
+            encoded = data if isinstance(data, bytes) else (json.dumps(data,ensure_ascii=False) if kind == 'application/json' else data).encode()
             self.send_response(status);self.send_header('Content-Type',kind+'; charset=utf-8')
             self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(encoded)))
             self.end_headers();self.wfile.write(encoded)

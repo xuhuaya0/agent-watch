@@ -28,4 +28,4 @@ jobs:
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
       - name: Check dashboard grouping and settings
-        run: node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs
+        run: node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs tests/composer-keyboard.test.cjs

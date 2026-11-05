@@ -19,7 +19,8 @@ function showNewHistory() {
  return loadHistory(true);
 }
 function historyMessageBody(message, sessionId) {
- const body = `<div class="message-body">${markdown(message.text)}</div>${message.truncated?'<p class="capture-note">长消息仅显示前 48 KB。</p>':''}`;
+ const context={sessionId,attachments:message.attachments||[]};
+ const body = `<div class="message-body">${markdown(message.text,context)}</div>${message.truncated?'<p class="capture-note">长消息仅显示前 48 KB。</p>':''}`;
  if (message.role === 'tool') return `<summary>${esc(message.label || '工具')}</summary>${body}`;
  if (message.role === 'assistant' && message.phase === 'commentary') return body;
  const label = message.label === '外部通知' ? '<small>原生系统通知</small>' : '';
@@ -68,7 +69,7 @@ function updateHistoryRows(list, state, sessionId) {
   }
   if(message.role!=='tool')row.className=message.role==='user'?'message user-message':message.phase==='commentary'?'message history-commentary':'message';
   const old=row.historyMessage;
-  if(!old || old.text!==message.text || old.label!==message.label || old.timestamp!==message.timestamp || old.truncated!==message.truncated || old.phase!==message.phase)
+  if(!old || old.text!==message.text || old.label!==message.label || old.timestamp!==message.timestamp || old.truncated!==message.truncated || old.phase!==message.phase || JSON.stringify(old.attachments)!==JSON.stringify(message.attachments))
    row.innerHTML=historyMessageBody(message,sessionId);
   const author = message.label || {assistant:'Agent',user:'你',tool:'工具'}[message.role];
   row.title = message.timestamp ? author+' · '+new Date(message.timestamp).toLocaleString() : author;
@@ -149,6 +150,7 @@ function renderHistory(prepend=false) {
  if(list.historyMessages!==state.messages)updateHistoryRows(list,state,id);
  if(latest)latest.hidden=state.loaded && state.messages.length>0;
  if(anchor?.node.isConnected)pane.scrollTop+=anchor.node.getBoundingClientRect().top-anchor.top;
+ if(typeof hydrateMessageAttachments==='function')hydrateMessageAttachments(el);
 }
 function rememberHistoryTool(element) {
  const s=histories.get(element.dataset.historySession),id=element.dataset.historyId;

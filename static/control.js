@@ -37,10 +37,27 @@ function setReplyDraft(value) {
  if(send)send.disabled=!value.trim() || Boolean(interactionBusy(workspace.selected));
 }
 function composerKeydown(event) {
- if(event.key!=='Enter' || !(event.ctrlKey||event.metaKey) || event.isComposing || event.keyCode===229)return;
- const button=event.target.form.querySelector('.composer-send');
+ if(event.key!=='Enter' || event.shiftKey || event.altKey)return;
+ const input=event.target;
+ // Some IMEs end composition before their confirming Enter keydown. Keep
+ // that key separate from an intentional send, including Safari's 229 case.
+ if(event.isComposing || event.keyCode===229 || input.composerComposing) {
+  input.composerImeEnter=true;return;
+ }
  event.preventDefault();
- if(!button.disabled)event.target.form.requestSubmit(button);
+ if(event.repeat || input.composerImeEnter || (input.composerCompositionEndedAt!==undefined&&Date.now()-input.composerCompositionEndedAt<200))return;
+ const button=input.form?.querySelector('.composer-send');
+ if(button&&!button.disabled&&!interactionBusy(workspace.selected)&&interactionDraft(workspace.selected).text.trim())input.form.requestSubmit(button);
+}
+function composerComposition(event) {
+ event.target.composerComposing=event.type==='compositionstart';
+ if(event.type==='compositionend')event.target.composerCompositionEndedAt=Date.now();
+}
+function composerKeyup(event) {
+ if(event.key==='Enter') {
+  event.target.composerImeEnter=false;
+  delete event.target.composerCompositionEndedAt;
+ }
 }
 function setAnswerDraft(requestId,questionId,field,value) {
  const d=interactionDraft(workspace.selected);const key=requestId+'\n'+questionId;
@@ -64,7 +81,10 @@ function historyContainsOutgoing(id,message) {
  const history=typeof histories!=='undefined'?histories.get(id):null;
  if(!history?.loaded||!Array.isArray(message.previousHistoryIds))return false;
  const submittedSecond=Math.floor(message.createdAt/1000);
- return history.messages.some(row=>row.role==='user'&&row.text===message.text&&
+ // Native history removes surrounding whitespace from user messages. Keep
+ // internal whitespace exact, and still require a new identity and timestamp.
+ const submittedText=message.text.trim();
+ return history.messages.some(row=>row.role==='user'&&typeof row.text==='string'&&row.text.trim()===submittedText&&
   row.id&&!message.previousHistoryIds.includes(row.id)&&
   Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond);
 }
@@ -156,8 +176,8 @@ function interactionHtml(id) {
    const placeholder=cap.tool==='antigravity'?'向 Antigravity 发送系统通知…':`回复 ${harnessName(cap)}…`;
    body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()">
     <label for="native-reply" class="sr-only">回复原会话</label>
-    <textarea id="native-reply" rows="2" maxlength="16000" placeholder="${esc(placeholder)}" onkeydown="composerKeydown(event)" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea>
-    <div class="composer-footer">${settings}<button type="submit" id="composer-send" class="primary composer-send" aria-keyshortcuts="Control+Enter Meta+Enter" title="发送（Ctrl / ⌘ + Enter）"${pending||!draft.text.trim()?' disabled':''}>发送<svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button></div></form>`;
+    <textarea id="native-reply" rows="2" maxlength="16000" placeholder="${esc(placeholder)}" aria-description="Enter 发送，Shift+Enter 换行" onkeydown="composerKeydown(event)" onkeyup="composerKeyup(event)" oncompositionstart="composerComposition(event)" oncompositionend="composerComposition(event)" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea>
+    <div class="composer-footer">${settings}<button type="submit" id="composer-send" class="primary composer-send" aria-keyshortcuts="Enter Control+Enter Meta+Enter" title="发送（Enter；Shift+Enter 换行）"${pending||!draft.text.trim()?' disabled':''}>发送<svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button></div></form>`;
   }else {
    if(cap.reason || !cap.requests?.length)body+=`<p class="capture-note">${esc(cap.reason||'当前会话暂时无法回复。')}</p>`;
    body+=settings;

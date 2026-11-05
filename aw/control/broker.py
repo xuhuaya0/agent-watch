@@ -385,14 +385,14 @@ class Broker:
                        (command_id, device, tool, session, fingerprint, encoded(action), 'queued', now, now+60, worker, action['kind']))
             return {'id': command_id, 'state': 'queued', 'detail': ''}
 
-    def history(self, device, tool, session, cursor=None):
+    def history(self, device, tool, session, cursor=None, attachment=None):
         with self.lock, self.db() as db:
             if not self._enabled(db, device):
                 raise ControlError('control_paused')
             worker, cap = self._owner(device, (tool, session))
             if not cap or not cap.get('history'):
                 raise ControlError('history_unavailable')
-            return self.history_reads.request(device, tool, session, cursor, worker)
+            return self.history_reads.request(device, tool, session, cursor, worker, attachment)
 
     def exchange(self, device, worker, sessions, receipts, read_results=None):
         if not text(worker) or not isinstance(receipts, list) or len(receipts) > 20:

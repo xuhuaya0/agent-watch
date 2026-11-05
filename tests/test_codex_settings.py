@@ -2,10 +2,30 @@ import copy
 import unittest
 
 from aw.control.codex_questions import patch_history, project
-from aw.control.codex_settings import summary
+from aw.control.codex_settings import summary, model_selection, same_model, model_capability
 
 
 class SettingsTests(unittest.TestCase):
+    def test_model_aliases_require_the_same_provider_and_an_unambiguous_native_catalog_match(self):
+        data = {'provider': 'openai', 'models': [{'value': 'model-a', 'label': 'Model A'}]}
+        self.assertEqual(model_selection('openai/model-a', data, 'openai'), ('model-a', 'Model A'))
+        self.assertTrue(same_model('openai/model-a', 'model-a', data, 'openai'))
+        self.assertEqual(model_selection('other/model-a', data, 'openai'), ('other/model-a', 'other/model-a'))
+        self.assertFalse(same_model('other/model-a', 'model-a', data, 'openai'))
+        self.assertEqual(model_selection('openai/model-a', data, 'other')[0], 'openai/model-a')
+        data['models'].append({'value': 'openai/model-a', 'label': 'Separate native choice'})
+        self.assertFalse(same_model('openai/model-a', 'model-a', data, 'openai'))
+        self.assertEqual(model_selection('openai/model-a', data, 'openai')[1], 'Separate native choice')
+
+    def test_null_native_effort_is_not_replaced_by_a_catalog_default_or_previous_turn_effort(self):
+        data = {'revision': 'r', 'models': [{'value': 'model-a', 'label': 'Model A',
+                 'efforts': ['low', 'high'], 'default_effort': 'high'}], 'requirements': {}}
+        state = {'history': {'threadRuntimeStatus': {'type': 'idle'},
+                            'latestThreadSettings': {'effort': 'low'}}}
+        result = model_capability(state, data, {'model': 'model-a', 'reasoningEffort': None, 'modelProvider': 'openai'})
+        self.assertNotIn('effort', result)
+        self.assertEqual(result['current'], 'model-a')
+
     def test_reports_native_fields_without_claiming_a_permission_preset(self):
         state = {'history': {'latestThreadSettings': {
             'model': 'model-a', 'effort': 'high', 'approvalPolicy': 'on-request',

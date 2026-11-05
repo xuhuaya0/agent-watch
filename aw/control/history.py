@@ -115,6 +115,13 @@ class CodexHistory:
     def __init__(self, root, scope):
         self.root = Path(root).expanduser().resolve()
         self.scope = scope
+        from .attachments import Attachments
+        self.attachments = Attachments()
+
+    def read_attachment(self, sid, identity):
+        result = self.attachments.read(sid, identity, self.path(sid))
+        self.path(sid)  # Recheck scope/archive before returning any bytes.
+        return result
 
     def path(self, sid):
         if sid not in self.scope():
@@ -163,6 +170,10 @@ class CodexHistory:
                     next_offset = offset + len(raw) + 1
                     break
                 if item:
+                    if item['role'] in ('user', 'assistant'):
+                        attachments = self.attachments.describe(sid, item['text'], path)
+                        if attachments:
+                            item['attachments'] = attachments
                     items.append(item); size += cost
                 if end - offset >= SCAN_BYTES:
                     next_offset = offset

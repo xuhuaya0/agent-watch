@@ -4,20 +4,24 @@ const sessionOptions={id:null,kind:null,signature:'',policyRevision:null,policyC
 function harnessName(cap) {return ({codex:'Codex',antigravity:'Antigravity',dsh:'DeepSeek Harness'})[cap?.tool||workspace.detail?.tool]||'原应用';}
 function permissionLabel(cap) {
  const policy=cap.policy;
+ if(policy?.current_label)return policy.current_label;
  if(cap.settings?.permission)return cap.settings.permission;
  if(policy && policy.scope!=='session-next-turn')return policy.options.find(option=>option.value===policy.current)?.label||(policy.current==='custom'?'自定义组合':undefined);
 }
 function settingsSummaryHtml(cap) {
- const model=cap.model?.options?.find(option=>option.value===cap.model.current)?.label||cap.settings?.model||cap.model?.current;
+ const model=cap.model?.current_label||cap.model?.options?.find(option=>option.value===cap.model.current)?.label||cap.settings?.model||cap.model?.current;
  const permission=permissionLabel(cap);
  const shortPermission=cap.tool==='codex'?permission?.split(' · ')[0]:permission;
  const entries=[['model',cap.tool==='antigravity'&&!cap.model?'记录模型':'模型',model,model],['permission',cap.settings?.scope==='project'||cap.policy?.scope==='project-permissions'?'项目权限':'权限',shortPermission,permission]];
  return `<div class="composer-setting-controls">${entries.map(([kind,label,value,full])=>`<button type="button" class="composer-settings" aria-label="${label}：${esc(full||'尚未读取')}" aria-haspopup="dialog" title="${label}：${esc(full||'尚未读取')}" onclick="openSessionOptions('${kind}')"><span class="composer-setting-label">${label}</span><span class="composer-${kind}">${esc(value||'未读取')}</span><span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`).join('')}</div>`;
 }
 function modelEfforts(option) {return (option?.efforts||[]).map(value=>typeof value==='string'?{value,label:value}:value);}
+function currentChoiceHtml(name,value,label,selected) {
+ return `<label class="permission-choice current-only${selected?' selected':''}" title="这是原应用当前使用的设置；当前连接未提供切回此项的能力。"><input type="radio" name="${name}" value="${esc(value)}"${selected?' checked':''} disabled><span>${esc(label)}</span><small>当前 · 只读</small></label>`;
+}
 function modelSettingsHtml(cap,disabled) {
  const model=cap.model,s=cap.settings||{},h=harnessName(cap);
- if(!model?.options?.length) {
+ if(!model) {
   const note=s.model?(cap.tool==='antigravity'?'这是原生会话记录中的模型，可能不同于下一轮使用的模型。':'此连接仅提供模型信息。'):'原应用尚未提供可确认的模型信息。';
   return `<div class="native-settings-values"><div><span>${cap.tool==='antigravity'?'记录模型':'当前模型'}</span><strong>${esc(s.model||model?.current||'尚未读取')}</strong></div>${s.reasoning?`<div><span>推理强度</span><strong>${esc(s.reasoning)}</strong></div>`:''}</div><p class="settings-note">${note}请在 ${esc(h)} 中查看或切换。</p>`;
  }
@@ -26,9 +30,12 @@ function modelSettingsHtml(cap,disabled) {
  const selected=model.options.find(option=>option.value===value),efforts=modelEfforts(selected);
  const changed=value!==model.current||(efforts.length&&effort!==model.effort);
  const valid=Boolean(selected)&&(!efforts.length||efforts.some(option=>option.value===effort));
- const choices=model.options.map(option=>`<label class="permission-choice${option.value===value?' selected':''}"><input type="radio" name="model" value="${esc(option.value)}"${option.value===value?' checked':''} onchange="chooseSessionModel(this.value)"><span>${esc(option.label)}</span>${option.value===model.current?'<small>当前</small>':''}</label>`).join('');
- const reasoning=efforts.length?`<label class="model-effort-label" for="model-effort">推理强度</label><select id="model-effort" name="effort"${disabled} onchange="chooseModelEffort(this.value)">${efforts.some(option=>option.value===effort)?'':'<option value="" disabled selected>请选择推理强度</option>'}${efforts.map(option=>`<option value="${esc(option.value)}"${option.value===effort?' selected':''}>${esc(option.label)}</option>`).join('')}</select>`:'';
- return `<form class="native-model-form" onsubmit="event.preventDefault();sendModel(this,${jsArg(model.revision)})"><p class="settings-note">仅此会话的后续轮次 · 使用原应用提供的模型。</p><fieldset${disabled}><legend class="sr-only">选择模型</legend>${choices}</fieldset>${!model.options.some(option=>option.value===model.current)?`<p class="settings-note">当前：${esc(s.model||model.current||'尚未读取')}（仅显示）</p>`:''}${reasoning}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="model-apply" class="primary" type="submit"${disabled||!changed||!valid?' disabled':''}>应用到此会话</button></div></form>`;
+ const currentAvailable=model.options.some(option=>option.value===model.current);
+ const currentLabel=model.current_label||model.current||s.model;
+ const choices=(!currentAvailable?currentChoiceHtml('model',model.current,currentLabel,value===model.current):'')+model.options.map(option=>`<label class="permission-choice${option.value===value?' selected':''}"><input type="radio" name="model" value="${esc(option.value)}"${option.value===value?' checked':''} onchange="chooseSessionModel(this.value)"><span>${esc(option.label)}</span>${option.value===model.current?'<small>当前</small>':''}</label>`).join('');
+ const knownEffort=typeof effort==='string'&&effort.length>0;
+ const reasoning=efforts.length?`<label class="model-effort-label" for="model-effort">推理强度</label><select id="model-effort" name="effort"${disabled} onchange="chooseModelEffort(this.value)">${efforts.some(option=>option.value===effort)?'':knownEffort?`<option value="${esc(effort)}" disabled selected>当前：${esc(effort)}（只读）</option>`:'<option value="" disabled selected>原应用默认</option>'}${efforts.map(option=>`<option value="${esc(option.value)}"${option.value===effort?' selected':''}>${esc(option.label)}</option>`).join('')}</select>`:!selected&&knownEffort?`<p class="settings-note">推理强度：${esc(effort)}</p>`:'';
+ return `<form class="native-model-form" onsubmit="event.preventDefault();sendModel(this,${jsArg(model.revision)})"><p class="settings-note">仅此会话的后续轮次 · 使用原应用提供的模型。</p><fieldset${disabled}><legend class="sr-only">选择模型</legend>${choices}</fieldset>${reasoning}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="model-apply" class="primary" type="submit"${disabled||!changed||!valid?' disabled':''}>应用到此会话</button></div></form>`;
 }
 function permissionSettingsHtml(cap,disabled) {
  const s=cap.settings||{},p=cap.policy;
@@ -44,13 +51,15 @@ function policyForm(policy,disabled) {
   presets?'仅此会话 · 同时切换沙盒与审批设置；不修改新会话默认值。':'仅此会话的后续轮次 · 不改变沙盒权限或审批者，也不等同于 Codex 的完整权限模式。';
  const value=sessionOptions.policyRevision===policy.revision?sessionOptions.value:policy.current;
  const selected=policy.options.find(o=>o.value===value);
- const current=policy.options.find(o=>o.value===policy.current)?.label||(policy.current==='custom'?'自定义组合':policy.current);
+ const current=policy.current_label||policy.options.find(o=>o.value===policy.current)?.label||(policy.current==='custom'?'自定义组合':policy.current);
  const changed=value!==policy.current;
  const choice=o=>`<label class="permission-choice${o.value===value?' selected':''}"><input type="radio" name="policy" value="${esc(o.value)}"${o.value===value?' checked':''} onchange="chooseSessionPolicy(this.value)"><span>${esc(o.label)}</span>${o.value===policy.current?'<small>当前</small>':''}</label>`;
- const advanced=presets?policy.options.filter(o=>o.group==='advanced'):[];
- const choices=policy.options.filter(o=>!advanced.includes(o)).map(choice).join('')+(advanced.length?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>其他权限</summary>${advanced.map(choice).join('')}</details>`:'');
+ // Keep the native current selection visible even when it normally belongs
+ // to the advanced group or is no longer offered as a writable choice.
+ const advanced=presets?policy.options.filter(o=>o.group==='advanced'&&o.value!==policy.current):[];
+ const choices=(!policy.options.some(o=>o.value===policy.current)?currentChoiceHtml('policy',policy.current,current,value===policy.current):'')+policy.options.filter(o=>!advanced.includes(o)).map(choice).join('')+(advanced.length?`<details class="advanced-settings"${sessionOptions.advanced?' open':''} ontoggle="sessionOptions.advanced=this.open"><summary>其他权限</summary>${advanced.map(choice).join('')}</details>`:'');
  const description=selected?.description||(policy.scope==='session-next-turn'?(value==='never'?'需要批准的操作将被拒绝，不会自动获得权限。':'由 Codex 按当前审批者设置处理需要批准的操作。'):'');
- return `<form class="native-policy-form" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(policy.revision)})"><div class="settings-section-heading"><h3>${title}</h3><span class="scope-badge">${project?'整个项目':'此会话'}</span></div><p class="settings-note">${esc(note)}</p><fieldset${disabled}><legend class="sr-only">选择${title}</legend>${choices}</fieldset>${!policy.options.some(o=>o.value===policy.current)?`<p class="settings-note">当前：${esc(current)}（仅显示）</p>`:''}<p id="policy-description" class="policy-description">${esc(description)}</p>${project?`<label class="project-confirm"><input type="checkbox" name="confirmProject"${sessionOptions.confirmed?' checked':''}${disabled} onchange="sessionOptions.confirmed=this.checked;updatePolicyApply()">确认更改项目「${esc(target)}」的权限</label>`:''}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="policy-apply" class="primary" type="submit"${disabled||!changed||(project&&!sessionOptions.confirmed)?' disabled':''}>${project?'应用到整个项目':'应用到此会话'}</button></div></form>`;
+ return `<form class="native-policy-form" onsubmit="event.preventDefault();sendPolicy(this,${jsArg(policy.revision)})"><div class="settings-section-heading"><h3>${title}</h3><span class="scope-badge">${project?'整个项目':'此会话'}</span></div><p class="settings-note">${esc(note)}</p><fieldset${disabled}><legend class="sr-only">选择${title}</legend>${choices}</fieldset><p id="policy-description" class="policy-description">${esc(description)}</p>${project?`<label class="project-confirm"><input type="checkbox" name="confirmProject"${sessionOptions.confirmed?' checked':''}${disabled} onchange="sessionOptions.confirmed=this.checked;updatePolicyApply()">确认更改项目「${esc(target)}」的权限</label>`:''}<div class="options-footer"><span>${changed?'尚未应用':'当前设置'}</span><button id="policy-apply" class="primary" type="submit"${disabled||!changed||(project&&!sessionOptions.confirmed)?' disabled':''}>${project?'应用到整个项目':'应用到此会话'}</button></div></form>`;
 }
 function creationForm(cap,draft,disabled) {
  const h=harnessName(cap),create=cap.create,openDraft=create.mode==='draft';

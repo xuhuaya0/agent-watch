@@ -10,6 +10,19 @@ Preview = preview_module.Preview
 
 
 class PreviewTests(unittest.TestCase):
+    def test_media_fixture_uses_only_synthetic_opaque_references_and_a_bounded_raster(self):
+        fixture = Preview('media')
+        page = fixture.route('GET', '/api/history/tasks/cx-ready')[2]
+        message = page['messages'][-1]
+        self.assertIn('[代码已提交](https://example.test/', message['text'])
+        attachment = message['attachments'][0]
+        self.assertTrue(attachment['source'].startswith('/example/'))
+        status, kind, data = fixture.route('GET', '/api/attachments/tasks/cx-ready?id=' + attachment['id'])
+        self.assertEqual((status, kind), (200, 'image/png'))
+        self.assertTrue(data.startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertLess(len(data), 10000)
+        self.assertEqual(fixture.route('GET', '/api/attachments/tasks/cx-ready?path=/example/image.png')[0], 404)
+
     def test_scenarios_use_real_assets_and_only_synthetic_data(self):
         fixture = Preview(clock=lambda: 1800000000)
         for scenario in preview_module.SCENARIOS:

@@ -480,6 +480,26 @@ def api_task_history(key):
     return response
 
 
+@app.route("/api/attachments/tasks/<path:key>")
+@require_admin()
+def api_task_attachment(key):
+    from aw.control.attachments import validate_media
+    if set(request.args) != {'id'}:
+        raise ControlError('invalid_attachment', 400)
+    result = CONTROL.history(*control_task(key), attachment=request.args['id'])
+    if result.get('media') and result.get('ready'):
+        media = result['media']
+        response = Response(validate_media(media), mimetype=media['mime'])
+        response.headers['Content-Disposition'] = 'inline; filename="attachment"'
+        response.headers['Content-Security-Policy'] = "default-src 'none'; sandbox"
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+    else:
+        response = jsonify({'ok': True, **result})
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    return response
+
+
 @app.route("/api/control/devices", methods=["GET"])
 @require_admin()
 def api_control_devices():

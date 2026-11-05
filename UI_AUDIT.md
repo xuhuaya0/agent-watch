@@ -116,3 +116,38 @@ opening an individual tool exposed its output. Polling retained the expanded
 group and reply draft. Final replies stayed outside the group. These checks use
 synthetic records; the dedicated native model and read-only permission checks
 are recorded separately above and in COMPATIBILITY.md.
+
+## Current settings, message media and Enter to send
+
+On 2026-11-06, an isolated Hub and device worker used an existing dedicated
+macOS Codex acceptance conversation. Opening the model and permission dialogs
+showed the current native model, effort and effective permission selected. The
+current automatic-review mode remained visibly selected and read-only because
+its availability for a new selection could not be verified. Opening either
+dialog did not submit a settings change. Native settings and allowed choices
+are now separate facts, including when the current choice is unavailable.
+
+The browser read an existing native assistant message through the bounded history
+interface. Its Markdown links rendered as named links, and its original local
+JPEG loaded inline through the authenticated device attachment queue. This was
+real Codex history, not an injected image fixture. Synthetic checks additionally
+covered a missing image, a non-image local file chip, and literal Markdown inside
+a code block. At 390×844 these elements and the composer caused no page-wide
+horizontal overflow. Antigravity local-image delivery and DeepSeek local-image
+support are not established by this check; see COMPATIBILITY.md.
+
+In the dedicated native conversation, Shift+Enter inserted a newline, then plain
+Enter submitted exactly one authorized fixed reply and cleared the draft after
+acceptance. The native reply arrived successfully. A rejected synthetic send
+kept the draft and displayed its failure. Composition-event ordering, repeated
+keys and Ctrl/Cmd+Enter are covered by automated keyboard regressions; a full
+physical-input-method/browser matrix remains unverified. The native check also
+found a duplicate outgoing echo when the Harness trimmed a trailing newline;
+matching now tolerates endpoint whitespace while preserving internal content,
+message identity and timestamp checks.
+
+Local image reads are limited to raster references already present in that
+conversation, bounded in size and delivered only to an authenticated reader.
+Ordinary local file chips do not grant arbitrary file downloads. These checks
+do not imply complete parity with every native Markdown extension or attachment
+format. No native permission or model was changed during this follow-up.

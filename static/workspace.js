@@ -227,19 +227,146 @@ async function refreshDetail() {
     await markRead(task);
   } catch(error){if(id===workspace.selected)toast(error.message);}
 }
-function inlineMarkdown(text) {
-  return esc(text).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+function markdownDestination(text,start) {
+  if(text[start]!=='(')return null;
+  let pos=start+1,target='',end;
+  if(text[pos]==='<') {
+    end=text.indexOf('>',pos+1);if(end<0)return null;
+    target=text.slice(pos+1,end);pos=end+1;
+  }else {
+    let depth=0;
+    for(;pos<text.length;pos++) {
+      const c=text[pos];
+      if(c==='\\' && /[()\\]/.test(text[pos+1]||'')){target+=text[++pos];continue;}
+      if(c==='('){depth++;target+=c;continue;}
+      if(c===')'){if(!depth)break;depth--;target+=c;continue;}
+      if(/\s/.test(c)&&!depth)break;
+      target+=c;
+    }
+  }
+  while(/\s/.test(text[pos]||'')&&pos<text.length)pos++;
+  if(text[pos]==='"'||text[pos]==="'") {
+    const quote=text[pos++];end=text.indexOf(quote,pos);if(end<0)return null;pos=end+1;
+    while(/\s/.test(text[pos]||'')&&pos<text.length)pos++;
+  }
+  return text[pos]===')'&&target&&target.length<=4096?{target,end:pos+1}:null;
 }
-function markdown(text) {
-  // Escape all raw HTML. No remote images, embedded HTML or executable links.
+function safeMessageUrl(value,image=false) {
+  if(typeof value!=='string'||!/^https?:\/\//i.test(value)||/[\u0000-\u0020\u007f\\]/.test(value))return null;
+  try {const url=new URL(value);return (url.protocol==='https:'||!image&&url.protocol==='http:')&&!url.username&&!url.password?url.href:null;}catch(_){return null;}
+}
+function messageFileChip(label,source,image=false,error='') {
+  const name=label||source.split(/[\\/]/).pop()||'附件';
+  const reason=({attachment_too_large:'图片超过预览上限',attachment_changed:'图片已变化，请刷新会话',attachment_unsupported:'此图片格式暂不支持',attachment_unavailable:'原设备图片暂不可用'})[error];
+  return `<span class="message-file" title="${esc(source)}"><span>${esc(name)}</span><small>${esc(reason||(image?'本地图片 · 需原设备提供':'原设备文件'))}</small></span>`;
+}
+function messageImage(label,target,context) {
+  const url=safeMessageUrl(target,true);
+  if(url&&!/\.svg(?:$|[?#])/i.test(url))return `<a class="message-image-link message-external-image" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><img class="message-image" src="${esc(url)}" alt="${esc(label)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="messageImageFailed(this)"></a>`;
+  const item=context?.attachments?.find(value=>value.source===target);
+  if(!item?.id||!context?.sessionId)return messageFileChip(label,target,true,item?.error);
+  if(!/^[A-Za-z0-9_-]{32}$/.test(item.id)||!Number.isInteger(item.width)||!Number.isInteger(item.height))return messageFileChip(label,target,true);
+  return `<span class="message-attachment" data-attachment-id="${esc(item.id)}" data-attachment-session="${esc(context.sessionId)}" style="aspect-ratio:${item.width}/${item.height}"><a class="message-image-link" target="_blank" rel="noopener noreferrer" hidden><img class="message-image" alt="${esc(label||item.name)}" width="${item.width}" height="${item.height}" decoding="async"></a><button type="button" class="attachment-load" onclick="loadMessageAttachment(this)">${esc(label||item.name)} · 加载图片</button><span class="attachment-status" role="status"></span></span>`;
+}
+function inlineMarkdown(text,context={},depth=0) {
+  text=String(text||'');let out='',plain='';
+  const flush=()=>{out+=esc(plain).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');plain='';};
+  for(let pos=0;pos<text.length;) {
+    if(text[pos]==='\\'&&/[\\`*_[\]()!]/.test(text[pos+1]||'')){plain+=text[pos+1];pos+=2;continue;}
+    if(text[pos]==='`') {
+      const end=text.indexOf('`',pos+1);
+      if(end>pos+1){flush();out+='<code>'+esc(text.slice(pos+1,end))+'</code>';pos=end+1;continue;}
+    }
+    const image=text.startsWith('![',pos),link=text[pos]==='[';
+    if((image||link)&&depth<2) {
+      const begin=pos+(image?2:1),offset=text.slice(begin,begin+501).indexOf(']'),close=offset<0?-1:begin+offset;
+      const dest=close>=0?markdownDestination(text,close+1):null;
+      if(dest) {
+        flush();const label=text.slice(begin,close),url=safeMessageUrl(dest.target);
+        if(image)out+=messageImage(label,dest.target,context);
+        else if(url)out+=`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${inlineMarkdown(label,{},depth+1)}</a>`;
+        else out+=messageFileChip(label,dest.target);
+        pos=dest.end;continue;
+      }
+    }
+    plain+=text[pos++];
+  }
+  flush();return out;
+}
+function markdown(text,context={}) {
+  // Only generated elements are HTML; raw HTML and code remain escaped.
   const blocks=String(text || '').split(/```[^\n]*\n([\s\S]*?)(?:```|$)/g);
   return blocks.map((block,index)=>index%2 ? `<div class="code-wrap"><button onclick="copyCode(this)">复制代码</button><pre><code>${esc(block)}</code></pre></div>` :
     block.split(/\n\s*\n/).filter(x=>x.trim()).map(p=>{
       const h=p.match(/^(#{1,3}) (.+)$/);
-      if(h)return `<h${h[1].length+1}>${inlineMarkdown(h[2])}</h${h[1].length+1}>`;
-      if(p.split('\n').every(line=>/^\s*[-*] /.test(line)))return '<ul>'+p.split('\n').map(line=>'<li>'+inlineMarkdown(line.replace(/^\s*[-*] /,''))+'</li>').join('')+'</ul>';
-      return '<p>'+inlineMarkdown(p).replace(/\n/g,'<br>')+'</p>';
+      if(h)return `<h${h[1].length+1}>${inlineMarkdown(h[2],context)}</h${h[1].length+1}>`;
+      if(p.split('\n').every(line=>/^\s*[-*] /.test(line)))return '<ul>'+p.split('\n').map(line=>'<li>'+inlineMarkdown(line.replace(/^\s*[-*] /,''),context)+'</li>').join('')+'</ul>';
+      return '<p>'+inlineMarkdown(p,context).replace(/\n/g,'<br>')+'</p>';
     }).join('')).join('');
+}
+const messageMedia={active:0,queue:[],cache:new Map(),observer:null};
+function discardMessageMedia(key,entry) {
+  for(const node of entry.nodes||[])if(node.isConnected) {
+    node.dataset.attachmentState='error';
+    const link=node.querySelector('a'),image=node.querySelector('img'),button=node.querySelector('button');
+    link.hidden=true;link.removeAttribute('href');image.removeAttribute('src');button.hidden=false;button.disabled=false;
+    node.querySelector('.attachment-status').textContent='图片已释放，可重新加载';
+  }
+  URL.revokeObjectURL(entry.url);messageMedia.cache.delete(key);
+}
+function messageImageFailed(image) {
+  const note=document.createElement('span');note.className='message-file';note.textContent=(image.alt||'图片')+' · 图片暂不可用';image.replaceWith(note);
+}
+function hydrateMessageAttachments(root) {
+  if(!root?.querySelectorAll)return;
+  for(const [key,entry] of messageMedia.cache)if(entry.session!==workspace.selected)discardMessageMedia(key,entry);
+  if(!messageMedia.observer&&typeof IntersectionObserver!=='undefined')messageMedia.observer=new IntersectionObserver(entries=>{
+    for(const entry of entries)if(entry.isIntersecting){messageMedia.observer.unobserve(entry.target);loadMessageAttachment(entry.target);}
+  },{root:document.getElementById('session-detail'),rootMargin:'150px'});
+  for(const node of root.querySelectorAll('.message-attachment')) {
+    if(node.dataset.attachmentState)continue;
+    node.dataset.attachmentState='observed';
+    if(messageMedia.observer)messageMedia.observer.observe(node);else loadMessageAttachment(node);
+  }
+}
+function loadMessageAttachment(trigger) {
+  const node=trigger.closest('.message-attachment');if(!node||['loading','loaded','queued'].includes(node.dataset.attachmentState))return;
+  node.dataset.attachmentState='queued';messageMedia.queue.push(node);pumpMessageAttachments();
+}
+function pumpMessageAttachments() {
+  while(messageMedia.active<2&&messageMedia.queue.length) {
+    const node=messageMedia.queue.shift();if(!node.isConnected)continue;
+    messageMedia.active++;fetchMessageAttachment(node).finally(()=>{messageMedia.active--;pumpMessageAttachments();});
+  }
+}
+async function fetchMessageAttachment(node) {
+  const session=node.dataset.attachmentSession,id=node.dataset.attachmentId,key=session+':'+id;
+  const button=node.querySelector('button'),status=node.querySelector('.attachment-status');
+  node.dataset.attachmentState='loading';button.disabled=true;status.textContent='正在从原设备读取…';
+  try {
+    let cached=messageMedia.cache.get(key);
+    for(let attempt=0;!cached&&attempt<35;attempt++) {
+      if(!node.isConnected||workspace.selected!==session)return;
+      const response=await fetch('/api/attachments/tasks/'+encodeURIComponent(session)+'?id='+encodeURIComponent(id),{credentials:'same-origin',cache:'no-store'});
+      if(!response.ok)throw new Error(response.status===401?'请重新登录':'原设备图片暂不可用');
+      if(/^image\/(png|jpeg|gif|webp)(?:;|$)/.test(response.headers.get('Content-Type')||'')) {
+        const blob=await response.blob();if(blob.size>2*1024*1024)throw new Error('图片超过预览上限');
+        cached={url:URL.createObjectURL(blob),session,nodes:new Set()};
+        if(messageMedia.cache.size>=8){const [old,entry]=messageMedia.cache.entries().next().value;discardMessageMedia(old,entry);}
+        messageMedia.cache.set(key,cached);break;
+      }
+      const result=await response.json();
+      if(result.ready)throw new Error(({attachment_changed:'图片已变化，请刷新会话',attachment_too_large:'图片超过预览上限',attachment_unsupported:'此图片格式暂不支持'})[result.error]||'原设备图片暂不可用');
+      await new Promise(resolve=>setTimeout(resolve,800));
+    }
+    if(!cached)throw new Error('原设备读取超时，请重试');
+    if(!node.isConnected||workspace.selected!==session)return;
+    cached.nodes.add(node);
+    const link=node.querySelector('a'),image=node.querySelector('img');
+    image.onload=()=>{node.dataset.attachmentState='loaded';button.hidden=true;status.textContent='';link.hidden=false;};
+    image.onerror=()=>{node.dataset.attachmentState='error';button.disabled=false;status.textContent='图片无法显示，请重试';};
+    link.href=cached.url;image.src=cached.url;
+  }catch(error){if(node.isConnected){node.dataset.attachmentState='error';button.disabled=false;status.textContent=error.message;}}
 }
 async function copyText(text) {
   try {

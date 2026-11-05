@@ -207,6 +207,22 @@ test('history echo matching rejects old ids, older or invalid times, wrong roles
  ctx.histories.get('a').messages=[valid];ctx.histories.get('a').loaded=false;assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
  ctx.histories.get('a').loaded=true;assert.equal(run(ctx,'outgoingHtml("a")'),'');
 });
+test('native history trimming the submitted trailing newline does not duplicate a delivered reply',()=>{
+ const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[]}]]);
+ run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"  Same text\\nSecond line\\n",createdAt:1000599,state:"delivered",previousHistoryIds:["old"]})');
+ const native={id:'new',role:'user',text:'Same text\nSecond line',timestamp:new Date(1001000).toISOString()};
+ for(const row of [
+  {...native,id:'old'},
+  {...native,timestamp:new Date(999000).toISOString()},
+  {...native,text:'Same text Second line'},
+  {...native,text:'Same  text\nSecond line'},
+ ]) {
+  ctx.histories.get('a').messages=[row];assert.match(run(ctx,'outgoingHtml("a")'),/local-outgoing/);
+ }
+ ctx.histories.get('a').messages=[native];
+ assert.equal(run(ctx,'outgoingHtml("a")'),'');
+ assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
+});
 test('matching native history never hides sending, queued, uncertain or failed messages',()=>{
  const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'new',role:'user',text:'Visible',timestamp:'2000-01-01T00:00:00Z'}]}]]);
  for(const state of ['sending','queued','dispatched','rejected','expired','cancelled','unknown']){
@@ -251,8 +267,8 @@ test('DeepSeek presets disclose sandbox changes and keep custom display-only',()
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'custom',revision:'preset-v1',scope:'session-permissions',options:[{value:'workspace-write',label:'Workspace',description:'<native description>'}]}}};
  run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'permissionSettingsHtml(data.capability,"")');
  assert.match(html,/同时切换沙盒与审批设置/);
- assert.match(html,/自定义组合（仅显示）/);
- assert.doesNotMatch(html,/value="custom"/);
+ assert.match(html,/value="custom" checked disabled/);
+ assert.match(html,/自定义组合<\/span><small>当前 · 只读/);
  assert.doesNotMatch(html,/&lt;native description>/);
  assert.doesNotMatch(html,/不改变沙盒权限或审批者/);
 });
@@ -387,11 +403,11 @@ test('composer offers settings from native facts and creation requires the selec
 test('reply keyboard shortcut observes IME and the outstanding operation guard',()=>{
  const {ctx,button}=setup();let submissions=0;
  ctx.event={key:'Enter',ctrlKey:false,metaKey:false,isComposing:false,preventDefault(){},target:{form:{querySelector(){return button},requestSubmit(){submissions++}}}};
- run(ctx,'setReplyDraft("reply");composerKeydown(event)');assert.equal(submissions,0);
- ctx.event.metaKey=true;ctx.event.isComposing=true;run(ctx,'composerKeydown(event)');assert.equal(submissions,0);
- ctx.event.isComposing=false;run(ctx,'composerKeydown(event)');assert.equal(submissions,1);
- run(ctx,'interaction.pending.set("a",{id:"pending"});setReplyDraft("another");composerKeydown(event)');assert.equal(submissions,1);assert.equal(button.disabled,true);
- run(ctx,'interaction.pending.clear();setReplyDraft(" ");composerKeydown(event)');assert.equal(submissions,1);assert.equal(button.disabled,true);
+ run(ctx,'setReplyDraft("reply");composerKeydown(event)');assert.equal(submissions,1);
+ ctx.event.metaKey=true;ctx.event.isComposing=true;run(ctx,'composerKeydown(event)');assert.equal(submissions,1);
+ ctx.event.isComposing=false;run(ctx,'composerKeyup(event);composerKeydown(event)');assert.equal(submissions,2);
+ run(ctx,'interaction.pending.set("a",{id:"pending"});setReplyDraft("another");composerKeydown(event)');assert.equal(submissions,2);assert.equal(button.disabled,true);
+ run(ctx,'interaction.pending.clear();setReplyDraft(" ");composerKeydown(event)');assert.equal(submissions,2);assert.equal(button.disabled,true);
 });
 
 
@@ -468,8 +484,8 @@ test('model and permission entry points handle unknown and read-only state witho
 test('full session permission presets are directly selectable without the legacy approval section',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{model:'Model-only marker'},policy:{scope:'session-permissions',current:'custom',revision:'p',options:[{value:'preset-a',label:'Native preset',description:'Native scope'}]}}};
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
- assert.match(body.innerHTML,/name="policy" value="preset-a"/);assert.match(body.innerHTML,/自定义组合（仅显示）/);
- assert.doesNotMatch(body.innerHTML,/advanced-settings|value="custom"|Model-only marker|sendModel/);
+ assert.match(body.innerHTML,/name="policy" value="preset-a"/);assert.match(body.innerHTML,/value="custom" checked disabled/);
+ assert.doesNotMatch(body.innerHTML,/advanced-settings|Model-only marker|sendModel/);
 });
 test('native advanced permission profiles stay folded separately from the primary choices',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'p',options:[{value:'a',label:'Primary A'},{value:'b',label:'Primary B'},{value:'c',label:'Other native profile',group:'advanced'}]}}};
@@ -512,11 +528,12 @@ test('missing current effort and models outside the native catalog are never sil
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
  delete ctx.data.capability.model.effort;
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
- assert.match(body.innerHTML,/<option value="" disabled selected>请选择推理强度/);
+ assert.match(body.innerHTML,/<option value="" disabled selected>原应用默认/);
  assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
  run(ctx,'chooseModelEffort("high")');assert.doesNotMatch(body.innerHTML,/id="model-apply"[^>]* disabled/);
  run(ctx,'data.capability.model.current="retired-native-model";data.capability.model.revision="v2";renderSessionActions()');
- assert.match(body.innerHTML,/retired-native-model（仅显示）/);assert.doesNotMatch(body.innerHTML,/value="retired-native-model"/);
+ assert.match(body.innerHTML,/value="retired-native-model" checked disabled/);
+ assert.match(body.innerHTML,/retired-native-model<\/span><small>当前 · 只读/);
  assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);assert.doesNotMatch(body.innerHTML,/<select/);
 });
 test('model receipts and errors stay in their own dialog and never appear as chat activity',()=>{
@@ -525,4 +542,44 @@ test('model receipts and errors stay in their own dialog and never appear as cha
  assert.match(body.innerHTML,/Native model unavailable/);assert.match(body.innerHTML,/最近模型设置.*已更新后续轮次模型/);
  assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');assert.equal(run(ctx,'interactionFeedbackHtml("a","policy")'),'');
  run(ctx,'openSessionOptions("permission")');assert.doesNotMatch(body.innerHTML,/Native model unavailable|最近模型设置/);
+});
+
+test('opening both pickers selects native current state without sending a change',()=>{
+ const {ctx,body}=setup();let writes=0;ctx.apiFetch=async()=>{writes++};
+ ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),current:'model-b',effort:'high'},
+  policy:{scope:'session-permissions',current:'guardian-approvals',current_label:'Approve for me',revision:'p',options:[{value:'ask',label:'Ask for approval'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
+ assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/value="high" selected/);
+ assert.equal((body.innerHTML.match(/ checked/g)||[]).length,1);
+ run(ctx,'openSessionOptions("permission")');
+ assert.match(body.innerHTML,/value="guardian-approvals" checked disabled/);
+ assert.match(body.innerHTML,/Approve for me<\/span><small>当前 · 只读/);
+ assert.match(body.innerHTML,/id="policy-apply"[^>]* disabled/);
+ assert.equal((body.innerHTML.match(/ checked/g)||[]).length,1);
+ assert.equal(writes,0);assert.match(run(ctx,'settingsSummaryHtml(data.capability)'),/权限：Approve for me/);
+});
+test('native values remain selected when catalogs have no writable choices',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',
+  settings:{model:'Old turn model'},model:{current:'unlisted-model',current_label:'Current native model',revision:'m',options:[]},
+  policy:{scope:'session-permissions',current:'custom',current_label:'Custom (config.toml)',revision:'p',options:[]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
+ assert.match(body.innerHTML,/value="unlisted-model" checked disabled/);
+ assert.match(body.innerHTML,/Current native model<\/span>/);assert.doesNotMatch(body.innerHTML,/Old turn model/);
+ assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
+ run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/value="custom" checked disabled/);
+ assert.match(body.innerHTML,/Custom \(config.toml\)/);assert.match(body.innerHTML,/id="policy-apply"[^>]* disabled/);
+});
+test('a current advanced permission is visible outside the collapsed additional choices',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'readonly',revision:'p',options:[
+  {value:'ask',label:'Ask'},{value:'readonly',label:'Read only',group:'advanced'},{value:'other',label:'Other',group:'advanced'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
+ const [visible,folded]=body.innerHTML.split('<details class="advanced-settings"');
+ assert.match(visible,/value="readonly" checked/);assert.doesNotMatch(folded,/value="readonly"/);
+ assert.match(folded,/value="other"/);
+});
+test('a known unoffered effort is displayed as the current read-only value instead of a prompt',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),effort:'native-special'}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
+ assert.match(body.innerHTML,/<option value="native-special" disabled selected>当前：native-special（只读）/);
+ assert.doesNotMatch(body.innerHTML,/请选择推理强度/);assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
 });

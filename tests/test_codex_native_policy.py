@@ -2,7 +2,7 @@ import copy
 import unittest
 
 from aw.control.codex_policy import (capability, native_capability, settings_for,
-                                     valid_capability)
+                                     valid_capability, matches_selection)
 
 
 GRANULAR_POLICY = {'granular': {'sandbox_approval': False, 'rules': False,
@@ -99,7 +99,7 @@ class NativePolicyTests(unittest.TestCase):
             self.assertIsNone(settings_for(value, data))
         data['requirements']['allowedApprovalPolicies'][0] = {
             'granular': {**GRANULAR_POLICY['granular'], 'rules': 0}}
-        self.assertIsNone(native_capability(state(), data))
+        self.assertEqual(native_capability(state(), data)['options'], [])
 
     def test_missing_disallowed_duplicate_or_malformed_catalog_never_creates_profiles(self):
         for change in (lambda d: d.update(profiles=[]),
@@ -112,10 +112,10 @@ class NativePolicyTests(unittest.TestCase):
                        lambda d: d['requirements'].update(autoReview={'requiredOnModels': 'example-model'})):
             data = catalog()
             change(data)
-            self.assertIsNone(native_capability(state(), data))
+            self.assertEqual(native_capability(state(), data)['options'], [])
             self.assertIsNone(settings_for('auto', data))
         for data in (None, {}, {'revision': 'r', 'config': {}, 'requirements': {}, 'profiles': []}):
-            self.assertIsNone(native_capability(state(), data))
+            self.assertEqual(native_capability(state(), data)['options'], [])
 
     def test_model_required_review_cannot_be_bypassed_by_full_access_or_a_named_profile(self):
         data = catalog()
@@ -127,15 +127,14 @@ class NativePolicyTests(unittest.TestCase):
                 self.assertIsNone(settings_for(forbidden, data))
         for model in (None, '', 'provider/nested/example-model', 'bad provider/example-model'):
             data['selected_model'] = model
-            self.assertIsNone(native_capability(state(), data))
+            self.assertEqual(native_capability(state(), data)['options'], [])
             self.assertIsNone(settings_for('full-access', data))
         data['selected_model'] = 'other-model'
         self.assertIsNotNone(settings_for('full-access', data))
 
     def test_current_preset_needs_profile_approval_reviewer_and_complete_native_sandbox_match(self):
         data = catalog()
-        for change in (lambda s: s.update(activePermissionProfile=None),
-                       lambda s: s.update(activePermissionProfile={'id': ':read-only'}),
+        for change in (lambda s: s.update(activePermissionProfile={'id': ':read-only'}),
                        lambda s: s.update(approvalPolicy='never'),
                        lambda s: s.update(approvalsReviewer='unknown'),
                        lambda s: s['sandboxPolicy'].pop('excludeSlashTmp'),
@@ -187,10 +186,39 @@ class NativePolicyTests(unittest.TestCase):
         native['history']['latestThreadSettings']['approvalsReviewer'] = 'auto_review'
         self.assertNotEqual(first, native_capability(native, data)['revision'])
         native['requests'] = [{'id': 'pending'}]
-        self.assertIsNone(native_capability(native, data))
+        self.assertEqual(native_capability(native, data)['options'], [])
         native['requests'] = []
         native['history']['threadRuntimeStatus']['type'] = 'active'
-        self.assertIsNone(native_capability(native, data))
+        self.assertEqual(native_capability(native, data)['options'], [])
+
+    def test_effective_guardian_current_is_displayed_even_without_profile_id_or_selectable_gate(self):
+        native, data = state(), catalog()
+        native['history']['latestThreadSettings'].update(activePermissionProfile=None, approvalsReviewer='auto_review')
+        result = native_capability(native, data)
+        self.assertTrue(valid_capability(result))
+        self.assertEqual(result['current'], 'guardian-approvals')
+        self.assertEqual(result['current_label'], 'Approve for me')
+        self.assertNotIn('guardian-approvals', options(result))
+        self.assertIsNone(settings_for('guardian-approvals', data))
+        data['config']['approvals_reviewer'] = 'auto_review'
+        self.assertIsNotNone(settings_for('guardian-approvals', data))
+        self.assertFalse(matches_selection(native, 'guardian-approvals', data))
+        native['history']['latestThreadSettings']['activePermissionProfile'] = {'id': ':workspace'}
+        self.assertTrue(matches_selection(native, 'guardian-approvals', data))
+
+    def test_unlisted_named_current_and_busy_current_remain_visible_but_never_become_choices(self):
+        native, data = state(), catalog()
+        native['history']['latestThreadSettings']['activePermissionProfile'] = {'id': 'retired-profile'}
+        result = native_capability(native, data)
+        self.assertEqual(result['current'], 'profile:retired-profile')
+        self.assertEqual(result['current_label'], 'retired-profile')
+        self.assertNotIn(result['current'], options(result))
+        self.assertIsNone(settings_for(result['current'], data))
+        native['history']['threadRuntimeStatus']['type'] = 'active'
+        result = native_capability(native, data)
+        self.assertEqual(result['current'], 'profile:retired-profile')
+        self.assertEqual(result['options'], [])
+        self.assertTrue(valid_capability(result))
 
     def test_legacy_capability_keeps_its_narrow_scope_and_group_validation_is_bounded(self):
         legacy = capability(state())

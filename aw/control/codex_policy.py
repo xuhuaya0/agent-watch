@@ -13,15 +13,18 @@ FIELDS = ('approvalPolicy', 'approvalsReviewer', 'sandboxPolicy', 'permissions',
 
 def valid_capability(value):
     from .broker import text
-    if (not isinstance(value, dict) or set(value) != {'current', 'revision', 'scope', 'options'}
+    if (not isinstance(value, dict)
+            or not {'current', 'revision', 'scope', 'options'} <= value.keys() <= {'current', 'current_label', 'revision', 'scope', 'options'}
             or not text(value.get('revision')) or not text(value.get('current'))):
+        return False
+    if 'current_label' in value and not text(value['current_label']):
         return False
     if value['scope'] == 'session-next-turn':
         return value['current'] in ('on-request', 'never') and value['options'] == OPTIONS
     if value['scope'] != 'session-permissions':
         return False
     options = value['options']
-    if not isinstance(options, list) or not 1 <= len(options) <= 64:
+    if not isinstance(options, list) or not 0 <= len(options) <= 64:
         return False
     seen = set()
     for option in options:
@@ -34,7 +37,8 @@ def valid_capability(value):
                 or ('group' in option and option['group'] != 'advanced')):
             return False
         seen.add(option['value'])
-    return value['current'] == 'custom' or value['current'] in seen
+    current = value['current']
+    return current in seen or current == 'custom' or current in PRESETS or current.startswith('profile:') and text(current[8:], 160)
 
 
 def capability(state):
@@ -209,10 +213,10 @@ def _default_ask_mode(config, workspace_kind, available):
     return None
 
 
-def _matches_preset(settings, value):
+def _matches_preset(settings, value, require_profile=True):
     profile, sandbox, approval, reviewer, _ = PRESETS[value]
     active, policy = settings.get('activePermissionProfile'), settings.get('sandboxPolicy')
-    if (not isinstance(active, dict) or active.get('id') != profile
+    if ((require_profile and (not isinstance(active, dict) or active.get('id') != profile))
             or not _same(settings.get('approvalPolicy'), approval)
             or not _reviewer_matches(settings.get('approvalsReviewer'), reviewer)
             or not isinstance(policy, dict)):
@@ -231,35 +235,61 @@ def settings_for(value, catalog):
                  if option['value'] == value), None)
 
 
-def native_capability(state, catalog):
+def matches_selection(state, value, catalog):
+    """Confirm an offered write, retaining stricter rules than current display."""
+    payload = settings_for(value, catalog)
+    if payload is None:
+        return False
+    settings = (state.get('history') or {}).get('latestThreadSettings') or {}
+    if value in PRESETS:
+        return _matches_preset(settings, value)
+    active = settings.get('activePermissionProfile')
+    return isinstance(active, dict) and active.get('id') == payload['permissions']
+
+
+def current_permission(settings):
+    """Recognize the native current mode independently of selectable choices.
+
+    Older native threads can have a complete effective mode without a stored
+    permission-profile ID. This is display evidence, not permission to write
+    that profile or proof that a later profile update was applied.
+    """
+    from .broker import text
+    active = settings.get('activePermissionProfile')
+    if isinstance(active, dict) and text(active.get('id'), 160) and not active['id'].startswith(':'):
+        return 'profile:' + active['id'], active['id']
+    for value in PRESETS:
+        if _matches_preset(settings, value, require_profile=active is not None):
+            label = 'Ask for approval' if value in ('read-only', 'auto', 'granular') else PRESETS[value][4]
+            return value, label
+    return 'custom', 'Custom'
+
+
+def native_capability(state, catalog, editable=True):
     history = state.get('history') or {}
     settings, runtime = history.get('latestThreadSettings') or {}, history.get('threadRuntimeStatus') or {}
-    if (state.get('requests') or not isinstance(settings, dict) or not isinstance(runtime, dict)
-            or runtime.get('type') != 'idle'):
+    if (not isinstance(settings, dict) or not isinstance(runtime, dict)
+            or not isinstance(settings.get('sandboxPolicy'), dict) or settings.get('approvalPolicy') is None):
         return None
-    choices = _native_choices(catalog)
-    if not choices:
-        return None
+    editable = editable and not state.get('requests') and runtime.get('type') == 'idle'
+    choices = _native_choices(catalog) if editable else []
     available = [option['value'] for option, _ in choices]
-    primary = _default_ask_mode(catalog['config'], history.get('workspaceKind'), available)
-    current, options = 'custom', []
-    active = settings.get('activePermissionProfile')
-    for native_option, payload in choices:
+    config = catalog.get('config') if isinstance(catalog, dict) else None
+    primary = _default_ask_mode(config if isinstance(config, dict) else {}, history.get('workspaceKind'), available)
+    current, current_label = current_permission(settings)
+    options = []
+    for native_option, _ in choices:
         option, value = dict(native_option), native_option['value']
         if value in PRESETS:
-            if _matches_preset(settings, value):
-                current = value
             if value == primary:
                 option['label'] = 'Ask for approval'
                 option['description'] = PRESETS[value][4]
             elif value not in ('guardian-approvals', 'full-access'):
                 option['group'] = 'advanced'
-        elif isinstance(active, dict) and active.get('id') == payload['permissions']:
-            current = value
         options.append(option)
     options.sort(key=lambda option: option.get('group') == 'advanced')
-    result = {'current': current, 'scope': 'session-permissions', 'options': options,
-        'revision': hashlib.sha256(encoded([catalog, settings, runtime]).encode()).hexdigest()}
+    result = {'current': current, 'current_label': current_label, 'scope': 'session-permissions', 'options': options,
+        'revision': hashlib.sha256(encoded([catalog, settings, runtime, bool(editable)]).encode()).hexdigest()}
     return result if valid_capability(result) else None
 
 
