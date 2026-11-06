@@ -4,6 +4,7 @@ import hashlib
 import json
 from .broker import ControlError
 from .history import bounded_message, PAGE_ITEMS, PAGE_BYTES
+from ..adapters.dsh import assistant_phase
 
 
 def content_text(content):
@@ -48,7 +49,12 @@ def message(event):
             timestamp = datetime.datetime.fromtimestamp(event['time']/1000, datetime.timezone.utc).isoformat()
         except (ValueError, OverflowError, OSError):
             pass
-    return bounded_message(event['seq'], role, label, body, timestamp)
+    result = bounded_message(event['seq'], role, label, body, timestamp)
+    if result and role == 'assistant':
+        phase = assistant_phase(data.get('message') or {})
+        if phase:
+            result['phase'] = phase
+    return result
 
 
 def read_history(provider, sid, cursor=None):

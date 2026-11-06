@@ -2,11 +2,13 @@ import copy
 import io
 import json
 from pathlib import Path
+import plistlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from aw.control.codex_catalog import MetadataRpc, NativeCatalog, query_catalog
+from aw.control.codex_catalog import MetadataRpc, NativeCatalog, query_catalog, _metadata_executable
 
 
 def model(value='example-model'):
@@ -164,6 +166,27 @@ class NativeCatalogTests(unittest.TestCase):
                 rpc.close()
         self.assertEqual(popen.call_args.args[0], ['native-cli', 'app-server', '--stdio'])
         self.assertEqual(popen.call_args.kwargs['cwd'], str(self.root))
+
+    def test_trusted_updated_app_can_read_catalog_without_enabling_unverified_draft_creation(self):
+        app = self.root/'Example.app'
+        executable = app/'Contents/Resources/codex-cli/bin/codex'
+        executable.parent.mkdir(parents=True)
+        executable.write_text('synthetic executable')
+        executable.chmod(0o700)
+        plist = app/'Contents/Info.plist'
+        plist.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.openai.codex',
+                                         'CFBundleVersion': 'future-version'}))
+        with patch('aw.control.codex_catalog.subprocess.run') as verify:
+            self.assertEqual(_metadata_executable(app), executable)
+            self.assertIn('identifier "com.openai.codex"', verify.call_args.args[0][2])
+            self.assertTrue(verify.call_args.kwargs['check'])
+        with patch('aw.control.codex_catalog.subprocess.run',
+                   side_effect=subprocess.CalledProcessError(1, 'codesign')):
+            self.assertIsNone(_metadata_executable(app))
+        plist.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'example.untrusted'}))
+        with patch('aw.control.codex_catalog.subprocess.run') as verify:
+            self.assertIsNone(_metadata_executable(app))
+            verify.assert_not_called()
 
 
 if __name__ == '__main__':

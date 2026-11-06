@@ -1,6 +1,7 @@
 """Outbound-only control worker. Never retries native actions automatically."""
 from __future__ import annotations
 import json
+import copy
 import hashlib
 import os
 import time
@@ -8,6 +9,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 from .broker import normalize_sessions, validate_action, valid_created_session, ControlError
+from .delivery import ReplyDeferred, guard_reply
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -37,6 +39,52 @@ class Worker:
         self.save()
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
+    def gated_sessions(self, sessions):
+        """An acknowledgement alone cannot release the next waiting reply.
+
+        Native engines may acknowledge before their running flag is observable.
+        Keep a durable barrier until a native cycle/progress proves it advanced.
+        """
+        rows = copy.deepcopy(sessions)
+        gates = self.state.setdefault('reply_gates', {})
+        for row in rows:
+            key = row['tool'] + '\n' + row['session_id']
+            gate, delivery = gates.get(key), row.get('delivery')
+            if not gate or not delivery:
+                continue
+            if delivery['state'] == 'idle':
+                self.completion_marker(row)
+            if delivery.get('native_queue'):
+                gates.pop(key, None)
+            elif delivery['state'] == 'running':
+                gate['saw_busy'] = True
+            elif delivery['state'] == 'idle':
+                progressed = (gate.get('epoch') is not None and delivery.get('epoch') not in (None, 'none')
+                              and delivery['epoch'] != gate['epoch'])
+                if gate.get('saw_busy') or progressed:
+                    gates.pop(key, None)
+                else:
+                    delivery.update(state='waiting', steer=False)
+                    delivery.pop('revision', None)
+        return rows
+
+    def completion_marker(self, row):
+        provider = self.providers.get(row['tool'])
+        if row.get('delivery') and hasattr(provider, 'reply_completion'):
+            try:
+                marker = provider.reply_completion(row['session_id'])
+                if isinstance(marker, str):
+                    row['delivery']['epoch'] = marker
+            except Exception:
+                # A failed read cannot prove completion or release a reply.
+                pass
+
+    def remember_reply(self, command, current):
+        delivery = current.get('delivery')
+        if command['action']['kind'] == 'reply' and delivery and not delivery.get('native_queue'):
+            self.state.setdefault('reply_gates', {})[command['tool']+'\n'+command['session_id']] = {
+                'epoch': delivery.get('epoch'), 'saw_busy': delivery['state'] == 'running'}
+
     def save(self):
         temp = self.state_file.with_suffix('.tmp')
         fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -64,6 +112,7 @@ class Worker:
             except Exception:
                 # A disconnected native provider advertises no actionable session.
                 continue
+        sessions = self.gated_sessions(sessions)
         normalize_sessions(sessions)
         self.has_sessions = bool(sessions)
         response = self.exchange({'device_id':self.config['device_id'], 'worker_id':self.state['worker_id'],
@@ -104,19 +153,42 @@ class Worker:
         receipt = {'id':command['id'], 'state':'executing', 'detail':''}
         self.state['receipts'].append(receipt)
         self.save()  # durable before any side effect
+        gate_intent = None
+        def undo_gate_intent():
+            if gate_intent is None:
+                return
+            key, previous = gate_intent
+            if previous is None:
+                self.state['reply_gates'].pop(key, None)
+            else:
+                self.state['reply_gates'][key] = previous
         try:
             provider = self.providers.get(command['tool'])
             if not provider:
                 raise ControlError('native_provider_unavailable')
             # Revalidate against LIVE native state, never the Hub's previous scan.
             rows = provider.session_snapshot(command['session_id']) if hasattr(provider, 'session_snapshot') else provider.snapshot()
-            current = normalize_sessions(rows).get((command['tool'],command['session_id']))
+            current = normalize_sessions(self.gated_sessions(rows)).get((command['tool'],command['session_id']))
             if not current:
                 raise ControlError('native_session_unavailable')
             validate_action(current, command['action'])
+            guard_reply(current, command['action'])
+            if command['action']['kind'] == 'reply':
+                self.completion_marker(current)
+                delivery = current.get('delivery')
+                if delivery and not delivery.get('native_queue'):
+                    key = command['tool']+'\n'+command['session_id']
+                    gate_intent = (key, copy.deepcopy(self.state.get('reply_gates', {}).get(key)))
+                    self.remember_reply(command, current)
+                    # The engine may accept a message and then lose its reply,
+                    # or this worker may crash before seeing the acknowledgement.
+                    # Persist the completion barrier before the native write.
+                    self.save()
             result = provider.execute(command)
             if result == 'model_updated' and command['action']['kind'] == 'model':
-                receipt.update(state='resolved', detail='原应用已确认此会话后续轮次的模型设置')
+                detail = ('原应用已确认此会话的模型，并请求保存为后续默认模型；默认值持久化未确认'
+                          if command['tool'] == 'dsh' else '原应用已确认此会话后续轮次的模型设置')
+                receipt.update(state='resolved', detail=detail)
                 self.save()
                 return True
             if result == 'policy_updated' and command['action']['kind'] == 'policy':
@@ -153,8 +225,23 @@ class Worker:
             if result not in ('delivered', 'resolved', 'unknown'):
                 raise ValueError('invalid native receipt')
             receipt.update(state=result, detail='原应用已接收；不代表 Agent 已完成执行' if result=='delivered' else '原应用已结束该请求；请查看原应用的最终结果' if result=='resolved' else '无法确认原应用是否已接收，请检查原应用')
+        except ReplyDeferred:
+            undo_gate_intent()  # Positive no-write result, including a fresh race.
+            receipt.update(state='waiting', detail='等待当前运行结束')
         except ControlError as error:
-            receipt.update(state='rejected', detail=error.code)
+            # Only provider preflight failures establish that no native write
+            # happened. A router disconnect/error after dispatch is uncertain.
+            no_write = error.code in {
+                'native_session_unavailable', 'native_session_archived', 'reply_unavailable',
+                'reply_turn_changed', 'reply_queue_unavailable', 'native_action_unsupported',
+                'native_message_starts_with_option', 'native_connection_changed',
+                'invalid_message', 'invalid_action', 'codex_unsafe_socket',
+            }
+            if gate_intent is not None and not no_write:
+                receipt.update(state='unknown', detail='无法确认原应用是否已接收，系统不会自动重发')
+            else:
+                undo_gate_intent()
+                receipt.update(state='rejected', detail=error.code)
         except Exception:
             # Error details may contain credentials or prompt text. Keep them local
             # and return no raw process output or exception representation.

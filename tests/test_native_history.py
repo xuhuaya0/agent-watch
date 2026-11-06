@@ -45,6 +45,24 @@ class AntigravityHistoryTests(unittest.TestCase):
         self.assertIn('Running a tool', items[0]['text'])
         self.assertIn('hello', items[0]['text'])
 
+    def test_antigravity_tool_sequence_does_not_hide_ordinary_or_final_replies(self):
+        self.write([
+            {'type':'USER_INPUT','content':'Inspect the sample'},
+            {'type':'PLANNER_RESPONSE','content':'Inspecting now',
+             'thinking':'internal reasoning',
+             'tool_calls':[{'name':'read_file','args':{'path':'sample.txt'}}]},
+            {'type':'GENERIC','content':'Sample contents'},
+            {'type':'PLANNER_RESPONSE','content':'The sample is ready','tool_calls':[]},
+            {'type':'USER_INPUT','content':'Explain the result'},
+            {'type':'PLANNER_RESPONSE','content':'An ordinary answer with no tool step'}])
+        items = self.reader.read(SID)['messages']
+        self.assertEqual([m['role'] for m in items],
+                         ['user','tool','tool','assistant','user','assistant'])
+        self.assertFalse(any(m.get('phase') == 'commentary' for m in items))
+        self.assertEqual(items[3]['text'], 'The sample is ready')
+        self.assertEqual(items[-1]['text'], 'An ordinary answer with no tool step')
+        self.assertNotIn('internal reasoning', json.dumps(items))
+
     def test_scope_revocation_during_read_and_invalid_id_fail_closed(self):
         self.write([{'type':'USER_INPUT','content':'hello'}])
         calls = []
@@ -161,6 +179,50 @@ class DeepSeekHistoryTests(unittest.TestCase):
              'data':{'message':{'content':'internal compaction'}}}]
         items = provider.read_history(DSH_SID)['messages']
         self.assertEqual([m['text'] for m in items], ['answer'])
+
+    def test_deepseek_tool_bearing_text_is_progress_but_final_text_remains_visible(self):
+        provider = self.provider()
+        provider.gateway.events = [
+            {'seq':0,'type':'user/message','data':{'content':'Inspect the sample'}},
+            {'seq':1,'type':'assistant/message','surfaceOp':'append',
+             'data':{'message':{'content':[
+                 {'type':'reasoning','text':'internal reasoning'},
+                 {'type':'text','text':'Inspecting the sample now'},
+                 {'type':'tool-call','toolName':'read_file','toolCallId':'call-1',
+                  'input':{'path':'sample.txt'}}]}}},
+            {'seq':2,'type':'tool/call','data':{'callId':'call-1','name':'read_file',
+                                              'arguments':{'path':'sample.txt'}}},
+            {'seq':3,'type':'tool/result','data':{'message':{'toolCallId':'call-1',
+                                                          'content':'Sample contents'}}},
+            {'seq':4,'type':'assistant/message','data':{'message':{'content':[
+                {'type':'text','text':'The sample is ready'}]}}}]
+        items = provider.read_history(DSH_SID)['messages']
+        self.assertEqual([m['role'] for m in items], ['user','assistant','tool','tool','assistant'])
+        self.assertEqual(items[1]['phase'], 'commentary')
+        self.assertEqual(items[1]['text'], 'Inspecting the sample now')
+        self.assertNotIn('phase', items[-1])
+        self.assertEqual(items[-1]['text'], 'The sample is ready')
+        self.assertNotIn('internal reasoning', json.dumps(items))
+
+    def test_deepseek_phase_uses_blocks_not_words_and_omits_tool_only_duplicate(self):
+        from aw.control.dsh_history import message
+        ordinary = message({'seq':1,'type':'assistant/message','data':{'message':{
+            'content':'This answer explains a tool-call and how it works.'}}})
+        self.assertNotIn('phase', ordinary)
+        self.assertIsNone(message({'seq':2,'type':'assistant/message','data':{'message':{
+            'content':[{'type':'reasoning','text':'internal'},
+                       {'type':'tool-call','toolName':'read_file','input':{}}]}}}))
+
+    def test_deepseek_phase_is_stable_at_a_native_page_boundary(self):
+        provider = self.provider()
+        provider.gateway.events[64] = {'seq':64,'type':'assistant/message','data':{'message':{
+            'content':[{'type':'text','text':'Inspecting now'}, {'type':'tool-call','toolName':'test'}]}}}
+        provider.gateway.events[65] = {'seq':65,'type':'tool/call','data':{'name':'test','arguments':'sample'}}
+        page = provider.read_history(DSH_SID)
+        self.assertEqual(page['messages'][0]['role'], 'tool')
+        older = provider.read_history(DSH_SID, page['next_cursor'])
+        self.assertEqual(older['messages'][-1]['id'], '64')
+        self.assertEqual(older['messages'][-1]['phase'], 'commentary')
 
     def test_invalid_native_sequence_rejected(self):
         provider = self.provider()

@@ -26,7 +26,8 @@ SCENARIOS = {
     'setup': '首次设置', 'failure': '读取失败', 'auth_failure': '登录状态读取失败', 'pending': '操作等待与未知回执',
     'refresh': '刷新时保留输入', 'changed': '模型与权限版本变化', 'slow': '慢响应与切页',
     'readonly': '模型与权限只读', 'unknown_settings': '模型与权限未读取',
-    'media': '消息链接与原设备图片',
+    'media': '消息链接与原设备图片', 'process': '三种应用的过程折叠',
+    'queued': '运行中回复队列',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -109,7 +110,7 @@ class Preview:
 
     def capability(self, task):
         tool, sid = task['tool'], task['session_id']
-        cap = {'tool':tool, 'session_id':sid, 'reply':task['state'] != 'running', 'history':True, 'requests':[]}
+        cap = {'tool':tool, 'session_id':sid, 'reply':True, 'history':True, 'requests':[], 'delivery':{'state':'running' if task['state']=='running' else 'idle','steer':False}}
         cap['settings'] = {'model':'Example Model ' + {'codex':'A','antigravity':'B','dsh':'C'}[tool],
                            'scope':'project' if tool == 'antigravity' else 'session'}
         if tool == 'codex':
@@ -118,7 +119,7 @@ class Preview:
                 {'value':'example-model-a','label':'Example Model A','efforts':['low','high'],'default_effort':'low'},
                 {'value':'example-model-b','label':'Example Model B','efforts':['medium','high'],'default_effort':'medium'},
                 {'value':'example-model-c','label':'Example Model C','efforts':[]}]}
-            cap['policy'] = {'scope':'session-permissions','current':'demo-workspace','revision':'demo-policy',
+            cap['policy'] = {'scope':'session-permissions','current':'demo-workspace','current_label':'示例：请求审批','revision':'demo-policy',
                 'options':[choice('demo-workspace','示例：请求审批','合成工作区权限及审批预设'),
                            choice('demo-auto-review','示例：代为审批','仅展示合成权限选项，不会执行原生操作'),
                            choice('demo-full','示例：完整访问','合成完整访问权限预设，不是实际配置'),
@@ -137,13 +138,23 @@ class Preview:
             cap['create'] = {'location':'native-project','project_id':'demo-project','project_name':'Example Project','revision':'demo-create'}
         else:
             cap['settings'].update(permission='Workspace Write', reasoning='High')
+            cap['model'] = {'scope':'session-and-default', 'current':'example-model-c', 'current_label':'Example Model C',
+                'effort':'high','revision':'demo-dsh-model', 'options':[
+                    {'value':'example-model-c','label':'Example Model C','provider_label':'Example Provider',
+                     'efforts':['low','high'],'effort_labels':{'low':'Low','high':'High'},'default_effort':'high'},
+                    {'value':'example-model-d','label':'Example Model D','provider_label':'Example Provider',
+                     'efforts':[]}] }
             cap['policy'] = {'scope':'session-permissions','current':'workspace-write','revision':'demo-policy',
                 'options':[choice('read-only','Read Only','只读访问文件'),
                            choice('workspace-write','Workspace Write','可修改工作区内文件'),
                            choice('full-access','Full Access','完整文件访问') ]}
             cap['create'] = {'cwd':'C:/Example/Project','revision':'demo-create'}
         if task['state'] == 'running':
-            cap.pop('policy');cap.pop('create');cap.pop('model', None);cap['reason'] = '演示：会话正在运行，等待本轮结束。'
+            if 'model' in cap:cap['model']['options'] = []
+            if 'policy' in cap:cap['policy']['options'] = []
+            if self.scenario == 'queued' and tool in ('codex','dsh'):
+                cap['delivery'].update(steer=True,revision='demo-running-turn')
+            cap.pop('create');cap['reason'] = '演示：会话正在运行，等待本轮结束。'
         if task['state'] == 'waiting_input':
             cap['reply'] = False;cap.pop('policy', None)
             cap['requests'] = [{'id':'demo-question','revision':'demo-v1','kind':'question','prompt':'选择合成示例的显示方案',
@@ -230,6 +241,9 @@ class Preview:
             commands = []
             if self.scenario == 'pending':commands = [{'id':'demo-command','kind':'reply','created':self.started,
                 'state':'unknown' if task['tool']=='antigravity' else 'queued','detail':'合成回执，不会派发操作'}]
+            if self.scenario == 'queued':
+                commands = [{'id':'demo-waiting-1','kind':'reply','created':self.started,
+                             'state':'waiting','text':'完成当前步骤后，再检查边界情况。','detail':'等待当前运行结束'}]
             return 200, 'application/json', {'connected':connected,'capability':self.capability(task) if connected else None,
                                             'commands':commands,'reason':'' if connected else '演示：原应用控制桥已离线'}
         if method == 'GET' and path.startswith('/api/history/tasks/') and task:
@@ -249,7 +263,10 @@ class Preview:
             content = '合成结果：本轮修改已经检查。\n\n- 项目、设备和 Harness 可区分\n- 继续回复保持原会话上下文'
             if self.scenario == 'long':content += '\n\n' + ('长内容用于检查滚动、换行、代码与较早记录。\n\n' * 50) + '\n```text\n' + 'long_identifier_'*25 + '\n```'
             return 200, 'application/json', {'ready':True,'messages':[{'id':'u1','role':'user','text':'请检查本轮修改。'},
-                 {'id':'t1','role':'tool','text':'合成工具输出，不包含真实执行记录。'},
+                 {'id':'p1','role':'assistant','phase':'commentary','text':'合成过程说明，与工具调用一起折叠。'},
+                 {'id':'t1','role':'tool','label':'示例读取','text':'合成工具输出，不包含真实执行记录。'},
+                 {'id':'p2','role':'assistant','phase':'commentary','text':'合成的中间核对过程。'},
+                 {'id':'t2','role':'tool','label':'示例检查','text':'第二个工具结果，不包含真实记录。'},
                  {'id':'a1','role':'assistant','text':content}], 'next_cursor':None}
         if method == 'GET' and path.startswith('/api/attachments/tasks/') and task:
             if self.scenario == 'media' and parse_qs(parsed.query).get('id') == ['A'*32]:

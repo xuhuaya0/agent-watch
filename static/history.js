@@ -101,7 +101,7 @@ function updateHistoryRows(list, state, sessionId) {
   }
   usedGroups.add(group);group.historyProcessIds=ids;
   const count=entry.filter(row=>row.historyMessage.role==='tool').length;
-  const summary=count?'工具调用 · '+count:'过程记录';
+  const summary=count?'工具调用 · '+count:'过程 · '+entry.length;
   if(group.firstElementChild.innerHTML!==summary)group.firstElementChild.innerHTML=summary;
   group.open=ids.some(id=>state.openedToolGroups.has(id));
   if(group.open)for(const id of ids)state.openedToolGroups.add(id);

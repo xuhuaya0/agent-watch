@@ -75,6 +75,36 @@ test('all three harnesses load older history through the same reader',async()=>{
   assert.match(elements['session-history'].innerHTML,/加载更早的记录/);
  }
 });
+test('every harness defaults process records to collapsed while preserving ordinary and final replies',async()=>{
+ for(const tool of ['codex','antigravity','dsh']) {
+  const {ctx,elements,run}=setup();run(`workspace.tasks[0].tool=${JSON.stringify(tool)}`);
+  // These match the normalized provider shapes: Antigravity keeps its tool
+  // explanation within one tool step; Codex/DeepSeek preserve commentary.
+  const process=tool==='antigravity'?
+   [{id:'step',role:'tool',label:'工具调用',text:'Inspecting the sample\nread_file'},
+    {id:'result',role:'tool',label:'工具结果',text:'Sample contents'}]:
+   [{id:'comment',role:'assistant',phase:'commentary',text:'Inspecting the sample'},
+    {id:'step',role:'tool',label:'read_file',text:'sample.txt'},
+    {id:'result',role:'tool',label:'工具结果',text:'Sample contents'}];
+  const messages=[{id:'ordinary',role:'assistant',text:'An earlier ordinary reply'},
+   {id:'request',role:'user',text:'Inspect the sample'},...process,
+   {id:'answer',role:'assistant',text:'The sample is ready'}];
+  ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages,next_cursor:null})});
+  await run('loadHistory(true)');
+  const history=elements['session-history'],list=history.lastElementChild,group=history.toolGroups[0];
+  assert.equal(group.open,false,tool);assert.equal(history.toolGroups.length,1,tool);
+  assert.ok(group.tools.every(row=>!row.open),tool);
+  assert.deepEqual(list.children.filter(row=>!row.historyProcessIds).map(row=>row.dataset.historyId),
+   ['ordinary','request','answer'],tool);
+  assert.equal(group.firstElementChild.innerHTML,'工具调用 · 2',tool);
+  group.open=true;history.tools[0].open=true;
+  messages[messages.length-1]={...messages.at(-1),text:'The sample is ready, with details'};
+  await run('loadHistory(true)');
+  assert.equal(history.toolGroups[0],group,tool);assert.equal(group.open,true,tool);
+  assert.equal(history.tools[0].open,true,tool);
+  assert.equal(history.lastElementChild.lastElementChild.dataset.historyId,'answer',tool);
+ }
+});
 test('only consecutive tools share a single collapsed disclosure and keep separate readable records',()=>{
  const {elements,run}=setup();
  run(`historyState('a').messages=[
@@ -122,7 +152,7 @@ test('commentary stays with tool progress while final answers remain outside the
  assert.equal(list.children.length,4);assert.equal(groups.length,2);
  assert.equal(groups[0].firstElementChild.innerHTML,'工具调用 · 2');
  assert.deepEqual(groups[0].lastElementChild.children.map(row=>row.dataset.historyId),['c1','t1','c2','t2']);
- assert.equal(groups[1].firstElementChild.innerHTML,'过程记录');
+ assert.equal(groups[1].firstElementChild.innerHTML,'过程 · 1');
  assert.ok(groups.every(group=>!group.open));
  assert.match(groups[0].innerHTML,/Inspecting inputs/);
  assert.doesNotMatch(groups[0].innerHTML,/复制这条回复/);

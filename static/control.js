@@ -1,15 +1,18 @@
 // Interactive state is separate from the reader so polling cannot replace drafts.
-const interaction = {byTask:new Map(), drafts:new Map(), pending:new Map(), outgoing:new Map(), signatures:new Map(), serial:0, poll:null};
+const interaction = {byTask:new Map(), drafts:new Map(), pending:new Map(), outgoing:new Map(), queueMutations:new Set(), signatures:new Map(), serial:0, poll:null};
 const CONTROL_STATES={queued:'等待设备接收',dispatched:'正在交给原应用',delivered:'原应用已接收',resolved:'原应用已结束该请求',rejected:'原应用未接收',expired:'已过期，未发送',unknown:'结果未知，请检查原应用',cancelled:'已取消，未发送'};
 const CONTROL_ERRORS={control_offline:'设备交互连接已断开',request_expired:'该问题已失效，请查看最新状态',operation_in_progress:'上一项操作仍在处理中',command_id_conflict:'操作编号冲突，请刷新状态',invalid_selection:'请选择原问题提供的选项',empty_answer:'请先填写答案',reply_unavailable:'当前会话暂时不能接收回复',native_action_unsupported:'原应用尚不支持此项操作',native_message_starts_with_option:'此版本 Antigravity 接口暂不接受以短横线开头的消息，请改写首行'};
 CONTROL_ERRORS.codex_resume_timeout='Codex 未能及时加载原会话，消息尚未发送；请确认桌面应用已登录后重试';
 CONTROL_ERRORS.native_session_archived='会话已在原应用中归档，消息未发送';
+CONTROL_ERRORS.native_connection_changed='原生会话连接已变化，消息未发送；请核对原会话后重新提交';
 CONTROL_ERRORS.control_paused='此设备的面板交互已暂停，可在设置中恢复';
 CONTROL_ERRORS.policy_changed='原生权限或运行状态已变化，请刷新后重试';
 CONTROL_ERRORS.invalid_policy='原应用不支持此权限选项';
 CONTROL_ERRORS.model_changed='原生模型或运行状态已变化，请刷新后重试';
 CONTROL_ERRORS.invalid_model='请选择原应用提供的模型和推理强度';
 CONTROL_ERRORS.create_unavailable='新建入口已变更或不可用，请刷新后重试';
+CONTROL_STATES.waiting='等待当前运行结束';
+Object.assign(CONTROL_ERRORS,{reply_queue_changed:'这条消息已离开等待列表，请核对最新状态',reply_turn_changed:'当前运行已变化，未插入；请核对等待列表',reply_queue_unavailable:'设备尚未支持等待发送，请更新交互桥接',reply_queue_full:'等待列表已满，请先发送或取消已有消息',reply_waiting:'等待当前运行结束'});
 let controlDeviceLoad=0;
 async function loadControlDevices() {
  const el=document.getElementById('control-devices');if(!el)return;
@@ -66,6 +69,26 @@ function setAnswerDraft(requestId,questionId,field,value) {
 function interactionBusy(id) {
  return interaction.pending.has(id)||interaction.byTask.get(id)?.commands?.some(c=>['queued','dispatched'].includes(c.state));
 }
+function replyWaiting(id) {
+ const data=interaction.byTask.get(id),delivery=data?.capability?.delivery;
+ return Boolean(delivery&&!delivery.native_queue&&(delivery.state!=='idle'||!data.capability.reply)||data?.commands?.some(c=>c.state==='waiting'));
+}
+function replyQueueHtml(id) {
+ const data=interaction.byTask.get(id),delivery=data?.capability?.delivery;
+ const rows=(data?.commands||[]).filter(c=>c.state==='waiting'&&c.kind==='reply').slice().reverse();
+ if(!rows.length)return '';
+ return `<div class="reply-queue" aria-label="待发送消息"><span class="capture-note">等待当前运行结束 · ${rows.length}</span>${rows.map(row=>`<div class="queued-reply" data-command-id="${esc(row.id)}"><span class="queued-reply-text" title="${esc(row.text||'')}">${esc(row.text||'待发送消息')}</span><div class="queued-reply-actions">${data.connected&&delivery?.steer?`<button type="button" onclick="manageQueuedReply(${jsArg(row.id)},'steer',${jsArg(delivery.revision)})"${interaction.queueMutations.has(row.id)?' disabled':''}>立即插入</button>`:''}<button type="button" aria-label="取消待发送消息" onclick="manageQueuedReply(${jsArg(row.id)},'cancel')"${interaction.queueMutations.has(row.id)?' disabled':''}>取消</button></div></div>`).join('')}</div>`;
+}
+async function manageQueuedReply(commandId,operation,revision) {
+ const id=workspace.selected;if(interaction.queueMutations.has(commandId))return;
+ interaction.queueMutations.add(commandId);renderInteraction();
+ try {
+  const response=await apiFetch('/api/control/tasks/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:commandId,operation,...(revision?{revision}:{})})});
+  const data=await response.json();
+  if(!response.ok)controlNotice(CONTROL_ERRORS[data.error]||'未能更新等待消息，请核对状态',id,'reply');
+ }catch(_){controlNotice('未收到操作回执，正在核对等待列表；不会自动重发',id,'reply');}
+ finally {interaction.queueMutations.delete(commandId);if(workspace.selected===id){await refreshInteraction();watchInteraction(id);}}
+}
 function capturedOutgoing(id) {
  const t=workspace.detail;
  if(!t || (t.ui_key||t.key)!==id)return null;
@@ -73,6 +96,7 @@ function capturedOutgoing(id) {
 }
 function receiptDetail(receipt) {
  const detail=receipt.detail||'';
+ if(detail===CONTROL_STATES[receipt.state])return '';
  if(receipt.state==='delivered' && (detail==='原应用已接收' || detail==='原应用已接收；不代表 Agent 已完成执行'))return '';
  if(receipt.state==='resolved' && detail==='原应用已结束该请求；请查看原应用的最终结果')return '请在原应用查看最终结果';
  return CONTROL_ERRORS[detail]||detail;
@@ -80,25 +104,26 @@ function receiptDetail(receipt) {
 function historyContainsOutgoing(id,message) {
  const history=typeof histories!=='undefined'?histories.get(id):null;
  if(!history?.loaded||!Array.isArray(message.previousHistoryIds))return false;
- const submittedSecond=Math.floor(message.createdAt/1000);
+ const submittedSecond=Math.floor((message.serverCreatedAt||message.createdAt/1000));
  // Native history removes surrounding whitespace from user messages. Keep
  // internal whitespace exact, and still require a new identity and timestamp.
  const submittedText=message.text.trim();
  return history.messages.some(row=>row.role==='user'&&typeof row.text==='string'&&row.text.trim()===submittedText&&
   row.id&&!message.previousHistoryIds.includes(row.id)&&
-  Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond);
+  (message.historyBaselineAt?Date.parse(row.timestamp)>message.historyBaselineAt:Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond));
 }
 function outgoingHtml(id) {
  const message=interaction.outgoing.get(id);if(!message)return '';
+ if(message.state==='waiting')return '';
  const captured=capturedOutgoing(id),turn=captured?.turn;
  // Equal text alone may be an earlier, identical message. Wait for a newer
  // native activity record as well as delivery before replacing the local echo.
  if(message.state==='delivered'&&captured?.at>message.baselineAt&&
     [turn?.notification,turn?.user].includes(message.text))return '';
- // Native history can arrive before the collector's latest-turn snapshot.
- // Require delivery plus a new message identity and a matching timestamp/text;
- // an old identical reply, a missing timestamp or a failed send is not proof.
- if(message.state==='delivered'&&(message.confirmedInHistory||historyContainsOutgoing(id,message))) {
+ // The native message may arrive before its control receipt. Once a new native
+ // identity/time/text matches, render that message just once; the receipt is
+ // separate evidence and must not hold a duplicate optimistic bubble on screen.
+ if(['sending','queued','dispatched','delivered'].includes(message.state)&&(message.confirmedInHistory||historyContainsOutgoing(id,message))) {
   message.confirmedInHistory=true;return '';
  }
  const labels={sending:'发送中',queued:'等待设备接收',dispatched:'正在送达',delivered:'已送达',rejected:'发送失败',expired:'已过期，未发送',cancelled:'已取消',unknown:'送达情况待确认'};
@@ -108,7 +133,7 @@ function outgoingHtml(id) {
 }
 function updateOutgoing(id,receipt) {
  const message=interaction.outgoing.get(id);
- if(message&&receipt?.id===message.id)Object.assign(message,{state:receipt.state,detail:receipt.detail||''});
+ if(message&&receipt?.id===message.id)Object.assign(message,{state:receipt.state,detail:receipt.detail||'',...(receipt.created?{serverCreatedAt:receipt.created}:{})});
 }
 function createdSessionHtml(id,receipt) {
  const result=receipt?.result;if(!result)return '';
@@ -121,6 +146,7 @@ function interactionFeedbackHtml(id,kind=null) {
  const matches=actionKind=>kind?kind===actionKind:!['policy','model','create'].includes(actionKind);
  const local=pending&&matches(pending.action?.kind)?pending:null;
  const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>matches(c.kind));
+ if(!kind&&latest?.kind==='reply'&&latest.state==='waiting')return '';
  if((kind?local:pending)?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
  // A local reply carries its delivery receipt on the outgoing message itself.
  const outgoing=interaction.outgoing.get(id);
@@ -172,12 +198,12 @@ function interactionHtml(id) {
   }
   if(cap.requests?.length)body+='</div>';
   const settings=`<div class="settings-summary-slot">${settingsSummaryHtml(cap)}</div>`;
-  if(cap.reply) {
+  if(cap.reply||cap.delivery) {
    const placeholder=cap.tool==='antigravity'?'向 Antigravity 发送系统通知…':`回复 ${harnessName(cap)}…`;
-   body+=`<form class="reply-composer" onsubmit="event.preventDefault();sendReply()">
+   body+=`<div class="reply-queue-slot">${replyQueueHtml(id)}</div><form class="reply-composer" onsubmit="event.preventDefault();sendReply()">
     <label for="native-reply" class="sr-only">回复原会话</label>
     <textarea id="native-reply" rows="2" maxlength="16000" placeholder="${esc(placeholder)}" aria-description="Enter 发送，Shift+Enter 换行" onkeydown="composerKeydown(event)" onkeyup="composerKeyup(event)" oncompositionstart="composerComposition(event)" oncompositionend="composerComposition(event)" oninput="setReplyDraft(this.value)">${esc(draft.text)}</textarea>
-    <div class="composer-footer">${settings}<button type="submit" id="composer-send" class="primary composer-send" aria-keyshortcuts="Enter Control+Enter Meta+Enter" title="发送（Enter；Shift+Enter 换行）"${pending||!draft.text.trim()?' disabled':''}>发送<svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button></div></form>`;
+    <div class="composer-footer">${settings}<button type="submit" id="composer-send" class="primary composer-send" aria-keyshortcuts="Enter Control+Enter Meta+Enter" title="${replyWaiting(id)?'等待当前运行结束后发送':'发送'}（Enter；Shift+Enter 换行）"${pending||!draft.text.trim()?' disabled':''}><span class="composer-send-label">${replyWaiting(id)?'排队':'发送'}</span><svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button></div></form>`;
   }else {
    if(cap.reason || !cap.requests?.length)body+=`<p class="capture-note">${esc(cap.reason||'当前会话暂时无法回复。')}</p>`;
    body+=settings;
@@ -192,7 +218,7 @@ function renderInteraction(force=false) {
  const outgoing=document.getElementById('chat-outgoing'),markup=outgoingHtml(id);
  if(outgoing && outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
- const structure=JSON.stringify([id,data?.connected,data?.reason,data?.capability?.reply,data?.capability?.reason,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
+ const structure=JSON.stringify([id,data?.connected,data?.reason,data?.capability?.reply,Boolean(data?.capability?.delivery),data?.capability?.reason,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;
  // Keep focused drafts and selection on ordinary polls. A resolved approval may
  // still remove its card; submission revalidates every ID at both Hub and worker.
@@ -211,7 +237,9 @@ function renderInteraction(force=false) {
   }
   for(const control of el.querySelectorAll('.interaction-request button,.interaction-request fieldset'))control.disabled=Boolean(interactionBusy(id));
   const send=document.getElementById('composer-send');
-  if(send)send.disabled=Boolean(interactionBusy(id))||!interactionDraft(id).text.trim();
+  if(send){send.disabled=Boolean(interactionBusy(id))||!interactionDraft(id).text.trim();const label=send.querySelector?.('.composer-send-label');if(label)label.textContent=replyWaiting(id)?'排队':'发送';send.title=(replyWaiting(id)?'等待当前运行结束后发送':'发送')+'（Enter；Shift+Enter 换行）';}
+  const queue=el.querySelector('.reply-queue-slot');
+  if(queue){const markup=replyQueueHtml(id);if(queue.renderedQueue!==markup){queue.innerHTML=markup;queue.renderedQueue=markup;}}
   el.dataset.interactionSignature=signature;
   return;
  }
@@ -226,7 +254,7 @@ function watchInteraction(id) {
  if(interaction.poll)clearInterval(interaction.poll.timer);
  const poll={id,until:Date.now()+30000,busy:false};interaction.poll=poll;
  poll.timer=setInterval(async()=>{
-  if(workspace.page!=='sessions'||workspace.selected!==id||Date.now()>poll.until||!interactionBusy(id)) {
+  if(workspace.page!=='sessions'||workspace.selected!==id||Date.now()>poll.until||!interactionBusy(id)&&!replyWaiting(id)) {
    clearInterval(poll.timer);if(interaction.poll===poll)interaction.poll=null;return;
   }
   if(poll.busy)return;poll.busy=true;
@@ -248,7 +276,7 @@ async function refreshInteraction() {
   const local=interaction.pending.get(id),receipt=data.commands?.find(c=>c.id===local?.id);
   if(receipt && !['queued','dispatched'].includes(receipt.state)) {
    interaction.pending.delete(id);
-   if(receipt.state==='delivered'&&local?.action.kind==='reply'&&interactionDraft(id).text===local.action.text) {
+   if(['delivered','waiting'].includes(receipt.state)&&local?.action.kind==='reply'&&interactionDraft(id).text===local.action.text) {
     interactionDraft(id).text='';
     const input=document.getElementById('native-reply');
     if(workspace.selected===id&&input?.value===local.action.text)input.value='';
@@ -281,6 +309,7 @@ async function submitNative(action) {
    id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,
    previousReceiptIds:(before?.commands||[]).map(command=>command.id),
    previousHistoryIds:typeof histories!=='undefined'?(histories.get(id)?.messages||[]).map(message=>message.id):[],
+   historyBaselineAt:typeof histories!=='undefined'?Math.max(0,...(histories.get(id)?.messages||[]).map(message=>Date.parse(message.timestamp)||0)):0,
    state:'sending',detail:'',notification:before?.capability?.tool==='antigravity'
   });
  }
@@ -291,11 +320,11 @@ async function submitNative(action) {
   if(r.status===401){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:'登录已失效，请重新登录'});showAuthView(false);return;}
   const data=await r.json();
   if(!r.ok){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:data.error||'操作未接收'});controlNotice(CONTROL_ERRORS[data.error]||'操作未接收，请检查原应用状态',id,action.kind);}
-  else {interaction.byTask.set(id,{...interaction.byTask.get(id),commands:[data.command]});updateOutgoing(id,data.command);}
+  else {const before=interaction.byTask.get(id);interaction.byTask.set(id,{...before,commands:[{...data.command,...(data.command.state==='waiting'?{text:action.text}:{})},...(before?.commands||[]).filter(command=>command.id!==data.command.id)]});updateOutgoing(id,data.command);}
  }catch(_){record.uncertain=true;updateOutgoing(id,{id:record.id,state:'unknown',detail:'未收到服务器回执，请勿重复发送'});}
  if(workspace.selected===id){renderInteraction(true);await refreshInteraction();if(interactionBusy(id))watchInteraction(id);}
 }
-function sendReply(){const value=interactionDraft(workspace.selected).text;if(!value.trim()){toast('请输入回复内容');return;}return submitNative({kind:'reply',text:value});}
+function sendReply(){const value=interactionDraft(workspace.selected).text;if(!value.trim()){toast('请输入回复内容');return;}const cap=interaction.byTask.get(workspace.selected)?.capability;return submitNative({kind:'reply',text:value,...(cap?.delivery?{mode:'after-turn'}:{})});}
 function sendApproval(id,decision,revision){const r=nativeRequest(id,'approval');if(!r||r.revision!==revision){toast('批准请求已失效');return;}return submitNative({kind:'approval',request_id:r.id,revision:r.revision,decision});}
 function readAnswerOptions(input,requestId,questionId){const selected=[...input.closest('fieldset').querySelectorAll('input:checked')].map(n=>n.value);setAnswerDraft(requestId,questionId,'selected',selected);}
 function sendAnswer(id,revision){
@@ -321,7 +350,7 @@ function sendPolicy(form,revision) {
  if(policy.scope==='project-permissions'&&!form.elements.confirmProject?.checked){controlNotice('请先确认目标项目');return;}
  const value=form.elements.policy.value;
  if(!policy.options.some(o=>o.value===value)){controlNotice(CONTROL_ERRORS.invalid_policy);return;}
- if(value===policy.current){controlNotice('已使用该权限选项');return;}
+ if(value===(policy.current_option??policy.current)){controlNotice('已使用该权限选项');return;}
  const project=policy.scope==='project-permissions'?{project_id:policy.project_id}:{};
  return submitNative({kind:'policy',revision,value,...project});
 }

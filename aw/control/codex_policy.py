@@ -14,13 +14,14 @@ FIELDS = ('approvalPolicy', 'approvalsReviewer', 'sandboxPolicy', 'permissions',
 def valid_capability(value):
     from .broker import text
     if (not isinstance(value, dict)
-            or not {'current', 'revision', 'scope', 'options'} <= value.keys() <= {'current', 'current_label', 'revision', 'scope', 'options'}
+            or not {'current', 'revision', 'scope', 'options'} <= value.keys() <= {'current', 'current_label', 'current_option', 'revision', 'scope', 'options', 'unavailable_options'}
             or not text(value.get('revision')) or not text(value.get('current'))):
         return False
     if 'current_label' in value and not text(value['current_label']):
         return False
     if value['scope'] == 'session-next-turn':
-        return value['current'] in ('on-request', 'never') and value['options'] == OPTIONS
+        return (not {'current_option', 'unavailable_options'} & value.keys()
+                and value['current'] in ('on-request', 'never') and value['options'] == OPTIONS)
     if value['scope'] != 'session-permissions':
         return False
     options = value['options']
@@ -37,6 +38,17 @@ def valid_capability(value):
                 or ('group' in option and option['group'] != 'advanced')):
             return False
         seen.add(option['value'])
+    unavailable = value.get('unavailable_options', [])
+    if not isinstance(unavailable, list) or len(unavailable) > 3:
+        return False
+    for option in unavailable:
+        if (not isinstance(option, dict) or set(option) != {'value', 'label', 'reason'}
+                or not text(option['value']) or option['value'] not in PRESETS or option['value'] in seen
+                or not text(option['label']) or not text(option['reason'], 500)):
+            return False
+        seen.add(option['value'])
+    if 'current_option' in value and (not text(value['current_option']) or value['current_option'] not in seen):
+        return False
     current = value['current']
     return current in seen or current == 'custom' or current in PRESETS or current.startswith('profile:') and text(current[8:], 160)
 
@@ -193,24 +205,46 @@ def _native_choices(catalog):
     return choices if len(choices) <= 64 else []
 
 
-def _default_ask_mode(config, workspace_kind, available):
-    sandbox, approval = config.get('sandbox_mode'), config.get('approval_policy')
-    default = 'granular' if workspace_kind == 'projectless' and 'granular' in available else 'auto'
-    if sandbox is None and approval is None:
-        return default
-    if sandbox in (None, 'read-only') and approval in (None, 'on-request'):
-        return 'read-only'
-    workspace = config.get('sandbox_workspace_write')
-    clean = workspace is None or isinstance(workspace, dict) and (
-        not workspace.get('writable_roots')
-        and all(workspace.get(key, False) is False for key in
-                ('network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var')))
-    if sandbox == 'workspace-write' and clean:
-        if _same(approval, GRANULAR):
-            return 'granular'
-        if approval in (None, 'on-request'):
-            return 'auto'
-    return None
+def _default_ask_mode(catalog, workspace_kind):
+    """Resolve the desktop's single Ask entry, not its effective custom config.
+
+    The native composer prefers the allowed default permission-profile ID;
+    otherwise it uses the project/projectless workspace preset. Its other
+    read-only/auto/granular variants are not separate menu entries.
+    """
+    parts = _catalog_parts(catalog)
+    if parts is None:
+        return None
+    config, requirements, profiles = parts
+    workspace = ('granular' if workspace_kind == 'projectless'
+                 and _allowed_preset(PRESETS['granular'], requirements) else 'auto')
+    configured = config.get('default_permissions')
+    default = requirements.get('defaultPermissions')
+    if default is None and isinstance(configured, str) and configured in profiles:
+        default = configured
+    if isinstance(default, str) and default in profiles:
+        if default == ':read-only':
+            return 'read-only'
+        if default == ':workspace':
+            return workspace
+    return workspace
+
+
+def _unavailable_reason(value, catalog, editable):
+    if not editable:
+        return '会话正在运行或等待处理，暂时不能更改'
+    config, requirements, profiles = _catalog_parts(catalog)
+    if _auto_review_required(requirements, catalog.get('selected_model')):
+        return '当前模型要求自动审查'
+    preset = PRESETS[value]
+    if preset[0] not in profiles or not _allowed_preset(preset, requirements):
+        return '原生权限配置或管理策略不允许此选项'
+    features = config.get('features') or {}
+    if value == 'guardian-approvals':
+        if isinstance(features, dict) and features.get('guardian_approval') is False:
+            return '已在 Codex 配置中禁用自动审查'
+        return '尚未读取到 Codex 原生自动审查选项的可用状态'
+    return '当前原生设置不允许此选项'
 
 
 def _matches_preset(settings, value, require_profile=True):
@@ -273,9 +307,7 @@ def native_capability(state, catalog, editable=True):
         return None
     editable = editable and not state.get('requests') and runtime.get('type') == 'idle'
     choices = _native_choices(catalog) if editable else []
-    available = [option['value'] for option, _ in choices]
-    config = catalog.get('config') if isinstance(catalog, dict) else None
-    primary = _default_ask_mode(config if isinstance(config, dict) else {}, history.get('workspaceKind'), available)
+    primary = _default_ask_mode(catalog, history.get('workspaceKind'))
     current, current_label = current_permission(settings)
     options = []
     for native_option, _ in choices:
@@ -283,13 +315,25 @@ def native_capability(state, catalog, editable=True):
         if value in PRESETS:
             if value == primary:
                 option['label'] = 'Ask for approval'
-                option['description'] = PRESETS[value][4]
             elif value not in ('guardian-approvals', 'full-access'):
-                option['group'] = 'advanced'
+                continue
         options.append(option)
-    options.sort(key=lambda option: option.get('group') == 'advanced')
     result = {'current': current, 'current_label': current_label, 'scope': 'session-permissions', 'options': options,
         'revision': hashlib.sha256(encoded([catalog, settings, runtime, bool(editable)]).encode()).hexdigest()}
+    # Keep unsupported entries separate from writable choices. The central
+    # broker accepts actions only from options, never unavailable_options.
+    if primary is not None:
+        shown = {option['value'] for option in options}
+        missing = [{'value': value, 'label': label,
+                    'reason': _unavailable_reason(value, catalog, editable)}
+                   for value, label in ((primary, 'Ask for approval'),
+                       ('guardian-approvals', 'Approve for me'), ('full-access', 'Full access'))
+                   if value not in shown]
+        if missing:
+            result['unavailable_options'] = missing
+        selected = primary if current in ('read-only', 'auto', 'granular') else current
+        if selected in shown or any(option['value'] == selected for option in missing):
+            result['current_option'] = selected
     return result if valid_capability(result) else None
 
 

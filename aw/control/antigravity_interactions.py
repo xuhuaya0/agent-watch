@@ -69,6 +69,17 @@ class NativeInteractions:
             context['trajectory'] = trajectory
         row = {'tool':'antigravity','session_id':sid,'reply':True,'requests':[],
                'reason':'文字回复通过原生系统通知发送；问题回答直接提交给原生请求'}
+        native_status = result.get('status')
+        completed = [(index, step.get('type')) for index, step in enumerate(steps) if isinstance(step,dict)
+                     and step.get('status') == 'CORTEX_STEP_STATUS_DONE'
+                     and (step.get('type') == 'CORTEX_STEP_TYPE_ERROR_MESSAGE'
+                          or step.get('type') == 'CORTEX_STEP_TYPE_PLANNER_RESPONSE'
+                          and isinstance(step.get('plannerResponse'),dict)
+                          and not step['plannerResponse'].get('toolCalls'))]
+        row['delivery'] = {'state': 'idle' if native_status in (1, 'CASCADE_RUN_STATUS_IDLE')
+                           else 'running' if native_status in (2, 'CASCADE_RUN_STATUS_RUNNING')
+                           else 'unknown', 'steer': False,
+                           'epoch': hashlib.sha256(encoded([tid, completed[-1]]).encode()).hexdigest() if completed else 'none'}
         bindings = {}
         for index,step in enumerate(steps):
             if not isinstance(step,dict) or step.get('status') != 'CORTEX_STEP_STATUS_WAITING':
@@ -122,6 +133,7 @@ class NativeInteractions:
         # that request. Offer its actual answer controls instead.
         if row['requests']:
             row['reply'] = False
+            row['delivery']['state'] = 'waiting'
         normalize_sessions([row])
         return row,bindings
 

@@ -202,7 +202,7 @@ class DeepSeek:
         with self.refresh_lock:
             self._refresh()
 
-    def _refresh(self):
+    def _refresh(self, model_session=None):
         if not self.gateway or not self.gateway.live():
             self.generation += 1
             generation = self.generation
@@ -234,12 +234,28 @@ class DeepSeek:
         for native_row in catalog:
             sid = native_row.get('sessionId')
             if sid not in rows:continue
+            native_row = self.settings.projected_row(self.gateway, native_row, hydrate=sid == model_session)
+            rows[sid]['delivery'] = {'state': 'running' if native_row.get('running') is True else
+                                    'idle' if native_row.get('running') is False else 'unknown',
+                                    'steer': False}
+            values = (native_row.get('projections') or {}).get('values') or {}
+            prompt_at = (values.get('sessionListMetadata') or {}).get('lastPromptAt')
+            if rows[sid]['delivery']['state'] == 'running' and type(prompt_at) in (int, float):
+                rows[sid]['delivery'].update(steer=True, revision=hashlib.sha256(encoded([sid,prompt_at]).encode()).hexdigest())
+            inbox = values.get('inbox') or {}
+            if rows[sid]['delivery']['state'] == 'idle' and (inbox.get('next-turn') or inbox.get('next-step')):
+                rows[sid]['delivery']['state'] = 'waiting'
             try:
                 policy = self.permissions.read(self.gateway, native_row)
                 if policy:rows[sid]['policy'] = policy
             except Exception:
                 pass
             rows[sid]['settings'] = self.settings.read(self.gateway, native_row)
+            try:
+                model = self.settings.model_capability(self.gateway, native_row)
+                if model:rows[sid]['model'] = model
+            except (ControlError, ValueError, KeyError, TypeError):
+                pass
         continued = {}
         for native_row in catalog:
             sid = native_row['sessionId']
@@ -277,7 +293,11 @@ class DeepSeek:
                 with self.condition:self.pending.pop(event_id,None)
         with self.condition:
             # A native cancellation may have arrived during history resolution.
-            for row in rows.values():row['requests'] = [r for r in row['requests'] if r['id'] in self.pending or (row['session_id'],r['id']) in continued]
+            for row in rows.values():
+                row['requests'] = [r for r in row['requests'] if r['id'] in self.pending or (row['session_id'],r['id']) in continued]
+                if row['requests']:
+                    row['delivery'] = {**row['delivery'], 'state':'waiting', 'steer':False}
+                    row['delivery'].pop('revision', None)
             self.continued = continued
             self.rows, self.refreshed = rows, time.monotonic()
 
@@ -299,22 +319,41 @@ class DeepSeek:
             rows = copy.deepcopy(list(self.rows.values()))
             for row in rows:
                 row['requests'] = [r for r in row['requests'] if r['id'] in self.pending or (row['session_id'],r['id']) in self.continued]
-                if row['requests'] or any(p['frame']['agentId']==row['session_id'] for p in self.pending.values()):row.pop('policy', None)
+                if row['requests'] or any(p['frame']['agentId']==row['session_id'] for p in self.pending.values()):
+                    row.pop('policy', None)
+                    if row.get('model'):row['model']['options'] = []
             return rows
 
     def session_snapshot(self, sid):
-        self.refresh()
+        with self.refresh_lock:
+            self._refresh(model_session=sid)
         return [r for r in self.snapshot() if r['session_id']==sid]
 
     def read_history(self, sid, cursor=None):
         from .dsh_history import read_history
         return read_history(self, sid, cursor)
 
+    def reply_completion(self, sid):
+        """Read a bounded native turn/end marker only while a reply gate needs it."""
+        projection = self.gateway.call('session/projections', {'request': {'sessionId': sid}})
+        through = projection.get('asOfSeq')
+        if type(through) is not int:
+            return None
+        page = self.gateway.call('session/page', {'request': {'address': {'kind':'session', 'sessionId':sid},
+            'throughSeq': through, 'maxMessages':2}})
+        ends = [record['event']['seq'] for record in page.get('records', [])
+                if isinstance(record,dict) and record.get('type') == 'event'
+                and isinstance(record.get('event'),dict) and record['event'].get('type') == 'turn/end'
+                and type(record['event'].get('seq')) is int]
+        return str(max(ends)) if ends else 'none'
+
     def execute(self, command):
         sid, action = command['session_id'], command['action']
         rows = self.session_snapshot(sid)
         if not rows:raise ControlError('native_session_unavailable')
         validate_action(rows[0],action)
+        if action['kind'] == 'model':
+            return self.settings.execute(self, command)
         if action['kind'] == 'policy':
             from .dsh_permissions import execute
             return execute(self, command)
@@ -322,8 +361,10 @@ class DeepSeek:
             from .dsh_create import create_session
             return create_session(self, command, rows[0])
         if action['kind']=='reply':
+            from .delivery import guard_reply
+            guard_reply(rows[0], action)
             result = self.gateway.call('session/prompt',{'request':{'sessionId':sid,'requestId':command['id'],
-                'mode':'queue','content':[{'type':'text','text':action['text']}]}})
+                'mode':'steer' if action.get('mode') == 'steer' else 'queue','content':[{'type':'text','text':action['text']}]}})
             return 'delivered' if result and result.get('accepted') is True else 'unknown'
         answers = {'answers':[{'id':key,'selected':answer['selected'],**({'custom':answer['custom']} if answer['custom'] else {})}
                                for key,answer in action.get('answers',{}).items()]}

@@ -20,7 +20,7 @@ necessarily on the device that receives an action.
 | Session list | Select a non-archived chat. Offer New conversation in its header when the selected destination supports it | Message bodies and permission forms |
 | Chat header | Native title, device, Harness and state. Put project, connection details and secondary actions under session information | Repeated metadata in the transcript |
 | Transcript | Independently scrollable messages, tool records and outbound delivery status | Center settings and new-chat forms |
-| Chat composer | Keep the current reply or native request reachable below the transcript. Show separate compact model and permission entries with reported values | Unavailable actions and full permission descriptions |
+| Chat composer | Keep the current reply or native request reachable below the transcript. Show independent compact model, reasoning-effort and permission entries with reported values | Unavailable actions and full permission descriptions |
 | Session settings | Native facts, supported changes and their scope | Invented model catalogs, approval rules relabeled as full permissions |
 | New-conversation dialog | Destination and first message or native draft | Sending into the currently selected conversation |
 | Projects / Devices | Discover a location and navigate to its sessions | A mandatory second column |
@@ -93,11 +93,15 @@ Preserve native differences in labels, choices and scope. Equal styling does not
 imply equal capabilities. Do not hide an integration gap by substituting a
 different native operation.
 
-Model and permission choices have independent dialogs and receipts. Opening a
+Model, reasoning effort and permissions use independent anchored menus with
+a checkmark on the current choice. Selecting an allowed change applies it directly;
+project-wide changes and broader access use a short confirmation inside the menu.
+New-conversation creation retains its destination-specific modal. Opening a
 picker selects the native current value without writing it. A current value
 outside the writable catalog remains a visible, checked read-only item; it must
-not be replaced by the first option or hidden in a collapsed section. Show only
-the native choices allowed for the current provider and policy, and revalidate
+not be replaced by the first option or hidden in a collapsed section. Only enable
+choices allowed for the current provider and policy. Native entries with unknown
+or unavailable capability may be shown disabled with their reason. Revalidate
 their revision before applying. Preserve permissions when changing a model and
 preserve the model when changing permissions. Older provider snapshots may show
 read-only facts; their presence alone does not enable new controls.
@@ -129,7 +133,14 @@ across updates. Withdraw stale actions as soon as their native request changes.
 
 Feedback belongs to the initiating action. A dialog must contain its own visible
 error/status region; a page toast behind a modal backdrop is not sufficient.
-Enter sends the reply once; Shift + Enter inserts a newline. Ctrl/Command +
+During a running turn, Enter queues the reply to wait for completion. Show pending
+replies compactly with Cancel and, only where a native insertion is supported,
+Insert now. Insertion is an explicit action on the same queued item, not another
+copy. Waiting replies do not disable the next draft. Dispatch each reply once;
+a waiting/unknown native state never implies idle. The Hub waiting list is not
+misrepresented as the original application's native queue.
+
+Enter submits the reply once; Shift + Enter inserts a newline. Ctrl/Command +
 Enter remains a send shortcut. IME composition and held-key repeats never send.
 
 No success toast may precede a successful response. Settings saves must leave
@@ -140,8 +151,10 @@ unsaved values recoverable after failure.
 All inputs have associated labels; placeholders are supplementary. Icon-only
 buttons have names. Selection, status and failure are never color-only. All
 controls can be reached and used by keyboard, with a visible focus ring.
-Dialogs have a title, contain keyboard focus, close with Escape, and return focus
-to an appropriate surviving trigger. Updates do not move focus without a reason.
+Creation dialogs have a title and contain keyboard focus. Anchored menus support
+Arrow/Home/End navigation and close with Escape, outside click or Tab; hidden
+advanced entries do not receive keyboard focus. Closing restores the relevant
+trigger when appropriate. Updates do not move focus without a reason.
 
 At desktop and narrow widths, important actions remain reachable, long names
 and paths do not cause page-wide overflow, and only content that needs horizontal

@@ -64,6 +64,7 @@ def new_state() -> Dict:
         "todos": [],
         "goal_active": False,
         "last_assistant": "",
+        "last_assistant_phase": "",
         "turns": 0,
         "model": "",
         "subagents": {},            # childId -> label
@@ -79,6 +80,19 @@ def _text_of(content) -> str:
         if isinstance(c, dict) and c.get("type") == "text":
             parts.append(c.get("text", ""))
     return "\n".join(parts).strip()
+
+
+def assistant_phase(message: Dict) -> str:
+    """A native tool-bearing assistant step is progress, not its final answer.
+
+    DeepSeek stores text and tool-call blocks together in message.content,
+    then emits separate tool/call and tool/result events. Preserve that phase
+    when projecting only the readable text; never infer it from the wording.
+    """
+    content = message.get("content")
+    return "commentary" if isinstance(content, list) and any(
+        isinstance(part, dict) and part.get("type") == "tool-call"
+        for part in content) else ""
 
 
 def reduce_event(st: Dict, ev: Dict) -> None:
@@ -111,6 +125,7 @@ def reduce_event(st: Dict, ev: Dict) -> None:
                 st["last_prompt"] = txt
     elif t == "turn/start":
         st["last_assistant"] = ""
+        st["last_assistant_phase"] = ""
         st["open_turn"] = {"turn": d.get("turn"), "start": ts, "prompt": st["last_prompt"]}
         st["turns"] = max(st["turns"], d.get("turn") or 0)
         st["pending_calls"] = {}
@@ -156,9 +171,15 @@ def reduce_event(st: Dict, ev: Dict) -> None:
         g = d.get("goal") or {}
         st["goal_active"] = g.get("phase") == "active" and d.get("operation") != "clear"
     elif t == "assistant/message":
-        txt = _text_of((d.get("message") or {}).get("content"))
+        # Context replacement is bookkeeping, not a new reply. Match the
+        # history projection rather than exposing compaction as latest text.
+        if ev.get("surfaceOp", "append") != "append":
+            return
+        message = d.get("message") or {}
+        txt = _text_of(message.get("content"))
         if txt:
             st["last_assistant"] = txt
+            st["last_assistant_phase"] = assistant_phase(message)
 
 
 def derive(st: Dict, now: float, cfg: Dict):
@@ -421,6 +442,7 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
                                 "order": pins.get(sid, 0), "source": "dsh_workspace", "writable": False} if pins is not None else unknown_pin()),
                 "native_archived": sid in archived,
                 "latest_turn": {"user": (prompt or "")[:32768], "assistant": st.get("last_assistant", "")[:65536],
+                                "assistant_phase": st.get("last_assistant_phase", ""),
                                 "truncated": len(prompt or "") > 32768 or len(st.get("last_assistant", "")) > 65536},
                 "cwd": cwd,
                 "model": st.get("model", ""),

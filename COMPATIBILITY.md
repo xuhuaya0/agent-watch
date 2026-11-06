@@ -53,7 +53,7 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek creates in the selected directory. Antigravity creates in the selected native project, retaining only the source model choice. Both Windows provider paths verified. Codex macOS opens a prefilled native draft requiring user submission | Full Codex creation is implemented for an existing shared app-server but native acceptance is pending. No arbitrary directory, permission copy or second engine. See transport-specific evidence below |
-| Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner | One model/effort change and restoration verified on macOS. Other choices and Windows require native acceptance. Antigravity and DeepSeek model switching is not implemented |
+| Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner | One model/effort change and restoration verified on macOS. Other choices and Windows require native acceptance. DeepSeek native model/effort selection is implemented with explicit session-and-default scope; write acceptance is pending. Antigravity model switching is not exposed because a session-only native setter has not been verified |
 | Permission changes | Codex offers permitted native presets for an idle session's next turn. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex read-only and restoration verified; Full access, automatic review and other Codex transitions need native acceptance. DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching needs native acceptance. Global settings are not exposed |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | The new-conversation first turn uses native user input; existing-chat user-style reply dispatch still needs separate validation |
@@ -268,8 +268,8 @@ click or a cross-preset permission transition was exercised.
 ## Native settings display and browser checks
 
 The web reader separates replies and one-shot requests from session settings
-and new-conversation actions. Model and permissions have separate entries and
-dialogs; creation opens from the session-list header.
+and new-conversation actions. Model, reasoning effort and permissions have
+separate anchored menus; creation opens from the session-list header.
 Native labels and scope are retained; the UI does not invent permission presets
 or an available model catalog.
 
@@ -280,10 +280,17 @@ or an available model catalog.
   the current revision and confirms native state before reporting success.
 - Antigravity: model labels come from native configuration mapped to recorded
   conversation model selections. They do not represent unsent UI changes.
+  The native selector keeps those choices in renderer state and sends the
+  selected model with the next message; no independent, verified session-model
+  setter or separate reasoning-effort control is exposed by this integration.
   Project permission state remains visible while a write action is unavailable.
-- DeepSeek: the next model selection and native catalog provide labels when that
-  projection is present. A missing projection does not imply the global default.
-  Permission labels remain visible while the session is busy.
+- DeepSeek: opening history reads the target's full model projection when the
+  lightweight session list omits it. The native `next` selection determines the
+  checked model and effort; only an explicit null follows the native default.
+  Native model changes also save the default for subsequent sessions, so the
+  panel labels this as session-and-default scope. Permission labels remain
+  visible while the session is busy. Model write acceptance is recorded
+  separately from catalog and projection reads.
 - Older provider snapshots retain readable facts without gaining model or full
   permission controls that they did not advertise.
 
@@ -292,6 +299,10 @@ same native installation, account and working directory, with provider matching.
 It reads configuration, requirements, model and permission catalogs, then exits;
 it never starts or resumes a conversation. Model and permission writes continue
 through the existing desktop owner. Catalog failure disables those changes.
+The current desktop follower protocol does not expose the renderer's runtime
+Guardian feature gate. When neither that gate nor an authoritative native
+default or managed requirement establishes availability, Approve for me remains
+disabled with a reason; persisted preferences are not treated as a live gate.
 
 On 2026-11-05, macOS desktop 26.1029.61003 (build 24614) passed a dedicated
 browser → Hub → worker → desktop-owner test. Selecting `gpt-6.1-sol` with `low`
@@ -309,3 +320,36 @@ message or permission change was submitted for these UI checks. Regression tests
 cover late failed polls, stale revisions, disabled controls and bounded metadata.
 Those synthetic checks are separate from the dedicated native action above;
 they do not establish availability of every model or permission transition.
+
+
+### Running replies, compact menus and process visibility
+
+The web composer now uses separate anchored model, reasoning-effort and permission
+menus. Current values stay checked; unsupported choices are disabled rather than
+silently replaced. Codex uses the three native primary permission labels, with
+underlying read-only/automatic/granular variants mapped to Ask for approval.
+Guardian availability depends on a native runtime feature gate; a saved preference
+alone does not enable it. The signed macOS application build 25241 was read-only
+checked for its model catalog; catalog discovery no longer depends on the separate
+new-conversation build allowlist.
+
+Running replies wait in the Hub's durable queue until the native state permits
+starting the next turn. Cancellation and an explicitly requested insertion operate
+on the same command ID. Codex and DeepSeek expose insertion only with an active
+native turn revision; Antigravity does not advertise an insertion capability.
+The waiting queue is not advertised as synchronized with the application's own
+queue UI. Cold Codex replies retain the existing native queue/wake route.
+
+All three history renderers fold tools and structurally marked commentary by
+default. DeepSeek mixed text/tool-call content now preserves its commentary phase
+through collection, history transport and the captured-message fallback. Native
+read-only projections of Windows Antigravity and DeepSeek logs were checked;
+ordinary/final answers remained separate. These reads do not establish reply or
+model-change acceptance. Windows Codex native acceptance remains deferred.
+
+
+Dedicated macOS Codex acceptance on 2026-11-06 exercised the real Hub, worker and
+native owner using fixed no-tool replies: default waiting, one explicit steer on
+the same queued command, cancellation without native dispatch, and release after
+completion. Three distinct commands produced exactly three native calls; the
+final native turn completed without error. This is not Windows Codex acceptance.

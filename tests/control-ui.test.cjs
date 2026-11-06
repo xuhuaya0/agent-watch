@@ -3,13 +3,26 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const crypto=require('node:crypto').webcrypto;
 function setup(){
- const feedback={innerHTML:''},summary={innerHTML:''},outgoing={innerHTML:'',querySelector(){return null}},button={disabled:false},input={value:''},timers=new Map();let timerId=0;
- const node={dataset:{},innerHTML:'',contains(){return false},querySelector(selector){return selector==='.settings-summary-slot'?summary:selector==='.outgoing-message'?outgoing:selector==='.local-outgoing'?{scrollIntoView(){}}:feedback},querySelectorAll(){return [button]}};
- const body={...node,dataset:{},innerHTML:''},actions={innerHTML:''},dialog={open:false,showModal(){this.open=true},close(){this.open=false}};
- const ctx=vm.createContext({console,crypto,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'chat-outgoing':outgoing,'composer-send':button,'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>JSON.stringify(s),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/control.js'),'utf8'),ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/session-options.js'),'utf8'),ctx);return {ctx,node,body,actions,dialog,feedback,summary,outgoing,button,input,timers};
+ const feedback={innerHTML:''},summary={innerHTML:''},queue={innerHTML:''},outgoing={innerHTML:'',querySelector(){return null}},button={disabled:false},input={value:''},timers=new Map();let timerId=0;
+ const node={dataset:{},innerHTML:'',contains(){return false},querySelector(selector){return selector==='.settings-summary-slot'?summary:selector==='.reply-queue-slot'?queue:selector==='.outgoing-message'?outgoing:selector==='.local-outgoing'?{scrollIntoView(){}}:feedback},querySelectorAll(){return [button]}};
+ const optionsFeedback={innerHTML:''},body={...node,dataset:{},innerHTML:'',querySelector(selector){return selector==='.interaction-feedback'?optionsFeedback:node.querySelector(selector)}},actions={innerHTML:''},listeners=new Map();
+ const dialog={open:false,modalCalls:0,menuCalls:0,style:{},classList:{toggle(){}},
+  showModal(){this.open=true;this.modalCalls++},show(){this.open=true;this.menuCalls++},close(){this.open=false},
+  querySelector(){return null},querySelectorAll(){return []},contains(target){return target===this||target===body}};
+ const ctx=vm.createContext({console,crypto,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'chat-outgoing':outgoing,'composer-send':button,'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},addEventListener(kind,listener){listeners.set(kind,listener)},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>String(JSON.stringify(s)??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/control.js'),'utf8'),ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/session-options.js'),'utf8'),ctx);return {ctx,node,body,actions,dialog,feedback,optionsFeedback,summary,outgoing,button,input,timers,listeners};
 }
 function run(ctx,s){return vm.runInContext(s,ctx)}
+function menuChoices(body){return [...body.innerHTML.matchAll(/<button\b([^>]*role="menuitemradio"[^>]*)>([\s\S]*?)<\/button>/g)].map(([,attributes,html])=>({
+ value:attributes.match(/data-choice="([^"]*)"/)?.[1],checked:attributes.includes('aria-checked="true"'),disabled:/\sdisabled(?:\s|$)/.test(attributes),html
+}));}
+function menuChoice(body,value){const rows=menuChoices(body).filter(row=>row.value===value);assert.equal(rows.length,1,'one native choice: '+value);return rows[0];}
+function deferredAction(ctx){
+ const posts=[];let complete;
+ ctx.apiFetch=(url,options)=>{const record=JSON.parse(options.body);posts.push(record);return new Promise(resolve=>{complete=resolve})};
+ ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});
+ return {posts,finish(state='resolved',update=()=>{}){const command={id:posts.at(-1).id,kind:posts.at(-1).action.kind,state};update(command);ctx.data.commands=[command];complete({ok:true,json:async()=>({command})});}};
+}
 const cap={connected:true,capability:{reply:true,requests:[]},commands:[]};
 test('modal Tab wraps visible controls but leaves interior navigation and Escape native',()=>{
  const {ctx,dialog}=setup();dialog.open=true;
@@ -176,7 +189,7 @@ test('newer matching native capture replaces the delivered echo, not an old iden
  run(ctx,'workspace.detail.extra.latest_turn.notification="Different message"');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
  run(ctx,'workspace.detail={key:"b",activity_at:12,extra:{latest_turn:{notification:"Same message"}}}');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
 });
-test('delivered native history replaces the echo before the collector catches up and stays acknowledged',async()=>{
+test('native history replaces the echo before its receipt or collector catches up without claiming delivery',async()=>{
  const {ctx,outgoing}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'old-user',role:'user',text:'Repeat this',timestamp:'2000-01-01T00:00:00Z'}]}]]);
  ctx.data=cap;run(ctx,'interaction.byTask.set("a",data);setReplyDraft("Repeat this")');let release,command;
  ctx.apiFetch=(url,options)=>new Promise(resolve=>{command={id:JSON.parse(options.body).id,kind:'reply',state:'delivered'};release=resolve;});
@@ -185,7 +198,9 @@ test('delivered native history replaces the echo before the collector catches up
  assert.deepEqual(Array.from(run(ctx,'interaction.outgoing.get("a").previousHistoryIds')),['old-user']);
  const created=run(ctx,'interaction.outgoing.get("a").createdAt');
  ctx.histories.get('a').messages.push({id:'new-user',role:'user',text:'Repeat this',timestamp:new Date(Math.floor(created/1000)*1000).toISOString()});
- run(ctx,'renderInteraction()');assert.match(outgoing.innerHTML,/发送中/);
+ run(ctx,'renderInteraction()');assert.equal(outgoing.innerHTML,'');
+ assert.equal(run(ctx,'interaction.outgoing.get("a").state'),'sending');
+ assert.equal(run(ctx,'interaction.pending.has("a")'),true);
  release({ok:true,json:async()=>({command})});await sending;
  assert.equal(outgoing.innerHTML,'');assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
  ctx.histories.get('a').messages=[];run(ctx,'renderInteraction()');assert.equal(outgoing.innerHTML,'');
@@ -223,11 +238,12 @@ test('native history trimming the submitted trailing newline does not duplicate 
  assert.equal(run(ctx,'outgoingHtml("a")'),'');
  assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
 });
-test('matching native history never hides sending, queued, uncertain or failed messages',()=>{
+test('native history hides pending duplicate echoes while failed and uncertain results stay visible',()=>{
  const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'new',role:'user',text:'Visible',timestamp:'2000-01-01T00:00:00Z'}]}]]);
  for(const state of ['sending','queued','dispatched','rejected','expired','cancelled','unknown']){
   ctx.state=state;run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Visible",createdAt:1000,state,previousHistoryIds:[],confirmedInHistory:true})');
-  assert.match(run(ctx,'outgoingHtml("a")'),/Visible/);
+  if(['sending','queued','dispatched'].includes(state))assert.equal(run(ctx,'outgoingHtml("a")'),'');
+  else assert.match(run(ctx,'outgoingHtml("a")'),/Visible/);
  }
 });
 
@@ -250,7 +266,7 @@ test('creation shows device directory and submits a distinct action with revisio
 });
 test('policy only exposes native choices and rejects a changed revision',async()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'on-request',revision:'v2',scope:'session-next-turn',options:[{value:'on-request',label:'Ask'},{value:'never',label:'Reject required approvals'}]}}};
- run(ctx,'interaction.byTask.set("a",data)');assert.match(run(ctx,'permissionSettingsHtml(data.capability,"")'),/后续轮次/);
+ run(ctx,'interaction.byTask.set("a",data)');assert.match(run(ctx,'permissionSettingsHtml(data.capability,"")'),/审批规则.*不提供完整权限模式/);
  let calls=0;ctx.apiFetch=async()=>{calls++};ctx.form={elements:{policy:{value:'never'}}};
  await run(ctx,'sendPolicy(form,"v1")');assert.equal(calls,0);
  ctx.form.elements.policy.value='full-access';await run(ctx,'sendPolicy(form,"v2")');assert.equal(calls,0);
@@ -263,13 +279,12 @@ test('new conversation links never cross devices',()=>{
  assert.match(run(ctx,'createdSessionHtml("a",receipt)'),/打开新会话/);
 });
 
-test('DeepSeek presets disclose sandbox changes and keep custom display-only',()=>{
+test('DeepSeek presets retain native descriptions and keep a custom current value read-only',()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{current:'custom',revision:'preset-v1',scope:'session-permissions',options:[{value:'workspace-write',label:'Workspace',description:'<native description>'}]}}};
  run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'permissionSettingsHtml(data.capability,"")');
- assert.match(html,/同时切换沙盒与审批设置/);
- assert.match(html,/value="custom" checked disabled/);
- assert.match(html,/自定义组合<\/span><small>当前 · 只读/);
- assert.doesNotMatch(html,/&lt;native description>/);
+ const custom=menuChoice({innerHTML:html},'custom');assert.equal(custom.checked,true);assert.equal(custom.disabled,true);
+ assert.match(custom.html,/当前/);
+ assert.match(html,/title="&lt;native description>"/);assert.doesNotMatch(html,/<native description>/);
  assert.doesNotMatch(html,/不改变沙盒权限或审批者/);
 });
 
@@ -284,8 +299,8 @@ test('Codex desktop draft shows the native submit step; created rollout links by
 
 test('Antigravity displays its bound creation project and requires confirmation for a project policy',async()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',create:{location:'native-project',project_id:'project-id',project_name:'Example <project>',revision:'c1'},policy:{current:'ask',scope:'project-permissions',project_name:'Example <project>',options:[{value:'ask',label:'Ask'},{value:'review',label:'Review'}],revision:'p1'}}};
- run(ctx,'interaction.byTask.set("a",data)');const html=run(ctx,'creationForm(data.capability,interactionDraft("a"),"")+permissionSettingsHtml(data.capability,"")');
- assert.match(html,/Antigravity/);assert.match(html,/Example &lt;project>/);assert.match(html,/应用到整个项目/);
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("review")');const html=run(ctx,'creationForm(data.capability,interactionDraft("a"),"")+permissionSettingsHtml(data.capability,"")');
+ assert.match(html,/Antigravity/);assert.match(html,/Example &lt;project>/);assert.match(html,/项目「Example &lt;project>」的所有会话/);assert.equal(run(ctx,'sessionOptions.confirmValue'),'review');
  ctx.form={elements:{policy:{value:'review'},confirmProject:{checked:false}}};
  let calls=0;ctx.apiFetch=()=>{calls++};await run(ctx,'sendPolicy(form,"p1")');assert.equal(calls,0);
 });
@@ -303,13 +318,13 @@ test('reply area does not mix creation or editable policy controls',()=>{
  assert.match(html,/Native Model/);assert.match(html,/Workspace/);
  assert.doesNotMatch(html,/sendCreate|sendPolicy|native-policy|native-create/);
  run(ctx,'openSessionOptions("permission")');const settings=run(ctx,'permissionSettingsHtml(data.capability,"")');
- assert.match(settings,/高级 · 审批规则/);assert.match(settings,/完整权限模式请在 Codex 中选择/);
+ assert.match(settings,/审批规则/);assert.match(settings,/当前连接不提供完整权限模式/);
 });
 test('settings selection survives polls and resets confirmation on native revision changes',()=>{
  const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity',policy:{scope:'project-permissions',project_name:'Example',current:'a',revision:'v1',options:[{value:'a',label:'First',description:'first description'},{value:'b',label:'Second',description:'second description'}]}}};
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");sessionOptions.confirmed=true');
- assert.equal(dialog.open,true);assert.match(body.innerHTML,/value="b" checked/);
- assert.match(body.innerHTML,/second description/);assert.doesNotMatch(body.innerHTML,/first description/);
+ assert.equal(dialog.open,true);assert.equal(menuChoice(body,'b').checked,true);
+ assert.match(body.innerHTML,/将项目「Example」的所有会话设为「Second」/);
  const original=body.innerHTML;run(ctx,'renderSessionActions()');assert.equal(body.innerHTML,original);assert.equal(run(ctx,'sessionOptions.confirmed'),true);
  run(ctx,'data.capability.policy.revision="v2";renderSessionActions()');
  assert.equal(run(ctx,'sessionOptions.confirmed'),false);assert.equal(run(ctx,'sessionOptions.value'),'a');assert.match(body.innerHTML,/原应用状态已更新/);
@@ -317,33 +332,36 @@ test('settings selection survives polls and resets confirmation on native revisi
 });
 test('settings dialog disables native choices while an operation is pending',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,policy:{scope:'session-permissions',current:'a',revision:'v',options:[{value:'a',label:'A'},{value:'b',label:'B'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
- assert.match(body.innerHTML,/<fieldset disabled>/);assert.match(body.innerHTML,/id="policy-apply"[^>]+disabled/);
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
+ assert.ok(menuChoices(body).every(choice=>choice.disabled));
+ let writes=0;ctx.apiFetch=async()=>{writes++};run(ctx,'chooseSessionPolicy("b")');assert.equal(writes,0);assert.equal(run(ctx,'sessionOptions.value'),'a');
 });
 test('a confirmed own permission change updates current selection without a stale warning',async()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'v1',options:[{value:'a',label:'A'},{value:'b',label:'B'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");chooseSessionPolicy("b");interaction.pending.set("a",{id:"change",action:{kind:"policy",value:"b"}})');
- ctx.data.capability.policy={...ctx.data.capability.policy,current:'b',revision:'v2'};
- ctx.data.commands=[{id:'change',kind:'policy',state:'resolved',detail:'原应用已确认此会话后续轮次的权限模式'}];
- ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});await run(ctx,'refreshInteraction()');
- assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="b" checked/);
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionPolicy("b")');assert.equal(transport.posts.length,1);
+ transport.finish('resolved',command=>{ctx.data.capability.policy={...ctx.data.capability.policy,current:'b',revision:'v2'};command.detail='原应用已确认此会话后续轮次的权限模式';});await changing;
+ run(ctx,'openSessionOptions("permission")');
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新/);assert.equal(menuChoice(body,'b').checked,true);
  assert.match(body.innerHTML,/原应用已确认此会话后续轮次的权限模式/);
  assert.equal(run(ctx,'interaction.pending.has("a")'),false);
 });
-test('clean permission snapshots update silently but a pending action cannot mask a different external value',()=>{
+test('clean permission snapshots update silently but an unconfirmed selection cannot mask an external value',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'v1',options:[{value:'a',label:'A'},{value:'b',label:'B'},{value:'c',label:'C'}]}}};
+ ctx.data.capability.policy.scope='project-permissions';ctx.data.capability.policy.project_name='Example';
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission");data.capability.policy.current="c";data.capability.policy.revision="v2";renderSessionActions()');
- assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
- run(ctx,'chooseSessionPolicy("b");interaction.pending.set("a",{id:"change",action:{kind:"policy",value:"b"}});data.capability.policy.current="a";data.capability.policy.revision="v3";renderSessionActions()');
- assert.match(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="a" checked/);
- run(ctx,'interaction.pending.clear();chooseSessionPolicy("c")');assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+ assert.doesNotMatch(body.innerHTML,/原应用状态已更新/);
+ run(ctx,'chooseSessionPolicy("b");data.capability.policy.current="a";data.capability.policy.revision="v3";renderSessionActions()');
+ assert.match(body.innerHTML,/原应用状态已更新，请重新选择/);assert.equal(menuChoice(body,'a').checked,true);assert.equal(run(ctx,'sessionOptions.confirmValue'),null);
+ run(ctx,'chooseSessionPolicy("c")');assert.doesNotMatch(body.innerHTML,/原应用状态已更新/);
 });
-test('model and permission dialogs keep read-only information separate and escape native values',()=>{
+test('model effort and permission menus separate read-only facts and escape native values',()=>{
  const {ctx}=setup();ctx.metadata={tool:'dsh',settings:{model:'<model>',permission:'<scope>',reasoning:'<effort>',note:'Mixed information',scope:'session'}};
- const model=run(ctx,'modelSettingsHtml(metadata,"")'),permission=run(ctx,'permissionSettingsHtml(metadata,"")');
- assert.match(model,/&lt;model>/);assert.match(model,/&lt;effort>/);assert.match(model,/仅提供模型信息/);
+ const model=run(ctx,'modelSettingsHtml(metadata,"")'),effort=run(ctx,'effortSettingsHtml(metadata,"")'),permission=run(ctx,'permissionSettingsHtml(metadata,"")');
+ assert.match(model,/&lt;model>/);assert.doesNotMatch(model,/&lt;effort>/);assert.match(model,/未提供可选模型/);
+ assert.match(effort,/&lt;effort>/);assert.doesNotMatch(effort,/&lt;model>|&lt;scope>/);
  assert.doesNotMatch(model,/<model>|<select|&lt;scope>|Mixed information|sendPolicy/);
- assert.match(permission,/&lt;scope>/);assert.match(permission,/当前权限仅供查看/);
+ assert.match(permission,/&lt;scope>/);assert.ok(menuChoices({innerHTML:permission}).every(choice=>choice.disabled));assert.match(permission,/未提供可选权限/);
  assert.doesNotMatch(permission,/&lt;model>|&lt;effort>|Mixed information|sendModel/);
 });
 
@@ -388,14 +406,14 @@ test('composer offers settings from native facts and creation requires the selec
  run(ctx,'interaction.byTask.set("a",data);renderSessionActions()');
  const html=run(ctx,'interactionHtml("a")');
  assert.match(html,/placeholder="向 Antigravity 发送系统通知…"/);
- assert.match(html,/composer-footer[\s\S]*openSessionOptions\('model'\)[\s\S]*记录模型[\s\S]*Example model[\s\S]*openSessionOptions\('permission'\)[\s\S]*项目权限[\s\S]*Request Review[\s\S]*composer-send/);
+ assert.match(html,/composer-footer[\s\S]*openSessionOptions\('model',this\)[\s\S]*记录模型[\s\S]*Example model[\s\S]*openSessionOptions\('permission',this\)[\s\S]*项目权限[\s\S]*Request Review[\s\S]*composer-send/);
  assert.equal(actions.innerHTML,'');
  run(ctx,'data.capability.create={revision:"native-v1"};renderSessionActions()');
  assert.match(actions.innerHTML,/新建会话/);assert.doesNotMatch(actions.innerHTML,/会话设置/);
  run(ctx,'workspace.selected="b";renderSessionActions()');assert.equal(actions.innerHTML,'');
  assert.match(run(ctx,'settingsSummaryHtml({tool:"codex"})'),/模型：尚未读取[\s\S]*权限：尚未读取/);
  const codex=run(ctx,'settingsSummaryHtml({tool:"codex",settings:{model:"Example",permission:"工作区可写 · 联网受限 · 按需审批"}})');
- assert.match(codex,/composer-permission">工作区可写<\/span>/);
+ assert.match(codex,/composer-permission">工作区可写 · 联网受限 · 按需审批<\/span>/);
  const buttons=codex.match(/<button[\s\S]*?<\/button>/g);assert.equal(buttons.length,2);
  assert.match(buttons[0],/aria-label="模型：Example"/);assert.doesNotMatch(buttons[0],/工作区可写|权限/);
  assert.match(buttons[1],/aria-label="权限：工作区可写 · 联网受限 · 按需审批"/);assert.doesNotMatch(buttons[1],/Example|模型/);
@@ -444,59 +462,85 @@ const nativeModels={current:'model-a',effort:'low',revision:'models-v1',options:
  {value:'model-b',label:'Native <B>',efforts:['medium','high'],default_effort:'medium'},
  {value:'model-c',label:'Native C',efforts:[]}
 ]};
-test('matching native model confirmation survives a temporary capability gap without a false warning',()=>{
+test('opening model effort and permission menus selects native state without writing or using a modal',()=>{
+ const {ctx,body,dialog}=setup();let writes=0;ctx.apiFetch=async()=>{writes++};
+ ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),current:'model-b',effort:'high'},
+  policy:{scope:'session-permissions',current:'guardian-approvals',current_label:'Approve for me',revision:'p',options:[{value:'ask',label:'Ask for approval'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
+ assert.equal(menuChoice(body,'model-b').checked,true);assert.equal(menuChoices(body).filter(o=>o.checked).length,1);
+ assert.doesNotMatch(body.innerHTML,/aria-label="推理强度"|aria-label="权限"/);
+ run(ctx,'openSessionOptions("effort")');assert.equal(menuChoice(body,'high').checked,true);
+ assert.equal(menuChoices(body).filter(o=>o.checked).length,1);assert.doesNotMatch(body.innerHTML,/Native &lt;B>|Approve for me/);
+ run(ctx,'openSessionOptions("permission")');const current=menuChoice(body,'guardian-approvals');
+ assert.equal(current.checked,true);assert.equal(current.disabled,true);assert.match(current.html,/Approve for me/);
+ assert.equal(menuChoices(body).filter(o=>o.checked).length,1);
+ assert.equal(writes,0);assert.equal(dialog.modalCalls,0);assert.equal(dialog.menuCalls,3);
+ assert.match(run(ctx,'settingsSummaryHtml(data.capability)'),/权限：Approve for me/);
+});
+test('model choice submits once immediately with a valid native effort and preserves permissions',async()=>{
+ const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),policy:{current:'ask',revision:'p',options:[]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionModel("model-b")');
+ assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:'model-b',effort:'medium'});
+ assert.ok(menuChoices(body).every(o=>o.disabled));assert.equal(menuChoice(body,'model-b').checked,true);
+ await run(ctx,'chooseSessionModel("model-c")');assert.equal(transport.posts.length,1);
+ transport.finish();await changing;assert.equal(dialog.open,false);assert.equal(ctx.data.capability.policy.current,'ask');
+ assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);
+});
+test('effort has an independent menu and submits only for the current native model',async()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b");interaction.pending.set("a",{id:"change",action:{kind:"model",model:"model-b",effort:"medium"}})');
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("effort")');const transport=deferredAction(ctx);
+ assert.deepEqual(menuChoices(body).map(o=>o.value),['low','high']);assert.equal(menuChoice(body,'low').checked,true);
+ await run(ctx,'chooseModelEffort("fabricated")');assert.equal(transport.posts.length,0);
+ const changing=run(ctx,'chooseModelEffort("high")');assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:'model-a',effort:'high'});
+ transport.finish();await changing;
+});
+test('a model without a compatible current or default effort waits for an explicit native effort',async()=>{
+ const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ delete ctx.data.capability.model.options[1].default_effort;
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ await run(ctx,'chooseSessionModel("model-b")');assert.equal(transport.posts.length,0);assert.equal(dialog.open,true);
+ assert.equal(run(ctx,'sessionOptions.kind'),'effort');assert.equal(run(ctx,'sessionOptions.modelValue'),'model-b');
+ assert.match(body.innerHTML,/请选择推理强度/);assert.equal(menuChoice(body,'medium').checked,false);
+ assert.doesNotMatch(body.innerHTML,/data-choice="low"/);
+ const changing=run(ctx,'chooseModelEffort("high")');assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:'model-b',effort:'high'});
+ transport.finish();await changing;
+});
+test('a model without native reasoning choices sends no inherited effort',async()=>{
+ const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionModel("model-c")');assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:'model-c'});
+ transport.finish();await changing;
+});
+test('choosing native current values or an absent model never submits',async()=>{
+ const {ctx,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ await run(ctx,'chooseSessionModel("absent-model")');assert.equal(dialog.open,true);
+ await run(ctx,'chooseSessionModel("model-a")');assert.equal(dialog.open,false);
+ run(ctx,'openSessionOptions("effort")');await run(ctx,'chooseModelEffort("low")');assert.equal(dialog.open,false);assert.equal(transport.posts.length,0);
+});
+test('model draft survives unrelated permission polling and matching confirmation across a capability gap',async()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),settings:{permission:'Before'}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionModel("model-b")'),before=body.innerHTML;
+ run(ctx,'data.capability.settings.permission="After";renderSessionActions()');assert.equal(body.innerHTML,before);
+ assert.equal(run(ctx,'sessionOptions.modelValue'),'model-b');assert.equal(run(ctx,'sessionOptions.effortValue'),'medium');
  const model=ctx.data.capability.model;delete ctx.data.capability.model;run(ctx,'renderSessionActions()');
- ctx.data.capability.model={...model,current:'model-b',effort:'medium',revision:'v2'};
- ctx.data.commands=[{id:'change',kind:'model',state:'resolved',detail:'原应用已确认此会话后续轮次的模型设置'}];
- run(ctx,'interaction.pending.clear();renderSessionActions()');
- assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/原应用已确认此会话后续轮次的模型设置/);
- assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/value="medium" selected/);
+ transport.finish('resolved',command=>{ctx.data.capability.model={...model,current:'model-b',effort:'medium',revision:'v2'};command.detail='原应用已确认此会话后续轮次的模型设置';});await changing;
+ run(ctx,'openSessionOptions("model")');assert.equal(menuChoice(body,'model-b').checked,true);assert.doesNotMatch(body.innerHTML,/原应用状态已更新/);
+ assert.match(body.innerHTML,/原应用已确认此会话后续轮次的模型设置/);
 });
-test('model warnings require an overwritten choice and still detect a mismatched effort during submission',()=>{
+test('a stale model click is rejected and changed native effort invalidates an in-flight draft',async()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");data.capability.model.effort="high";data.capability.model.revision="v2";renderSessionActions()');
- assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
- run(ctx,'chooseSessionModel("model-b");chooseModelEffort("medium");interaction.pending.set("a",{id:"change",action:{kind:"model",model:"model-b",effort:"medium"}});data.capability.model.current="model-b";data.capability.model.effort="high";data.capability.model.revision="v3";renderSessionActions()');
- assert.match(body.innerHTML,/原应用状态已更新，请重新确认选择/);assert.match(body.innerHTML,/value="high" selected/);
- run(ctx,'interaction.pending.clear();chooseModelEffort("medium")');assert.doesNotMatch(body.innerHTML,/原应用状态已更新，请重新确认选择/);
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ run(ctx,'data.capability.model.revision="v2"');await run(ctx,'chooseSessionModel("model-b")');assert.equal(transport.posts.length,0);
+ assert.match(body.innerHTML,/原生模型或运行状态已变化/);
+ run(ctx,'closeSessionOptions();openSessionOptions("model")');const changing=run(ctx,'chooseSessionModel("model-b")');assert.equal(transport.posts.length,1);
+ run(ctx,'data.capability.model.current="model-b";data.capability.model.effort="high";data.capability.model.revision="v3";renderSessionActions()');
+ assert.match(body.innerHTML,/原应用状态已更新，请重新选择/);assert.equal(run(ctx,'sessionOptions.effortValue'),'high');
+ transport.finish();await changing;
 });
-test('model selection uses native choices, validates effort and survives unrelated permission polls',()=>{
- const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),settings:{permission:'Permission-only marker'}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b")');
- assert.equal(dialog.open,true);assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/Native &lt;B>/);
- assert.match(body.innerHTML,/value="medium" selected/);assert.doesNotMatch(body.innerHTML,/Permission-only|name="policy"|value="low"|<B>/);
- const before=body.innerHTML;run(ctx,'data.capability.settings.permission="Changed permission";renderSessionActions()');assert.equal(body.innerHTML,before);
- run(ctx,'chooseModelEffort("high");renderSessionActions()');assert.match(body.innerHTML,/value="high" selected/);
- run(ctx,'chooseModelEffort("fabricated");chooseSessionModel("absent-model")');assert.equal(run(ctx,'sessionOptions.effortValue'),'high');assert.equal(run(ctx,'sessionOptions.modelValue'),'model-b');
- run(ctx,'chooseSessionModel("model-c")');assert.doesNotMatch(body.innerHTML,/<select/);assert.equal(run(ctx,'sessionOptions.effortValue'),null);
- run(ctx,'data.capability.model.revision="models-v2";renderSessionActions()');assert.equal(run(ctx,'sessionOptions.modelValue'),'model-a');assert.match(body.innerHTML,/原应用状态已更新/);
-});
-test('model and permission entry points handle unknown and read-only state without fabricated controls',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity'}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');assert.match(body.innerHTML,/尚未提供可确认的模型信息/);assert.doesNotMatch(body.innerHTML,/sendModel|sendPolicy|权限/);
- run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/尚未提供可确认的权限信息/);assert.doesNotMatch(body.innerHTML,/sendModel|sendPolicy|模型/);
- run(ctx,'data.capability.settings={model:"Recorded A",permission:"Project permission",scope:"project"};openSessionOptions("model")');
- assert.match(body.innerHTML,/可能不同于下一轮使用的模型/);assert.doesNotMatch(body.innerHTML,/Project permission|sendModel/);
- run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/<h2 id="session-options-title">项目权限<\/h2>/);assert.doesNotMatch(body.innerHTML,/Recorded A|模型/);
-});
-test('full session permission presets are directly selectable without the legacy approval section',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{model:'Model-only marker'},policy:{scope:'session-permissions',current:'custom',revision:'p',options:[{value:'preset-a',label:'Native preset',description:'Native scope'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
- assert.match(body.innerHTML,/name="policy" value="preset-a"/);assert.match(body.innerHTML,/value="custom" checked disabled/);
- assert.doesNotMatch(body.innerHTML,/advanced-settings|Model-only marker|sendModel/);
-});
-test('native advanced permission profiles stay folded separately from the primary choices',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'a',revision:'p',options:[{value:'a',label:'Primary A'},{value:'b',label:'Primary B'},{value:'c',label:'Other native profile',group:'advanced'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
- const [primary,advanced]=body.innerHTML.split('<details class="advanced-settings"');
- assert.match(primary,/Primary A/);assert.match(primary,/Primary B/);assert.doesNotMatch(primary,/Other native profile/);
- assert.match(advanced,/^ ontoggle=/);assert.match(advanced,/<summary>其他权限<\/summary>[\s\S]*Other native profile/);
- run(ctx,'sessionOptions.advanced=true;chooseSessionPolicy("c");renderSessionActions()');
- assert.match(body.innerHTML,/<details class="advanced-settings" open/);assert.match(body.innerHTML,/value="c" checked/);
-});
-test('model submission rejects stale revisions, unsupported efforts, unchanged settings and busy sessions',async()=>{
+test('model submission rejects stale revisions unsupported efforts unchanged settings and busy sessions',async()=>{
  const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};ctx.form={elements:{model:{value:'model-b'},effort:{value:'medium'}}};
  run(ctx,'interaction.byTask.set("a",data)');let calls=0;ctx.apiFetch=async()=>{calls++};
  await run(ctx,'sendModel(form,"old")');
@@ -508,78 +552,208 @@ test('model submission rejects stale revisions, unsupported efforts, unchanged s
  run(ctx,'data.commands=[{state:"dispatched"}]');await run(ctx,'sendModel(form,"models-v1")');
  run(ctx,'data.commands=[];data.connected=false');await run(ctx,'sendModel(form,"models-v1")');assert.equal(calls,0);
 });
-test('model actions send only the native tokens and require effort only when the model offers it',async()=>{
+test('model actions send only native tokens and require effort only when the model offers it',async()=>{
  for(const [value,effort] of [['model-b','high'],['model-c',undefined]]){
   const {ctx}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
   ctx.form={elements:{model:{value},...(effort?{effort:{value:effort}}:{})}};run(ctx,'interaction.byTask.set("a",data)');
-  let body;ctx.apiFetch=async(u,o)=>{body=JSON.parse(o.body);return {ok:true,json:async()=>({command:{id:body.id,state:'queued',kind:'model'}})}};
-  ctx.fetch=async()=>({ok:true,json:async()=>({...ctx.data,commands:[{id:body.id,state:'queued',kind:'model'}]})});
-  await run(ctx,'sendModel(form,"models-v1")');assert.deepEqual(body.action,{kind:'model',revision:'models-v1',model:value,...(effort?{effort}:{})});
-  assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);
+  const transport=deferredAction(ctx),changing=run(ctx,'sendModel(form,"models-v1")');
+  assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:value,...(effort?{effort}:{})});
+  transport.finish();await changing;assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);
  }
 });
-test('model fields disable while pending and restore native readonly state after capability loss',()=>{
+test('pending menus cannot dispatch another setting and capability loss removes writable choices',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");chooseSessionModel("model-b");interaction.pending.set("a",{id:"pending"});renderSessionActions()');
- assert.match(body.innerHTML,/<fieldset disabled>/);assert.match(body.innerHTML,/<select[^>]* disabled/);assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
- run(ctx,'interaction.pending.clear();delete data.capability.model;renderSessionActions()');assert.doesNotMatch(body.innerHTML,/sendModel|model-apply/);assert.match(body.innerHTML,/尚未提供可确认的模型信息/);
+ run(ctx,'interaction.byTask.set("a",data);interaction.pending.set("a",{id:"pending"});openSessionOptions("model")');
+ assert.ok(menuChoices(body).every(o=>o.disabled));const transport=deferredAction(ctx);
+ run(ctx,'chooseSessionModel("model-b");openSessionOptions("effort");chooseModelEffort("high")');assert.equal(transport.posts.length,0);
+ assert.ok(menuChoices(body).every(o=>o.disabled));
+ run(ctx,'interaction.pending.clear();delete data.capability.model;openSessionOptions("model")');assert.equal(menuChoices(body).length,0);assert.match(body.innerHTML,/未提供可选模型/);
 });
-test('missing current effort and models outside the native catalog are never silently defaulted',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
- delete ctx.data.capability.model.effort;
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
- assert.match(body.innerHTML,/<option value="" disabled selected>原应用默认/);
- assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
- run(ctx,'chooseModelEffort("high")');assert.doesNotMatch(body.innerHTML,/id="model-apply"[^>]* disabled/);
- run(ctx,'data.capability.model.current="retired-native-model";data.capability.model.revision="v2";renderSessionActions()');
- assert.match(body.innerHTML,/value="retired-native-model" checked disabled/);
- assert.match(body.innerHTML,/retired-native-model<\/span><small>当前 · 只读/);
- assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);assert.doesNotMatch(body.innerHTML,/<select/);
+test('unknown and recorded model permission facts do not fabricate writable capabilities',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'antigravity'}};const transport=deferredAction(ctx);
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');assert.equal(menuChoices(body).length,0);assert.match(body.innerHTML,/当前连接未提供切换/);
+ run(ctx,'openSessionOptions("permission")');assert.equal(menuChoices(body).length,0);assert.match(body.innerHTML,/未提供可选权限/);
+ run(ctx,'data.capability.settings={model:"Recorded A",permission:"Project permission",scope:"project"};openSessionOptions("model")');
+ assert.match(body.innerHTML,/记录中的模型/);assert.ok(menuChoices(body).every(o=>o.disabled));assert.doesNotMatch(body.innerHTML,/Project permission/);
+ run(ctx,'chooseSessionModel("Recorded A");openSessionOptions("permission");chooseSessionPolicy("Project permission")');
+ assert.match(body.innerHTML,/<h2 id="session-options-title">项目权限<\/h2>/);assert.ok(menuChoices(body).every(o=>o.disabled));assert.equal(transport.posts.length,0);
 });
-test('model receipts and errors stay in their own dialog and never appear as chat activity',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)},commands:[{id:'model-change',kind:'model',state:'resolved',detail:'已更新后续轮次模型'}]};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");controlNotice("Native model unavailable","a","model")');
- assert.match(body.innerHTML,/Native model unavailable/);assert.match(body.innerHTML,/最近模型设置.*已更新后续轮次模型/);
- assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');assert.equal(run(ctx,'interactionFeedbackHtml("a","policy")'),'');
- run(ctx,'openSessionOptions("permission")');assert.doesNotMatch(body.innerHTML,/Native model unavailable|最近模型设置/);
+test('missing and unoffered native effort are checked read-only rather than silently defaulted',()=>{
+ for(const effort of [undefined,'native-special']){
+  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),effort}}};
+  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("effort")');const current=menuChoices(body).find(o=>o.checked);
+  assert.equal(current.value,effort||'');assert.equal(current.disabled,true);assert.match(current.html,effort?/native-special/:/原应用默认/);
+  assert.equal(menuChoice(body,'low').checked,false);assert.equal(menuChoice(body,'high').checked,false);
+ }
 });
-
-test('opening both pickers selects native current state without sending a change',()=>{
- const {ctx,body}=setup();let writes=0;ctx.apiFetch=async()=>{writes++};
- ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),current:'model-b',effort:'high'},
-  policy:{scope:'session-permissions',current:'guardian-approvals',current_label:'Approve for me',revision:'p',options:[{value:'ask',label:'Ask for approval'}]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
- assert.match(body.innerHTML,/value="model-b" checked/);assert.match(body.innerHTML,/value="high" selected/);
- assert.equal((body.innerHTML.match(/ checked/g)||[]).length,1);
- run(ctx,'openSessionOptions("permission")');
- assert.match(body.innerHTML,/value="guardian-approvals" checked disabled/);
- assert.match(body.innerHTML,/Approve for me<\/span><small>当前 · 只读/);
- assert.match(body.innerHTML,/id="policy-apply"[^>]* disabled/);
- assert.equal((body.innerHTML.match(/ checked/g)||[]).length,1);
- assert.equal(writes,0);assert.match(run(ctx,'settingsSummaryHtml(data.capability)'),/权限：Approve for me/);
+test('native values remain selected outside catalogs including catalogs with no writable choices',()=>{
+ for(const options of [[],structuredClone(nativeModels.options)]){
+  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{model:'Old turn model'},
+   model:{current:'unlisted-model',current_label:'Current native model',revision:'m',options},
+   policy:{scope:'session-permissions',current:'custom',current_label:'Custom (config.toml)',revision:'p',options:[]}}};
+  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const current=menuChoice(body,'unlisted-model');
+  assert.equal(current.checked,true);assert.equal(current.disabled,true);assert.match(current.html,/Current native model/);assert.doesNotMatch(body.innerHTML,/Old turn model/);
+  run(ctx,'openSessionOptions("permission")');assert.equal(menuChoice(body,'custom').checked,true);assert.equal(menuChoice(body,'custom').disabled,true);assert.match(body.innerHTML,/Custom \(config.toml\)/);
+ }
 });
-test('native values remain selected when catalogs have no writable choices',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',
-  settings:{model:'Old turn model'},model:{current:'unlisted-model',current_label:'Current native model',revision:'m',options:[]},
-  policy:{scope:'session-permissions',current:'custom',current_label:'Custom (config.toml)',revision:'p',options:[]}}};
- run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
- assert.match(body.innerHTML,/value="unlisted-model" checked disabled/);
- assert.match(body.innerHTML,/Current native model<\/span>/);assert.doesNotMatch(body.innerHTML,/Old turn model/);
- assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
- run(ctx,'openSessionOptions("permission")');assert.match(body.innerHTML,/value="custom" checked disabled/);
- assert.match(body.innerHTML,/Custom \(config.toml\)/);assert.match(body.innerHTML,/id="policy-apply"[^>]* disabled/);
-});
-test('a current advanced permission is visible outside the collapsed additional choices',()=>{
+test('native advanced permission profiles stay collapsed but the current advanced value stays visible',()=>{
  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'readonly',revision:'p',options:[
   {value:'ask',label:'Ask'},{value:'readonly',label:'Read only',group:'advanced'},{value:'other',label:'Other',group:'advanced'}]}}};
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');
- const [visible,folded]=body.innerHTML.split('<details class="advanced-settings"');
- assert.match(visible,/value="readonly" checked/);assert.doesNotMatch(folded,/value="readonly"/);
- assert.match(folded,/value="other"/);
+ const [visible,folded]=body.innerHTML.split('<details class="menu-more"');
+ assert.equal(menuChoice({innerHTML:visible},'readonly').checked,true);assert.doesNotMatch(folded,/data-choice="readonly"/);
+ assert.match(folded,/^ ontoggle=/);assert.match(folded,/<summary>其他原生配置<\/summary>[\s\S]*data-choice="other"/);
+ run(ctx,'sessionOptions.advanced=true;renderSessionOptions(true)');assert.match(body.innerHTML,/<details class="menu-more" open/);
 });
-test('a known unoffered effort is displayed as the current read-only value instead of a prompt',()=>{
- const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),effort:'native-special'}}};
+test('a session permission choice submits once without changing the model',async()=>{
+ const {ctx,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),policy:{current:'ask',revision:'p',scope:'session-permissions',options:[{value:'ask',label:'Ask'},{value:'readonly',label:'Read only'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionPolicy("readonly")');await run(ctx,'chooseSessionPolicy("readonly")');assert.equal(transport.posts.length,1);
+ assert.deepEqual(transport.posts[0].action,{kind:'policy',revision:'p',value:'readonly'});transport.finish();await changing;
+ assert.equal(dialog.open,false);assert.equal(ctx.data.capability.model.current,'model-a');
+});
+test('project permissions and full access wait for explicit confirmation and support cancellation',async()=>{
+ for(const project of [true,false]){
+  const {ctx,body}=setup();const selected=project?'review':'full-access';
+  ctx.data={...cap,capability:{...cap.capability,tool:project?'antigravity':'codex',policy:{current:'ask',revision:'p',scope:project?'project-permissions':'session-permissions',project_id:'example',project_name:'Example',options:[{value:'ask',label:'Ask'},{value:selected,label:'Native target'}]}}};
+  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');const transport=deferredAction(ctx);ctx.selected=selected;
+  await run(ctx,'chooseSessionPolicy(selected)');assert.equal(transport.posts.length,0);assert.match(body.innerHTML,/确认切换/);
+  if(project)assert.match(body.innerHTML,/项目「Example」的所有会话/);
+  run(ctx,'cancelPermissionChoice()');assert.equal(run(ctx,'sessionOptions.confirmValue'),null);assert.equal(menuChoice(body,'ask').checked,true);assert.equal(transport.posts.length,0);
+  run(ctx,'chooseSessionPolicy(selected)');const changing=run(ctx,'confirmPermissionChoice()');assert.equal(transport.posts.length,1);
+  assert.deepEqual(transport.posts[0].action,{kind:'policy',revision:'p',value:selected,...(project?{project_id:'example'}:{})});transport.finish();await changing;
+ }
+});
+test('model failures keep the selection and show an in-menu error without chat activity',async()=>{
+ const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');let posts=0;
+ ctx.apiFetch=async()=>{posts++;return {ok:false,json:async()=>({error:'model_changed'})}};ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});
+ await run(ctx,'chooseSessionModel("model-b")');assert.equal(posts,1);assert.equal(dialog.open,true);assert.equal(menuChoice(body,'model-b').checked,true);
+ assert.match(body.innerHTML,/class="options-error" role="alert">原生模型或运行状态已变化/);
+ assert.equal(run(ctx,'interaction.outgoing.has("a")'),false);assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');
+ run(ctx,'openSessionOptions("permission")');assert.doesNotMatch(body.innerHTML,/原生模型或运行状态已变化/);
+});
+test('model receipts stay in both model and effort menus but never permission or chat activity',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)},commands:[{id:'model-change',kind:'model',state:'resolved',detail:'已更新后续轮次模型'}]};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model");controlNotice("Native model unavailable","a","model")');
+ assert.match(body.innerHTML,/Native model unavailable/);assert.match(body.innerHTML,/最近模型设置.*已更新后续轮次模型/);
+ run(ctx,'openSessionOptions("effort")');assert.match(body.innerHTML,/最近模型设置.*已更新后续轮次模型/);
+ assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');assert.equal(run(ctx,'interactionFeedbackHtml("a","policy")'),'');
+ run(ctx,'openSessionOptions("permission")');assert.doesNotMatch(body.innerHTML,/Native model unavailable|最近模型设置/);
+});
+test('menus dismiss on outside click or Escape return focus and leave creation modal',()=>{
+ const {ctx,dialog,listeners}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),create:{revision:'c',cwd:'/example'}}};
+ let focused=0;ctx.anchor={focus(){focused++}};run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model",anchor)');
+ listeners.get('pointerdown')({target:dialog});assert.equal(dialog.open,true);
+ listeners.get('pointerdown')({target:{closest(){return {}}}});assert.equal(dialog.open,true);
+ listeners.get('pointerdown')({target:{closest(){return null}}});assert.equal(dialog.open,false);assert.equal(focused,1);
+ run(ctx,'openSessionOptions("effort",anchor)');let prevented=0;ctx.keyEvent={key:'Escape',preventDefault(){prevented++}};run(ctx,'sessionMenuKeydown(keyEvent)');
+ assert.equal(dialog.open,false);assert.equal(focused,2);assert.equal(prevented,1);
+ run(ctx,'openSessionOptions("create")');assert.equal(dialog.modalCalls,1);listeners.get('pointerdown')({target:{}});assert.equal(dialog.open,true);
+});
+test('menu arrow navigation follows visible enabled choices and Tab closes without trapping',()=>{
+ const {ctx,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
  run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');
- assert.match(body.innerHTML,/<option value="native-special" disabled selected>当前：native-special（只读）/);
- assert.doesNotMatch(body.innerHTML,/请选择推理强度/);assert.match(body.innerHTML,/id="model-apply"[^>]* disabled/);
+ const make=options=>({getClientRects(){return [{}]},focus(){ctx.document.activeElement=this},...options});
+ const first=make(),second=make(),hidden=make({getClientRects(){return []}});dialog.querySelectorAll=()=>[first,second,hidden];
+ let prevented=0;ctx.keyEvent={key:'Home',preventDefault(){prevented++}};run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,first);
+ ctx.keyEvent.key='ArrowUp';run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,second);
+ ctx.keyEvent.key='ArrowDown';run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,first);
+ ctx.keyEvent.key='End';run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,second);
+ ctx.keyEvent.key='Tab';run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(dialog.open,false);assert.equal(prevented,4);
+});
+test('menu arrows ignore advanced choices inside closed details even when layout rectangles survive',()=>{
+ const {ctx,dialog}=setup();dialog.open=true;
+ const first={parentElement:dialog,getClientRects(){return [{}]},focus(){ctx.document.activeElement=this}};
+ const details={tagName:'DETAILS',open:false,parentElement:dialog};
+ const advanced={parentElement:details,getClientRects(){return [{}]},focus(){ctx.document.activeElement=this}};
+ dialog.querySelectorAll=()=>[first,advanced];let prevented=0;ctx.keyEvent={key:'End',preventDefault(){prevented++}};
+ run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,first);
+ details.open=true;run(ctx,'sessionMenuKeydown(keyEvent)');assert.equal(ctx.document.activeElement,advanced);assert.equal(prevented,2);
+});
+test('opening a menu focuses its current choice and an old close event cannot clear a new menu',()=>{
+ const {ctx,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ const current={focus(){ctx.document.activeElement=this}},first={focus(){ctx.document.activeElement=this}};
+ dialog.querySelector=selector=>selector.includes('[aria-checked="true"]')?current:first;
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');assert.equal(ctx.document.activeElement,current);
+ run(ctx,'openSessionOptions("effort");sessionOptionsClosed()');assert.equal(dialog.open,true);assert.equal(run(ctx,'sessionOptions.kind'),'effort');
+ run(ctx,'closeSessionOptions()');assert.equal(dialog.open,false);assert.equal(run(ctx,'sessionOptions.id'),null);
+});
+test('all native permission presets are listed even when one is unavailable to switch to',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{scope:'session-permissions',current:'on-request',current_option:'guardian-approvals',revision:'p',
+  options:[{value:'full-access',label:'Full access'},{value:'on-request',label:'Ask for approval'}],
+  unavailable_options:[{value:'guardian-approvals',label:'Approve for me',reason:'Native policy prevents selection'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');const transport=deferredAction(ctx);
+ assert.deepEqual(menuChoices(body).map(o=>o.value),['on-request','guardian-approvals','full-access']);
+ assert.equal(menuChoice(body,'guardian-approvals').checked,true);assert.equal(menuChoice(body,'guardian-approvals').disabled,true);
+ assert.match(body.innerHTML,/Native policy prevents selection/);run(ctx,'chooseSessionPolicy("guardian-approvals")');assert.equal(transport.posts.length,0);
+});
+test('a queued settings receipt keeps the menu open until matching native success',async()=>{
+ for(const kind of ['model','permission']){
+  const {ctx,dialog,body,optionsFeedback}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels),policy:{scope:'session-permissions',current:'ask',revision:'p',options:[{value:'ask',label:'Ask'},{value:'readonly',label:'Read only'}]}}};
+  ctx.kind=kind;run(ctx,'interaction.byTask.set("a",data);openSessionOptions(kind)');const transport=deferredAction(ctx);
+  const changing=run(ctx,kind==='model'?'chooseSessionModel("model-b")':'chooseSessionPolicy("readonly")');transport.finish('queued');await changing;
+  assert.equal(dialog.open,true);assert.ok(menuChoices(body).every(o=>o.disabled));assert.match(optionsFeedback.innerHTML,/等待设备接收/);
+  ctx.data.commands=[{id:'unrelated',kind:kind==='model'?'model':'policy',state:'resolved'},...ctx.data.commands];run(ctx,'renderSessionActions()');assert.equal(dialog.open,true);
+  ctx.data.commands[1].state='dispatched';await run(ctx,'refreshInteraction()');assert.equal(dialog.open,true);
+  ctx.data.commands[1].state='resolved';await run(ctx,'refreshInteraction()');assert.equal(dialog.open,false);assert.equal(transport.posts.length,1);
+ }
+});
+test('a later native rejection remains in the originating menu without automatic retry',async()=>{
+ const {ctx,dialog,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:structuredClone(nativeModels)}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ const changing=run(ctx,'chooseSessionModel("model-b")');transport.finish('queued');await changing;
+ ctx.data.commands[0]={...ctx.data.commands[0],state:'rejected',detail:'model_changed'};await run(ctx,'refreshInteraction()');
+ assert.equal(dialog.open,true);assert.equal(menuChoice(body,'model-b').checked,true);assert.match(body.innerHTML,/原应用未接收.*原生模型或运行状态已变化/);
+ assert.equal(run(ctx,'interaction.pending.has("a")'),false);await run(ctx,'refreshInteraction()');assert.equal(transport.posts.length,1);
+ assert.equal(run(ctx,'interactionFeedbackHtml("a")'),'');
+});
+test('DeepSeek session and default model changes require confirmation for models and effort',async()=>{
+ for(const kind of ['model','effort']){
+  const {ctx,body,dialog}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'dsh',model:{...structuredClone(nativeModels),scope:'session-and-default'}}};
+  ctx.kind=kind;run(ctx,'interaction.byTask.set("a",data);openSessionOptions(kind)');const transport=deferredAction(ctx);
+  const choice=kind==='model'?'chooseSessionModel("model-b")':'chooseModelEffort("high")';await run(ctx,choice);
+  assert.equal(transport.posts.length,0);assert.equal(dialog.open,true);assert.equal(run(ctx,'sessionOptions.modelConfirm'),true);
+  assert.match(body.innerHTML,/同时更新此会话和后续默认模型/);
+  run(ctx,'cancelModelChoice()');assert.equal(run(ctx,'sessionOptions.modelConfirm'),false);assert.equal(run(ctx,'sessionOptions.modelValue'),'model-a');assert.equal(run(ctx,'sessionOptions.effortValue'),'low');assert.equal(transport.posts.length,0);
+  await run(ctx,choice);const changing=run(ctx,'confirmModelChoice()');assert.equal(transport.posts.length,1);
+  assert.deepEqual(transport.posts[0].action,{kind:'model',revision:'models-v1',model:kind==='model'?'model-b':'model-a',effort:kind==='model'?'medium':'high'});
+  transport.finish();await changing;assert.equal(dialog.open,false);
+ }
+});
+test('a revised DeepSeek catalog clears the pending default-model confirmation',async()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'dsh',model:{...structuredClone(nativeModels),scope:'session-and-default'}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');const transport=deferredAction(ctx);
+ await run(ctx,'chooseSessionModel("model-b")');run(ctx,'data.capability.model.revision="new-revision";renderSessionActions()');
+ assert.equal(run(ctx,'sessionOptions.modelConfirm'),false);assert.equal(run(ctx,'sessionOptions.modelConfirmed'),false);assert.equal(menuChoice(body,'model-a').checked,true);
+ await run(ctx,'confirmModelChoice()');assert.equal(transport.posts.length,0);assert.match(body.innerHTML,/原应用状态已更新/);
+});
+test('provider and effort labels are readable while submitted tokens remain native',async()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'dsh',model:structuredClone(nativeModels)}};
+ ctx.data.capability.model.options[0].provider_label='Provider <one>';
+ ctx.data.capability.model.options[0].effort_labels={low:'Low',high:'Extra <High>'};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("model")');assert.match(menuChoice(body,'model-a').html,/Native A · Provider &lt;one>/);assert.doesNotMatch(body.innerHTML,/<one>/);
+ run(ctx,'openSessionOptions("effort")');assert.match(menuChoice(body,'high').html,/Extra &lt;High>/);assert.doesNotMatch(body.innerHTML,/<High>/);
+ assert.match(run(ctx,'settingsSummaryHtml(data.capability)'),/推理强度：Low/);
+ const transport=deferredAction(ctx),changing=run(ctx,'chooseModelEffort("high")');assert.equal(transport.posts[0].action.effort,'high');transport.finish();await changing;
+});
+test('selecting a normal permission after full-access confirmation removes the obsolete confirmation',async()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',policy:{current:'ask',revision:'p',scope:'session-permissions',options:[{value:'ask',label:'Ask'},{value:'full-access',label:'Full access'},{value:'readonly',label:'Read only'}]}}};
+ run(ctx,'interaction.byTask.set("a",data);openSessionOptions("permission")');const transport=deferredAction(ctx);
+ run(ctx,'chooseSessionPolicy("full-access")');assert.match(body.innerHTML,/menu-confirm/);assert.equal(transport.posts.length,0);
+ const changing=run(ctx,'chooseSessionPolicy("readonly")');assert.equal(transport.posts.length,1);assert.equal(transport.posts[0].action.value,'readonly');
+ assert.equal(run(ctx,'sessionOptions.confirmValue'),null);assert.doesNotMatch(body.innerHTML,/menu-confirm/);transport.finish();await changing;
+});
+test('cancel cannot reset a model or permission choice after its native action has been submitted',async()=>{
+ for(const kind of ['model','permission']){
+  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'dsh',model:{...structuredClone(nativeModels),scope:'session-and-default'},policy:{current:'ask',revision:'p',scope:'project-permissions',project_id:'example',project_name:'Example',options:[{value:'ask',label:'Ask'},{value:'review',label:'Review'}]}}};
+  ctx.kind=kind;run(ctx,'interaction.byTask.set("a",data);openSessionOptions(kind)');const transport=deferredAction(ctx);
+  await run(ctx,kind==='model'?'chooseSessionModel("model-b")':'chooseSessionPolicy("review")');
+  const changing=run(ctx,kind==='model'?'confirmModelChoice()':'confirmPermissionChoice()');assert.equal(transport.posts.length,1);
+  run(ctx,kind==='model'?'cancelModelChoice()':'cancelPermissionChoice()');
+  assert.equal(run(ctx,kind==='model'?'sessionOptions.modelValue':'sessionOptions.value'),kind==='model'?'model-b':'review');
+  const confirmation=body.innerHTML.match(/<div class="menu-confirm">([\s\S]*?)<\/div><\/div>/)?.[1];
+  if(confirmation)assert.ok([...confirmation.matchAll(/<button([^>]*)>/g)].every(([,attrs])=>/\sdisabled(?:\s|$)/.test(attrs)));
+  transport.finish();await changing;
+ }
 });

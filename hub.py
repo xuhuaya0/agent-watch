@@ -456,7 +456,7 @@ def control_task(key):
     return device, task["tool"], session
 
 
-@app.route("/api/control/tasks/<path:key>", methods=["GET", "POST"])
+@app.route("/api/control/tasks/<path:key>", methods=["GET", "POST", "PATCH"])
 @require_admin(check_csrf=True)
 def api_control_task(key):
     identity = control_task(key)
@@ -465,6 +465,10 @@ def api_control_task(key):
     if request.content_length is None or request.content_length > 65536:
         raise ControlError("invalid_body_size", 413)
     data = request.get_json(silent=True)
+    if request.method == "PATCH":
+        if (not isinstance(data, dict) or not {'id', 'operation'} <= data.keys() <= {'id', 'operation', 'revision'}):
+            raise ControlError("invalid_queue_operation", 400)
+        return jsonify({"ok": True, "command": CONTROL.manage_waiting(*identity, data['id'], data['operation'], data.get('revision'))})
     if not isinstance(data, dict) or set(data) != {"id", "action"}:
         raise ControlError("invalid_command", 400)
     return jsonify({"ok": True, "command": CONTROL.submit(*identity, data["id"], data["action"])})

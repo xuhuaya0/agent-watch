@@ -91,6 +91,27 @@ class HistoryTests(unittest.TestCase):
 
 
 class ReadQueueTests(unittest.TestCase):
+    def test_all_harnesses_preserve_process_phase_without_reclassifying_final_text(self):
+        for tool in ('codex', 'antigravity', 'dsh'):
+            with self.subTest(tool=tool):
+                queue = HistoryReads(lambda: 1)
+                caps = {(tool, SID): {'history': True}}
+                queue.request('device', tool, SID, None, 'worker')
+                reads, _ = queue.exchange('device', 'worker', caps, [])
+                messages = [
+                    {'id':'progress','role':'assistant','phase':'commentary','text':'Inspecting sample'},
+                    {'id':'tool','role':'tool','text':'Sample contents'},
+                    {'id':'answer','role':'assistant','phase':'final_answer','text':'Sample is ready'},
+                    {'id':'question','role':'user','phase':'commentary','text':'Explain it'}]
+                queue.exchange('device', 'worker', caps, [{'id': reads[0]['id'],
+                    'result': {'messages': messages, 'next_cursor': None}}])
+                result = queue.request('device', tool, SID, None, 'worker')['messages']
+                self.assertEqual(result[0]['phase'], 'commentary')
+                self.assertEqual(result[1]['role'], 'tool')
+                self.assertNotIn('phase', result[2])
+                self.assertNotIn('phase', result[3])
+                self.assertEqual([m['text'] for m in result], [m['text'] for m in messages])
+
     def test_reads_are_device_bound_revocable_and_ephemeral(self):
         now=[1];q=HistoryReads(lambda:now[0]);caps={('codex',SID):{'history':True}}
         self.assertFalse(q.request('d','codex',SID,None,'w')['ready'])

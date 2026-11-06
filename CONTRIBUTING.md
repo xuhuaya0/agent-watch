@@ -31,7 +31,7 @@ Ignoring files does not remove files already tracked by Git.
 ```sh
 python3 tools/check_publication.py --staged
 python3 -m unittest discover -s tests -v
-node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs tests/composer-keyboard.test.cjs
+node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs tests/composer-keyboard.test.cjs tests/reply-queue.test.cjs
 python3 tools/check_publication.py
 ```
 

@@ -89,6 +89,7 @@ class Antigravity:
                 context['project_id'] = native_metadata.get('projectId') if isinstance(native_metadata,dict) else None
                 context['metadata'] = native_metadata
             row = {'tool':'antigravity', 'session_id':sid, 'reply':True, 'requests':[],
+                   'delivery': {'state':'unknown', 'steer':False},
                    'reason':'文字消息以 Agent Watch 系统通知发送；此原生接口尚不支持回答选项或批准执行'}
         create = self.creation.capability(sid, context.get('project_id')) if self.creation else None
         policy = self.project_permissions.capability(sid, context.get('project_id')) if self.project_permissions else None
@@ -179,6 +180,14 @@ class Antigravity:
             if self.interactions is not None:
                 return self.interactions.execute(command['session_id'],command['action'])
             raise ControlError('native_action_unsupported')
+        if command['action'].get('mode'):
+            from .broker import validate_action
+            from .delivery import guard_reply
+            rows = self.session_snapshot(command['session_id'])
+            if not rows:
+                raise ControlError('native_session_unavailable')
+            validate_action(rows[0], command['action'])
+            guard_reply(rows[0], command['action'])
         # agentapi also accepts flags. Until its end-of-options contract is
         # verified, do not let a message be interpreted as an option.
         if command['action']['text'].startswith('-'):

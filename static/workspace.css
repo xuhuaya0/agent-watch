@@ -311,7 +311,7 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 }
 .composer-settings:hover { color: var(--ink); background: var(--hover); }
 .composer-setting-label { flex: none; color: var(--mute); }
-.composer-model, .composer-permission { min-width: 0; max-width: 23ch; overflow: hidden; text-overflow: ellipsis; font-weight: 550; color: var(--text); }
+.composer-model, .composer-permission, .composer-effort { min-width: 0; max-width: 23ch; overflow: hidden; text-overflow: ellipsis; font-weight: 550; color: var(--text); }
 .composer-settings-chevron { flex: none; }
 .composer-send { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-height: 30px; margin: 0 0 0 auto; padding: 4px 10px; }
 .composer-send .icon { width: 14px; height: 14px; }
@@ -371,6 +371,34 @@ input::placeholder, textarea::placeholder { color: var(--mute); opacity: 1; }
 .session-actions button { margin: 0; white-space: nowrap; }
 .session-options { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: 0 20px 80px #18312626; overflow-y: auto; }
 .session-options::backdrop { background: #17251e45; backdrop-filter: blur(2px); }
+.session-options.session-menu { position: fixed; inset: auto; margin: 0; width: min(300px, calc(100vw - 16px)); max-height: min(420px, 65dvh); padding: 6px; border-radius: 11px; box-shadow: 0 5px 24px #162a2524; overscroll-behavior: contain; z-index: 110; }
+.menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 7px 6px; }
+.menu-heading h2 { margin: 0; color: var(--mute); font-size: 11px; font-weight: 500; }
+.menu-heading button { border: 0; background: transparent; padding: 0 4px; margin: 0; color: var(--mute); font-size: 17px; line-height: 20px; }
+.native-menu-choice { display: flex; align-items: center; gap: 7px; width: 100%; margin: 0; padding: 9px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; font-size: 13px; line-height: 1.35; }
+.native-menu-choice:hover:not(:disabled), .native-menu-choice:focus-visible { background: var(--accent-soft); }
+.native-menu-choice:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+.native-menu-choice.selected { color: var(--accent); }
+.native-menu-choice:disabled { opacity: .65; cursor: default; }
+.menu-check { width: 14px; flex: none; font-weight: 650; }
+.menu-choice-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.native-menu-choice small { color: var(--mute); font-size: 10px; flex: none; }
+.menu-note, .menu-scope { margin: 4px 8px 7px; font-size: 11px; line-height: 1.5; color: var(--mute); overflow-wrap: anywhere; }
+.menu-more { margin-top: 4px; border-top: 1px solid var(--line); }
+.menu-more summary { padding: 9px 8px; font-size: 11px; color: var(--mute); cursor: pointer; }
+.menu-confirm { margin-top: 6px; padding: 9px 8px; border-top: 1px solid var(--line); }
+.menu-confirm p { font-size: 12px; line-height: 1.5; margin: 0 0 9px; }
+.menu-confirm>div { display: flex; justify-content: flex-end; gap: 6px; }
+.menu-confirm button { margin: 0; font-size: 12px; padding: 5px 9px; }
+.session-menu .options-error:not(:empty), .session-menu .settings-change { margin: 6px 8px; padding: 6px; font-size: 11px; }
+.session-menu .interaction-feedback { margin: 0 8px; }
+.session-menu .interaction-feedback:empty { display: none; }
+.reply-queue { max-height:min(200px,24dvh); overflow-y:auto; overscroll-behavior:contain; display: grid; gap: 5px; margin: 0 0 8px; }
+.queued-reply { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 12px; }
+.queued-reply>span, .queued-reply>p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
+.queued-reply-actions { display: flex; gap: 4px; flex: none; }
+.queued-reply-actions button { margin: 0; padding: 3px 6px; font-size: 11px; }
+@media (max-width: 480px) { .queued-reply { flex-wrap: wrap; } .queued-reply>span, .queued-reply>p { flex-basis: 100%; } .queued-reply-actions { margin-left: auto; } .composer-model, .composer-permission { max-width: 17ch; } }
 .options-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .options-heading small { display: block; color: var(--mute); font-size: 11px; margin-bottom: 4px; }
 .options-heading h2 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.02em; }

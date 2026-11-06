@@ -15,7 +15,7 @@ TEXT = {'type': True, 'text': 'reply_text'}
 ITEM = {'type': True, 'id': True, 'status': True,
         'questions': [{'title': True, 'options': [True]}],
         'content': [TEXT], 'input': [TEXT]}
-TURN = {'turnId': True, 'status': True, 'items': [ITEM]}
+TURN = {'turnId': True, 'status': True, 'turnStartedAtMs': True, 'items': [ITEM]}
 SCHEMA = {'turns': [TURN], 'turnHistory': {'kind': True, 'history': {'entitiesByKey': {'*': TURN}}}}
 SCHEMA.update(latestThreadSettings={'approvalPolicy':True, 'approvalsReviewer':True,
               'sandboxPolicy':True, 'permissions':True, 'activePermissionProfile':True,

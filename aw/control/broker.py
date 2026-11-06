@@ -71,6 +71,11 @@ def normalize_sessions(rows):
             raise ControlError('invalid_requests', 400)
         clean = {'tool': row['tool'], 'session_id': row['session_id'], 'reply': row['reply'],
                  'reason': str(row.get('reason', ''))[:500], 'requests': []}
+        if 'delivery' in row:
+            from .delivery import valid_delivery
+            if not valid_delivery(row['delivery']):
+                raise ControlError('invalid_delivery_capability', 400)
+            clean['delivery'] = dict(row['delivery'])
         if 'history' in row:
             if type(row['history']) is not bool:
                 raise ControlError('invalid_capability', 400)
@@ -84,8 +89,11 @@ def normalize_sessions(rows):
                 raise ControlError('invalid_settings_capability', 400)
             clean['settings'] = dict(settings)
         if 'model' in row:
-            from .codex_settings import valid_model_capability
-            if row['tool'] != 'codex' or not valid_model_capability(row['model']):
+            from .codex_settings import valid_model_capability as valid_codex_model
+            from .dsh_settings import valid_model_capability as valid_dsh_model
+            valid = ((row['tool'] == 'codex' and valid_codex_model(row['model']))
+                     or (row['tool'] == 'dsh' and valid_dsh_model(row['model'])))
+            if not valid:
                 raise ControlError('invalid_model_capability', 400)
             clean['model'] = row['model']
         if 'create' in row:
@@ -194,9 +202,21 @@ def validate_action(session, action):
             raise ControlError('invalid_message', 400)
         return
     if kind == 'reply':
-        if set(action) != {'kind', 'text'} or not text(action.get('text'), 16000) or not action['text'].strip():
+        fields = {'kind', 'text'}
+        if 'mode' in action:
+            fields.add('mode')
+        if action.get('mode') == 'steer':
+            fields.add('revision')
+        if (set(action) != fields or action.get('mode', 'after-turn') not in ('after-turn', 'steer')
+                or not text(action.get('text'), 16000) or not action['text'].strip()):
             raise ControlError('invalid_message', 400)
-        if not session['reply']:
+        delivery = session.get('delivery')
+        if action.get('mode') == 'steer':
+            if not delivery or not delivery['steer'] or action.get('revision') != delivery.get('revision'):
+                raise ControlError('reply_turn_changed')
+        elif 'mode' in action and not delivery:
+            raise ControlError('reply_queue_unavailable')
+        if not session['reply'] and not (delivery and action.get('mode') == 'after-turn'):
             raise ControlError('reply_unavailable')
         return
     if kind not in ('answer', 'approval') or not text(action.get('request_id')) or not text(action.get('revision')):
@@ -276,7 +296,7 @@ class Broker:
         return token
 
     def _revoke_pending(self, db, device):
-        db.execute("UPDATE commands SET state=CASE WHEN state='queued' THEN 'cancelled' ELSE 'unknown' END,action=NULL,detail='设备控制连接已撤销' WHERE device=? AND state IN ('queued','dispatched')", (device,))
+        db.execute("UPDATE commands SET state=CASE WHEN state IN ('queued','waiting') THEN 'cancelled' ELSE 'unknown' END,action=NULL,detail='设备控制连接已撤销' WHERE device=? AND state IN ('queued','waiting','dispatched')", (device,))
 
     def revoke(self, device):
         with self.lock, self.db() as db:
@@ -334,23 +354,26 @@ class Broker:
                 raise ControlError('control_not_configured',409)
             db.execute('INSERT OR REPLACE INTO control_settings VALUES (?,?)',(device,int(enabled)))
             if not enabled:
-                db.execute("UPDATE commands SET state='cancelled',action=NULL,detail='已暂停设备交互，未派发的操作已取消' WHERE device=? AND state='queued'",(device,))
+                db.execute("UPDATE commands SET state='cancelled',action=NULL,detail='已暂停设备交互，未派发的操作已取消' WHERE device=? AND state IN ('queued','waiting')",(device,))
         return self.device_status(device)
 
     def _expire(self, db):
         now = self.clock()
-        db.execute("UPDATE commands SET state=CASE WHEN state='queued' THEN 'expired' ELSE 'unknown' END,action=NULL,detail='操作超时；请检查原应用，系统不会自动重发' WHERE state IN ('queued','dispatched') AND deadline<?", (now,))
-        db.execute("DELETE FROM commands WHERE created<? AND state NOT IN ('queued','dispatched')", (now - 7*86400,))
+        db.execute("UPDATE commands SET state=CASE WHEN state IN ('queued','waiting') THEN 'expired' ELSE 'unknown' END,action=NULL,detail='操作超时；请检查原应用，系统不会自动重发' WHERE state IN ('queued','waiting','dispatched') AND deadline<?", (now,))
+        db.execute("DELETE FROM commands WHERE created<? AND state NOT IN ('queued','waiting','dispatched')", (now - 7*86400,))
 
     def status(self, device, tool, session):
         with self.lock, self.db() as db:
             self._expire(db)
             _, cap = self._owner(device, (tool, session))
             enabled = self._enabled(db, device)
-            rows = db.execute('SELECT id,state,detail,created,result,kind FROM commands WHERE device=? AND tool=? AND session=? ORDER BY created DESC LIMIT 5', (device, tool, session)).fetchall()
+            rows = db.execute("SELECT id,state,detail,created,result,kind,action FROM commands WHERE device=? AND tool=? AND session=? ORDER BY CASE WHEN state='waiting' THEN 0 ELSE 1 END,created DESC LIMIT 25", (device, tool, session)).fetchall()
             commands = []
             for row in rows:
                 item = dict(row)
+                action = item.pop('action')
+                if item['state'] == 'waiting' and action:
+                    item['text'] = json.loads(action)['text']
                 result = item.pop('result')
                 if result:
                     item['result'] = json.loads(result)
@@ -371,18 +394,68 @@ class Broker:
             if row:
                 if row['fingerprint'] != fingerprint:
                     raise ControlError('command_id_conflict')
-                return {'id': row['id'], 'state': row['state'], 'detail': row['detail']}
+                return {'id': row['id'], 'state': row['state'], 'detail': row['detail'], 'created': row['created'], 'kind': row['kind']}
             if not self._enabled(db, device):
                 raise ControlError('control_paused')
             worker, cap = self._owner(device, (tool, session))
             if not cap:
                 raise ControlError('control_offline')
             validate_action(cap, action)
+            if action['kind'] == 'reply' and cap.get('delivery') and 'mode' not in action:
+                action = {**action, 'mode': 'after-turn'}
+            from .delivery import should_wait
+            wait = should_wait(cap, action)
+            # Preserve FIFO when another reply is already waiting, even if an
+            # idle snapshot arrives just before this submission.
+            wait = wait or action['kind'] == 'reply' and action.get('mode') == 'after-turn' and bool(db.execute(
+                "SELECT 1 FROM commands WHERE device=? AND tool=? AND session=? AND state='waiting'", (device, tool, session)).fetchone())
+            if not wait and db.execute("SELECT 1 FROM commands WHERE device=? AND tool=? AND session=? AND state IN ('queued','dispatched')", (device, tool, session)).fetchone():
+                raise ControlError('operation_in_progress')
+            if wait and db.execute("SELECT count(*) FROM commands WHERE device=? AND tool=? AND session=? AND state='waiting'", (device, tool, session)).fetchone()[0] >= 20:
+                raise ControlError('reply_queue_full')
+            now = self.clock()
+            state = 'waiting' if wait else 'queued'
+            detail = '等待当前运行结束' if wait else ''
+            db.execute('INSERT INTO commands(id,device,tool,session,fingerprint,action,state,created,deadline,worker,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (command_id, device, tool, session, fingerprint, encoded(action), state, now, now+(86400 if wait else 60), worker, action['kind']))
+            db.execute('UPDATE commands SET detail=? WHERE id=?', (detail, command_id))
+            return {'id': command_id, 'state': state, 'detail': detail, 'created': now, 'kind': action['kind']}
+
+    def manage_waiting(self, device, tool, session, command_id, operation, revision=None):
+        """Atomically cancel or promote one un-dispatched message, never clone it."""
+        if (not text(command_id) or operation not in ('cancel', 'steer')
+                or operation == 'steer' and not text(revision)
+                or operation == 'cancel' and revision is not None):
+            raise ControlError('invalid_queue_operation', 400)
+        with self.lock, self.db() as db:
+            self._expire(db)
+            row = db.execute('SELECT * FROM commands WHERE id=? AND device=? AND tool=? AND session=?',
+                             (command_id, device, tool, session)).fetchone()
+            if row is None or row['kind'] != 'reply':
+                raise ControlError('reply_queue_changed')
+            if operation == 'cancel' and row['state'] == 'cancelled':
+                return {'id': command_id, 'state': 'cancelled', 'detail': row['detail']}
+            action = json.loads(row['action']) if row['action'] else None
+            # Repeating an already accepted promotion cannot dispatch a second
+            # operation. Terminal/pending rows remain the original command ID.
+            if operation == 'steer' and action and action.get('mode') == 'steer':
+                return {'id': command_id, 'state': row['state'], 'detail': row['detail']}
+            if row['state'] != 'waiting':
+                raise ControlError('reply_queue_changed')
+            if operation == 'cancel':
+                db.execute("UPDATE commands SET state='cancelled',action=NULL,detail='已取消，未发送' WHERE id=?", (command_id,))
+                return {'id': command_id, 'state': 'cancelled', 'detail': '已取消，未发送'}
+            if not self._enabled(db, device):
+                raise ControlError('control_paused')
+            worker, cap = self._owner(device, (tool, session))
+            if not cap or worker != row['worker']:
+                raise ControlError('control_offline')
+            action = {**action, 'mode': 'steer', 'revision': revision}
+            validate_action(cap, action)
             if db.execute("SELECT 1 FROM commands WHERE device=? AND tool=? AND session=? AND state IN ('queued','dispatched')", (device, tool, session)).fetchone():
                 raise ControlError('operation_in_progress')
-            now = self.clock()
-            db.execute('INSERT INTO commands(id,device,tool,session,fingerprint,action,state,created,deadline,worker,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                       (command_id, device, tool, session, fingerprint, encoded(action), 'queued', now, now+60, worker, action['kind']))
+            db.execute("UPDATE commands SET state='queued',action=?,deadline=?,detail='' WHERE id=?",
+                       (encoded(action), self.clock()+60, command_id))
             return {'id': command_id, 'state': 'queued', 'detail': ''}
 
     def history(self, device, tool, session, cursor=None, attachment=None):
@@ -399,7 +472,7 @@ class Broker:
             raise ControlError('invalid_exchange', 400)
         caps = normalize_sessions(sessions)
         for r in receipts:
-            if not isinstance(r, dict) or not text(r.get('id')) or r.get('state') not in ('delivered', 'resolved', 'rejected', 'unknown') or not isinstance(r.get('detail', ''), str):
+            if not isinstance(r, dict) or not text(r.get('id')) or r.get('state') not in ('delivered', 'resolved', 'rejected', 'unknown', 'waiting') or not isinstance(r.get('detail', ''), str):
                 raise ControlError('invalid_receipt', 400)
             if 'result' in r:
                 result = r['result']
@@ -419,8 +492,24 @@ class Broker:
             workers[worker] = {'at': self.clock(), 'sessions': caps}
             self.live[device] = workers
             accepted = []
+            deferred = set()
             for r in receipts:
-                row = db.execute('SELECT state,tool,kind,result,session FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                row = db.execute('SELECT state,tool,kind,result,session,action,created FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                if r['state'] == 'waiting':
+                    # The worker positively reports it performed no native write.
+                    # Unknown/dropped dispatches never take this path or retry.
+                    action = json.loads(row['action']) if row and row['action'] else {}
+                    if (row and row['state'] in ('dispatched', 'waiting') and row['kind'] == 'reply'
+                            and action.get('mode') == 'after-turn'):
+                        db.execute("UPDATE commands SET state='waiting',deadline=?,detail='等待当前运行结束' WHERE id=?",
+                                   (row['created']+86400, r['id']))
+                        accepted.append(r['id']); deferred.add(r['id'])
+                    elif not row or row['state'] not in ('dispatched', 'waiting') or action.get('mode') != 'after-turn':
+                        # An acknowledgement may have been lost before a user
+                        # promoted/cancelled this same ID. Retire the old no-write
+                        # receipt without undoing that newer atomic decision.
+                        accepted.append(r['id'])
+                    continue
                 if row and row['state'] in ('dispatched', 'delivered', 'resolved', 'rejected', 'unknown'):
                     if 'result' in r and (row['tool'] != r['result']['tool'] or row['kind'] != 'create'
                                           or row['session'] == r['result']['session_id']):
@@ -440,9 +529,14 @@ class Broker:
                 enabled_caps = caps if self._enabled(db, device) else {}
                 reads, read_accepted = self.history_reads.exchange(device, worker, enabled_caps, read_results)
                 read_response.update(reads=reads, read_receipts=read_accepted)
-            queued = db.execute("SELECT * FROM commands WHERE device=? AND state='queued' ORDER BY created", (device,)).fetchall()
+            queued = db.execute("SELECT * FROM commands WHERE device=? AND state IN ('queued','waiting') ORDER BY created", (device,)).fetchall()
             command = None
+            waiting_sessions = set()
             for row in queued:
+                key = (row['tool'], row['session'])
+                if row['id'] in deferred:
+                    waiting_sessions.add(key)
+                    continue
                 cap = caps.get((row['tool'], row['session']))
                 if row['worker'] != worker and cap is None:
                     continue  # Another live Harness owns this operation.
@@ -453,12 +547,19 @@ class Broker:
                         raise ControlError('native_connection_changed')
                     action = json.loads(row['action'])
                     validate_action(cap, action)
+                    from .delivery import should_wait
+                    if should_wait(cap, action) or row['state'] == 'waiting' and key in waiting_sessions:
+                        db.execute("UPDATE commands SET state='waiting',deadline=?,detail='等待当前运行结束' WHERE id=?", (row['created']+86400, row['id']))
+                        waiting_sessions.add(key)
+                        continue
+                    if db.execute("SELECT 1 FROM commands WHERE device=? AND tool=? AND session=? AND state='dispatched'", (device, *key)).fetchone():
+                        continue
                 except ControlError as e:
                     db.execute("UPDATE commands SET state='rejected',action=NULL,detail=? WHERE id=?", (e.code, row['id']))
                     continue
                 # Persist dispatch before returning the command. A dropped HTTP
                 # response becomes unknown, never a second native invocation.
-                db.execute("UPDATE commands SET state='dispatched',deadline=? WHERE id=?", (self.clock()+120, row['id']))
+                db.execute("UPDATE commands SET state='dispatched',deadline=?,detail='' WHERE id=?", (self.clock()+120, row['id']))
                 command = {'id': row['id'], 'tool': row['tool'], 'session_id': row['session'], 'action': action}
                 break
             result = {'command': command, 'receipts': accepted}

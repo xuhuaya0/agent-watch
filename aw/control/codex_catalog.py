@@ -10,9 +10,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 
@@ -264,12 +266,38 @@ class NativeCatalog:
             return result
 
 
-def native_catalog(root, executable=None):
-    if executable is None:
-        from .codex_create import desktop_draft_app
-        app = desktop_draft_app()
-        if app is None:
+def _metadata_executable(app):
+    """Verify a metadata reader independently of versioned desktop write APIs.
+
+    An app update must not erase a readable model/profile catalog merely
+    because its draft-creation protocol has not been verified yet. This
+    reader still requires the native signer and validates every RPC result.
+    """
+    try:
+        with (app/'Contents/Info.plist').open('rb') as file:
+            info = plistlib.load(file)
+        if not isinstance(info, dict) or info.get('CFBundleIdentifier') != 'com.openai.codex':
             return None
         executable = app/'Contents/Resources/codex-cli/bin/codex'
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            return None
+        requirement = ('=anchor apple generic and identifier "com.openai.codex" '
+                       'and certificate leaf[subject.OU] = "2DC432GLL2"')
+        subprocess.run(['/usr/bin/codesign', '--verify', '--test-requirement='+requirement, str(app)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
+        return executable
+    except (OSError, TypeError, plistlib.InvalidFileException, subprocess.SubprocessError):
+        return None
+
+
+def native_catalog(root, executable=None):
+    if executable is None and sys.platform == 'darwin':
+        for base in (Path('/Applications'), Path.home()/'Applications'):
+            for name in ('ChatGPT.app', 'Codex.app'):
+                executable = _metadata_executable(base/name)
+                if executable is not None:
+                    return NativeCatalog(executable, root)
+    if executable is None:
+        return None
     path = Path(executable).expanduser()
     return NativeCatalog(path, root) if path.is_file() and os.access(path, os.X_OK) else None

@@ -300,3 +300,29 @@ test('empty collection is distinct from an empty filter result and offers recove
  const {ctx,nodes}=context();run(ctx,'renderList()');assert.match(nodes['session-items'].innerHTML,/尚未发现会话/);assert.doesNotMatch(nodes['session-items'].innerHTML,/筛选条件/);
  seed(ctx,[task('a')]);run(ctx,'workspace.query="no-match";renderList()');assert.match(nodes['session-items'].innerHTML,/没有符合筛选条件/);assert.match(nodes['session-items'].innerHTML,/清除筛选/);
 });
+
+
+test('captured process is folded for all harnesses without hiding final replies',()=>{
+ const {ctx}=context();
+ for(const tool of ['codex','antigravity','dsh']){
+  ctx.item=task('a',{tool,extra:{latest_turn:{user:'Question',assistant:'Native progress',assistant_phase:'commentary'}}});
+  const progress=run(ctx,'capturedChatHtml(item,true)');
+  assert.match(progress,/<details class="history-tools" data-captured-process>/);
+  assert.doesNotMatch(progress,/<details[^>]*\sopen/);
+  assert.match(progress,/Native progress/);
+  ctx.item.extra.latest_turn.assistant_phase='final';
+  const final=run(ctx,'capturedChatHtml(item,true)');
+  assert.doesNotMatch(final,/<details/);assert.match(final,/Native progress/);
+ }
+});
+test('captured process expansion survives updates only within the same native turn',()=>{
+ const {ctx,nodes}=context();
+ run(ctx,"document.getElementById('latest-messages')");
+ const region=nodes['latest-messages'],process={open:false};region.querySelector=()=>process;
+ ctx.item=task('a',{turn_started_at:10,extra:{latest_turn:{user:'Question',assistant:'Progress',assistant_phase:'commentary'}}});
+ run(ctx,'updateCapturedChat(item,true)');assert.equal(process.open,false);
+ process.open=true;ctx.item.extra.latest_turn.assistant='New progress';
+ run(ctx,'updateCapturedChat(item,true)');assert.equal(process.open,true);
+ ctx.item.turn_started_at=11;
+ run(ctx,'updateCapturedChat(item,true)');assert.equal(process.open,false);
+});

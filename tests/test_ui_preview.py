@@ -135,7 +135,9 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(response['error'], 'preview_read_only')
         self.assertEqual(cap, fixture.route('GET', '/api/control/tasks/cx-ready')[2]['capability'])
         running = fixture.route('GET', '/api/control/tasks/cx-running')[2]['capability']
-        self.assertNotIn('model', running)
+        self.assertEqual(running['model']['options'], [])
+        self.assertEqual(running['delivery']['state'], 'running')
+        self.assertTrue(running['reply'])
         self.assertIn('model', running['settings'])
 
     def test_readonly_and_unknown_settings_are_distinct_for_all_harnesses(self):

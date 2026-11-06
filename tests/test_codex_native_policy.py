@@ -35,7 +35,7 @@ def options(result):
 
 
 class NativePolicyTests(unittest.TestCase):
-    def test_primary_ask_and_advanced_modes_keep_distinct_native_effects(self):
+    def test_single_native_ask_entry_keeps_distinct_effective_permission_modes(self):
         data = catalog()
         result = native_capability(state(), data)
         self.assertTrue(valid_capability(result))
@@ -43,10 +43,13 @@ class NativePolicyTests(unittest.TestCase):
         choices = options(result)
         self.assertEqual(choices['auto']['label'], 'Ask for approval')
         self.assertNotIn('group', choices['auto'])
-        self.assertEqual(choices['read-only']['group'], 'advanced')
-        self.assertEqual(choices['granular']['group'], 'advanced')
+        self.assertNotIn('read-only', choices)
+        self.assertNotIn('granular', choices)
+        self.assertEqual(result['current_option'], 'auto')
         self.assertEqual(choices['full-access']['label'], 'Full access')
         self.assertNotIn('guardian-approvals', choices)
+        self.assertEqual(result['unavailable_options'], [{'value': 'guardian-approvals',
+            'label': 'Approve for me', 'reason': '尚未读取到 Codex 原生自动审查选项的可用状态'}])
         self.assertEqual(settings_for('read-only', data), {'permissions': ':read-only',
             'approvalPolicy': 'on-request', 'approvalsReviewer': 'user'})
         self.assertEqual(settings_for('auto', data), {'permissions': ':workspace',
@@ -56,10 +59,13 @@ class NativePolicyTests(unittest.TestCase):
         self.assertEqual(settings_for('full-access', data), {'permissions': ':danger-full-access',
             'approvalPolicy': 'never', 'approvalsReviewer': 'user'})
 
-    def test_primary_ask_resolves_config_and_projectless_defaults_without_sandbox_guessing(self):
+    def test_primary_ask_uses_native_default_profile_then_workspace_preset(self):
         for config, kind, primary in [({}, 'project', 'auto'), ({}, 'projectless', 'granular'),
-                ({'sandbox_mode': 'read-only'}, 'project', 'read-only'),
-                ({'sandbox_mode': 'workspace-write', 'approval_policy': GRANULAR_POLICY}, 'project', 'granular')]:
+                ({'default_permissions': ':read-only'}, 'project', 'read-only'),
+                ({'default_permissions': ':workspace'}, 'projectless', 'granular'),
+                ({'default_permissions': ':danger-full-access'}, 'project', 'auto'),
+                ({'sandbox_mode': 'read-only'}, 'project', 'auto'),
+                ({'sandbox_mode': 'workspace-write', 'approval_policy': GRANULAR_POLICY}, 'project', 'auto')]:
             with self.subTest(config=config, kind=kind):
                 data, native = catalog(), state()
                 data['config'] = copy.deepcopy(config)
@@ -70,10 +76,13 @@ class NativePolicyTests(unittest.TestCase):
         data = catalog()
         data['config']['sandbox_workspace_write'] = {'writable_roots': ['/workspace/extra']}
         result = options(native_capability(state(), data))
-        self.assertFalse(any(row['label'] == 'Ask for approval' for row in result.values()))
-        self.assertEqual(result['auto']['group'], 'advanced')
+        self.assertEqual(result['auto']['label'], 'Ask for approval')
         self.assertNotIn('sandboxPolicy', settings_for('auto', data))
         self.assertNotIn('/workspace/extra', str(settings_for('auto', data)))
+        data['requirements']['defaultPermissions'] = ':read-only'
+        result = options(native_capability(state(), data))
+        self.assertIn('read-only', result)
+        self.assertNotIn('auto', result)
 
     def test_guardian_requires_native_default_or_managed_evidence_not_feature_permission_alone(self):
         data = catalog()
@@ -94,12 +103,47 @@ class NativePolicyTests(unittest.TestCase):
         data['requirements'] = {'allowedPermissionProfiles': {':workspace': True, ':read-only': False},
             'allowedSandboxModes': ['workspace-write'], 'allowedApprovalsReviewers': ['user'],
             'allowedApprovalPolicies': [GRANULAR_POLICY]}
-        self.assertEqual(set(options(native_capability(state(), data))), {'granular'})
+        native = state()
+        native['history']['workspaceKind'] = 'projectless'
+        self.assertEqual(set(options(native_capability(native, data))), {'granular'})
         for value in ('auto', 'read-only', 'full-access', 'guardian-approvals', 'profile:team-profile'):
             self.assertIsNone(settings_for(value, data))
         data['requirements']['allowedApprovalPolicies'][0] = {
             'granular': {**GRANULAR_POLICY['granular'], 'rules': 0}}
         self.assertEqual(native_capability(state(), data)['options'], [])
+
+    def test_native_menu_has_three_entries_and_effective_ask_variants_select_the_same_entry(self):
+        data = catalog()
+        data['profiles'] = [row for row in data['profiles'] if row['id'].startswith(':')]
+        data['config']['approvals_reviewer'] = 'auto_review'
+        for policy, sandbox in [('on-request', {'type': 'readOnly', 'networkAccess': False}),
+                (GRANULAR_POLICY, state()['history']['latestThreadSettings']['sandboxPolicy'])]:
+            native = state()
+            native['history']['latestThreadSettings'].update(activePermissionProfile=None,
+                approvalPolicy=policy, sandboxPolicy=sandbox)
+            result = native_capability(native, data)
+            self.assertEqual([row['label'] for row in result['options']],
+                ['Ask for approval', 'Approve for me', 'Full access'])
+            self.assertEqual(result['current_label'], 'Ask for approval')
+            self.assertEqual(result['current_option'], 'auto')
+            self.assertIn(result['current'], ('read-only', 'granular'))
+            self.assertTrue(valid_capability(result))
+
+    def test_unavailable_menu_entries_never_grant_writes_and_reasons_are_bounded(self):
+        data = catalog()
+        data['requirements']['allowedApprovalsReviewers'] = ['user']
+        result = native_capability(state(), data)
+        self.assertIn('管理策略', result['unavailable_options'][0]['reason'])
+        self.assertIsNone(settings_for('guardian-approvals', data))
+        original = copy.deepcopy(result)
+        for change in (lambda r: r['unavailable_options'][0].update(value='auto'),
+                lambda r: r['unavailable_options'][0].update(value={}),
+                lambda r: r['unavailable_options'][0].update(reason='x'*501),
+                lambda r: r.update(current_option='unlisted'),
+                lambda r: r.update(current_option=[])):
+            result = copy.deepcopy(original)
+            change(result)
+            self.assertFalse(valid_capability(result))
 
     def test_missing_disallowed_duplicate_or_malformed_catalog_never_creates_profiles(self):
         for change in (lambda d: d.update(profiles=[]),

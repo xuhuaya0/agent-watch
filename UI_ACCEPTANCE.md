@@ -16,7 +16,7 @@ Harness version before deciding which controls to render.
 
 ```sh
 python3 -m unittest discover -s tests -q
-node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs tests/composer-keyboard.test.cjs
+node --test tests/dashboard-ui.test.cjs tests/control-ui.test.cjs tests/history-ui.test.cjs tests/composer-keyboard.test.cjs tests/reply-queue.test.cjs
 git diff --check
 ```
 
@@ -51,12 +51,12 @@ entire page smoke check. Reload after changing assets.
 | UI-04 | Empty data and filters with no match | Meaningful empty state, clear filters/recovery; not a loading or network error presented as no data |
 | UI-05 | Offline collection or disconnected control | Different conditions are identifiable; no enabled unavailable action; drafts retained |
 | UI-06 | Native question and single approval | Exact offered choices; no persistent approval implication; stale choice cannot be submitted |
-| UI-07 | Model and permissions for three Harnesses | Separate compact entries open independent dialogs. Check the original chat’s current value is visibly selected, including read-only values outside the writable catalog and advanced choices. Check effort compatibility, project scope, busy/stale rejection and older providers; opening a picker sends no change and one change must preserve the other setting |
+| UI-07 | Model and permissions for three Harnesses | Separate compact entries open anchored model, effort and permission menus with no modal backdrop. Check the original chat’s current value is visibly selected, including read-only values outside the writable catalog and advanced choices. Check direct selection, effort compatibility, scoped inline confirmation, native three-entry permission ordering, busy/stale rejection and older providers; opening a picker sends no change and one change must preserve the other setting |
 | UI-08 | New conversation | Open from the list header for a supported destination. Check the device, Harness and draft/send behavior in the dialog |
 | UI-09 | Live updates while typing and reading | Draft, caret, selected chat, scroll and expanded reading context retained; changed native revision invalidates action |
 | UI-10 | Delayed/failed/uncertain action | Immediate in-context feedback; no duplicate retry; failed/unknown receipt never implies completion |
 | UI-11 | Login, initial setup and failed connection | Labeled inputs, visible loading/error and recovery; no blank screen; no password exposure |
-| UI-12 | Keyboard and responsive layout | Check focus, dialog errors and Escape. Enter sends once, Shift + Enter creates a line, Ctrl/⌘ + Enter remains supported, and IME confirmation preserves the draft |
+| UI-12 | Keyboard and responsive layout | Check selected-item focus, Arrow/Home/End, outside click, Tab, Escape, menu errors and the creation dialog. Enter sends once, Shift + Enter creates a line, Ctrl/⌘ + Enter remains supported, and IME confirmation preserves the draft |
 
 Inspect at 1280×800 and 390×844, and around an affected breakpoint (760 or 1100
 px) when changing layout. Include long content and keyboard checks, not only an
@@ -73,6 +73,12 @@ tests cover delayed response ordering and stale request identities; a focused
 browser exercise verifies their observable effects. If a particular failure
 cannot be exercised, record **not verified** rather than infer a pass from the
 normal scenario.
+
+Additional reply-queue checks: while a native turn is running, a normal send waits;
+a second draft stays usable. Cancel and Insert now operate on the original waiting
+command. Check concurrent cancellation/claim, ordered multiple replies, uncertain
+receipts, and immediate removal of the optimistic bubble when the native echo
+arrives. A waiting item must not be rendered twice or silently auto-retried.
 
 ## 4. Keep verification levels separate
 

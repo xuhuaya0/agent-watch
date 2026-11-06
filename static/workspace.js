@@ -443,13 +443,24 @@ function capturedChatHtml(task, loaded) {
   const messages = [];
   if (user) messages.push(`<article class="message user-message" aria-label="你"><div class="message-body">${markdown(user)}</div></article>`);
   if (turn?.notification) messages.push(`<article class="message user-message"><small>原生系统通知</small><div class="message-body">${markdown(turn.notification)}</div></article>`);
-  if (reply) messages.push(`<article class="message" aria-label="${turn?'最新回复':'最新结果摘要'}">${turn?'':'<small>结果摘要</small>'}<div class="message-body">${markdown(reply)}</div><div class="message-actions"><button type="button" title="复制回复" aria-label="复制回复" onclick="copyReply()">${icon('copy')}</button></div></article>`);
+  if (reply && turn?.assistant_phase === 'commentary') {
+    messages.push(`<details class="history-tools" data-captured-process><summary>过程</summary><div class="history-tools-list"><article class="message history-commentary"><div class="message-body">${markdown(reply)}</div></article></div></details>`);
+  } else if (reply) messages.push(`<article class="message" aria-label="${turn?'最新回复':'最新结果摘要'}">${turn?'':'<small>结果摘要</small>'}<div class="message-body">${markdown(reply)}</div><div class="message-actions"><button type="button" title="复制回复" aria-label="复制回复" onclick="copyReply()">${icon('copy')}</button></div></article>`);
   if (turn?.truncated) messages.push('<p class="capture-note">仅显示已采集的部分。</p>');
   if (!messages.length) {
     const empty = !loaded ? '正在读取…' : task.extra?.metadata_only ? '原应用仅提供了会话索引。' : task.state === 'running' ? '正在处理…' : '暂无消息';
     messages.push(`<p class="capture-note">${empty}</p>`);
   }
   return messages.join('');
+}
+function updateCapturedChat(task, loaded) {
+  const region = document.getElementById('latest-messages');
+  const turn = JSON.stringify([taskId(task),task.turn_started_at,task.extra?.latest_turn?.user]);
+  const expanded = region.capturedTurn === turn && region.querySelector('[data-captured-process]')?.open;
+  setDetailHtml('latest-messages', capturedChatHtml(task, loaded));
+  region.capturedTurn = turn;
+  const process = region.querySelector('[data-captured-process]');
+  if (process) process.open = Boolean(expanded);
 }
 function settleChatOpening() {
   if (!readerPane.openAtLatest) return;
@@ -502,7 +513,7 @@ function renderDetail() {
   }
   updateChatHeader(task, hasHistory);
   updateChatDuration();
-  setDetailHtml('latest-messages', capturedChatHtml(task, Boolean(workspace.detail)));
+  updateCapturedChat(task, Boolean(workspace.detail));
   workspace.renderedSignature = signature;
   if (typeof renderInteraction === 'function') renderInteraction();
   if (anchor) pane.scrollTop += anchor.region.getBoundingClientRect().top - anchor.top;

@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .broker import ControlError, normalize_sessions, validate_action
 from .codex import Codex
 from .codex_questions import project, patch_history, pending, reply_envelope
+from .delivery import codex_delivery, guard_reply
 
 
 VERSIONS = {'initialize': 0, 'thread-owner-discovery': 1,
@@ -443,7 +444,12 @@ class CodexDesktop:
             settings.pop('note', None)
             if notes:
                 settings['note'] = ' '.join(notes)
+        delivery = codex_delivery(state)
+        if requests:
+            delivery = {**delivery, 'state': 'waiting', 'steer': False}
+            delivery.pop('revision', None)
         return normalize_sessions([{'tool': 'codex', 'session_id': sid, 'history': self.history_reader is not None,
+                                    'delivery': delivery,
                                     **({'policy':policy} if policy else {}),
                                     **({'model':model} if model else {}),
                                     **({'settings':settings} if settings else {}),
@@ -480,6 +486,7 @@ class CodexDesktop:
 
     def cold_row(self, sid):
         return {'tool': 'codex', 'session_id': sid, 'history': True,
+                'delivery': {'state': 'unknown', 'steer': False, 'native_queue': self.queue_sender is not None},
                 'reply': self.queue_sender is not None, 'requests': [],
                 'reason': '回复将进入 Codex 原生队列，并由桌面唤醒原会话' if self.queue_sender else '可查看历史；此设备尚未配置原生队列回复'}
 
@@ -543,6 +550,7 @@ class CodexDesktop:
             owner = self.owners[sid]
             # Native patches may arrive between owner discovery and dispatch.
             validate_action(self.row(sid, self.states[sid]), action)
+            guard_reply(self.row(sid, self.states[sid]), action)
             native = next((r for r in self.states[sid]['requests'] if str(r.get('id')) == action.get('request_id')), None)
             asynchronous = next((r for r in pending(self.states[sid].get('history', {}))
                                  if r['id'] == action.get('request_id')), None)
@@ -564,12 +572,17 @@ class CodexDesktop:
                     ((self.states[sid].get('history') or {}).get('latestThreadSettings') or {}).get('approvalPolicy') == action['value'], timeout=8)
                 return 'policy_updated' if confirmed and sid in self.states and unchanged_permissions(before,self.states[sid]) else 'unknown'
         if action['kind'] == 'reply':
-            method = 'thread-follower-start-turn'
+            method = 'thread-follower-steer-turn' if action.get('mode') == 'steer' else 'thread-follower-start-turn'
             # The desktop renders this input before the engine normalizes it.
             # Plain text still needs the native text-span collection.
-            params['turnStart'] = {'request': {'threadId': sid, 'input': [{'type': 'text', 'text': action['text'], 'text_elements': []}],
-                                             'clientUserMessageId': command['id']},
-                                   'context': {'inheritThreadSettings': True}}
+            if action.get('mode') == 'steer':
+                params.update(input=[{'type': 'text', 'text': action['text'], 'text_elements': []}],
+                              clientUserMessageId=command['id'],
+                              restoreMessage={'id': command['id'], 'text': action['text'], 'context': {}})
+            else:
+                params['turnStart'] = {'request': {'threadId': sid, 'input': [{'type': 'text', 'text': action['text'], 'text_elements': []}],
+                                                 'clientUserMessageId': command['id']},
+                                       'context': {'inheritThreadSettings': True}}
         elif asynchronous is not None:
             method = 'thread-follower-steer-turn'
             text = reply_envelope(asynchronous, action['answers'])

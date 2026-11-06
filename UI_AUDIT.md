@@ -183,3 +183,33 @@ internal cache-discard operation while work is active: that path can interrupt
 the conversation. After all native tasks are idle, a normal application restart
 and reopening the affected conversation is the recovery direction to check;
 that recovery has not been visually verified in this acceptance.
+
+
+## Anchored menus, running replies and all-Harness folding
+
+On 2026-11-06, synthetic browser checks covered independent model, reasoning-effort
+and permission menus, selected native values, direct menu-to-menu switching,
+project-scope confirmation, rejected submissions with an in-menu error, and the
+DeepSeek session-and-default confirmation/cancel flow. The running-reply view
+showed a waiting item with Cancel and supported Insert now controls; a second
+draft remained editable. The 390-by-844 view retained the queue and composer.
+Codex, Antigravity and DeepSeek fixtures all hid their tool/commentary group while
+leaving the final answer visible. Synthetic writes are rejected by the fixture;
+these checks do not claim native application effects.
+
+A separate loopback Hub/worker connected only to the existing Codex acceptance
+conversation verified real native dispatch. One fixed no-tool reply started a
+turn; two later replies entered waiting. Explicit insertion used the original
+waiting command ID and native steer method. The remaining reply started after
+the previous turn ended. A fourth waiting command was cancelled without native
+dispatch. Three distinct command IDs produced exactly three native calls; the
+final native turn completed without an error and returned the fixed marker.
+This validates macOS Codex queue/insertion behavior, not Windows Codex or the
+Antigravity/DeepSeek transports. Native Codex GUI access was unavailable; the
+native protocol, persisted turn and Agent Watch web view were checked separately.
+
+The DeepSeek mixed text/tool-call parser now retains its commentary phase through
+history and collector summaries. Read-only Windows native projections confirmed
+tool/process classification without folding ordinary/final answers. Default
+folding is shared by all three Harnesses, including the captured-message fallback;
+regressions preserve expansion across updates within the same turn.
