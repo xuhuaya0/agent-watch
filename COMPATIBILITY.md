@@ -1,6 +1,6 @@
 # Compatibility and acceptance matrix
 
-Updated: 2026-11-05. This is a record of observed support, not a promise that
+Updated: 2026-11-06. This is a record of observed support, not a promise that
 every desktop release implements the same protocol. A passing CI test exercises
 fixtures and simulated transports; it is not native application acceptance.
 
@@ -53,7 +53,7 @@ operation succeeded.
 | Feature | Current behavior | Conditions for extending it |
 | --- | --- | --- |
 | New conversation | DeepSeek creates in the selected directory. Antigravity creates in the selected native project, retaining only the source model choice. Both Windows provider paths verified. Codex macOS opens a prefilled native draft requiring user submission | Full Codex creation is implemented for an existing shared app-server but native acceptance is pending. No arbitrary directory, permission copy or second engine. See transport-specific evidence below |
-| Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner | One model/effort change and restoration verified on macOS. Other choices and Windows require native acceptance. DeepSeek native model/effort selection is implemented with explicit session-and-default scope; write acceptance is pending. Antigravity model switching is not exposed because a session-only native setter has not been verified |
+| Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner. DeepSeek exposes its native model/effort catalog and explicitly confirms the session-and-default scope | One Codex model/effort change and restoration verified on macOS. DeepSeek model and model/effort round trips, including exact restoration of both the session selection and native default, verified on Windows. DeepSeek browser write acceptance, other combinations and Windows Codex require native acceptance. Antigravity model switching is not exposed because a session-only native setter has not been verified |
 | Permission changes | Codex offers permitted native presets for an idle session's next turn. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex read-only and restoration verified; Full access, automatic review and other Codex transitions need native acceptance. DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching needs native acceptance. Global settings are not exposed |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | The new-conversation first turn uses native user input; existing-chat user-style reply dispatch still needs separate validation |
@@ -353,3 +353,61 @@ native owner using fixed no-tool replies: default waiting, one explicit steer on
 the same queued command, cancellation without native dispatch, and release after
 completion. Three distinct commands produced exactly three native calls; the
 final native turn completed without error. This is not Windows Codex acceptance.
+
+### Deployed browser and Windows follow-up
+
+On 2026-11-06, revision `9e9f61f` was deployed to a CasaOS-managed center and its
+existing macOS and Windows collectors/control workers. Source hashes, service
+health, worker heartbeats and single-instance operation were checked. Protected
+configuration remained unchanged, and native Harness processes were not restarted.
+The Windows staged source ran 432 Python tests with one platform-specific skip
+and no failures; this regression run is separate from the native application checks below.
+
+The deployed reader was inspected in Edge against live native state. The inspected
+Codex installation exposed eight model options with Astra checked, plus the three
+primary permission entries. Approve for me remained visibly selected but disabled
+because the native runtime gate was unavailable. DeepSeek exposed five native
+model options with its current selection checked. Tools/process groups started
+collapsed in real Codex, Antigravity and DeepSeek histories; the inspected
+Antigravity page contained four such groups. No console errors or warnings were
+observed during these bounded browser checks. These catalog counts describe the
+tested installations, not a fixed product-wide list. No native write was made
+through the browser during this inspection.
+
+The deployed center API and Windows Antigravity worker were then exercised in an
+existing dedicated test conversation. One fixed no-tool message started a turn,
+one later message waited for completion, and another waiting message was cancelled.
+Native history contained exactly one input and one matching assistant result for
+each of the two delivered messages, and no cancelled input. Native settings were
+unchanged. This verifies the center queue and native notification transport;
+Antigravity does not advertise immediate insertion, and browser submission was
+not part of this test.
+
+The deployed center and Windows DeepSeek worker also passed a dedicated queue
+test: an observed native running turn held later messages, cancellation withdrew
+one waiting message, and explicit insertion promoted the original waiting command
+ID and delivered it. The remaining waiting message started automatically after
+the prior turn ended. Native history contained exactly one instance of each of
+the three delivered inputs and no cancelled input; the session returned to idle
+with native settings unchanged. In an earlier short-turn attempt, insertion
+returned HTTP 409 after the original turn had completed and the queued message
+had already begun its next turn. That stale action caused no extra dispatch or
+lost message. These are center API/native-history checks, not browser-click
+acceptance or a claim that every run-state timing has been exercised.
+
+The Windows DeepSeek model provider was exercised separately in an existing
+dedicated idle conversation. Two native `session/selectModel` calls changed the
+selection and restored it. Read-back verified the target session selection and
+native default, then independently confirmed that both original values were
+restored exactly. Permissions remained unchanged; no prompt, tool invocation or
+permission write occurred. This establishes one model-selection round trip and
+its default side effect, not every model/effort combination or a browser write.
+
+A subsequent dedicated DeepSeek round trip selected a native effort-capable
+model with Max. Native session `next` and the default both reported the target
+model and `reasoningEffort: max`. The change and restoration each returned
+`model_updated`; an independent reconnect confirmed idle state and exact
+restoration of the original `next` and default, including the original absence
+of a reasoning-effort field. Permissions were unchanged, and no prompt, tool or
+permission write occurred. This verifies the tested model/effort pair and
+restoration, not every catalog combination or browser submission.

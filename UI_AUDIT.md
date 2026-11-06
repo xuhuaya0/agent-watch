@@ -37,7 +37,7 @@ rotation, password change or device removal was performed for this audit.
 
 Codex now reads authoritative native model and permission catalogs with provider
 and policy restrictions, and applies changes through the existing desktop owner.
-Model and permissions have separate entries and dialogs. Older provider facts
+Model, reasoning effort and permissions have independent anchored menus. Older provider facts
 remain readable without enabling unsupported changes. Tool records and
 commentary share execution groups collapsed by default.
 
@@ -46,8 +46,9 @@ browser → Hub → worker → native-owner model/effort and read-only permissio
 changes. Native turn context, a fixed reply and permission read-back were
 checked; the full original state was restored and matched. This verifies the
 tested transitions. Full access, automatic review and other permission changes
-were not exercised; Windows Codex remains unverified, and Antigravity/DeepSeek
-model switching has not been added. Exact evidence and limitations belong in
+were not exercised, nor was Antigravity/DeepSeek model selection in that baseline.
+Windows Codex remains unverified. Later DeepSeek model acceptance is recorded
+below; exact evidence and limitations belong in
 [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Browser evidence recorded in this baseline
@@ -213,3 +214,49 @@ history and collector summaries. Read-only Windows native projections confirmed
 tool/process classification without folding ordinary/final answers. Default
 folding is shared by all three Harnesses, including the captured-message fallback;
 regressions preserve expansion across updates within the same turn.
+
+## Deployed browser and native follow-up
+
+On 2026-11-06, Edge was used to inspect the deployed revision `9e9f61f` against
+live native state. The inspected Codex model menu contained eight choices with
+Astra selected. Its permission menu showed all three primary entries; Approve
+for me remained checked but disabled because native runtime availability was not
+exposed. The DeepSeek menu contained five native model choices with its current
+selection checked. Opening these menus did not change a native setting.
+
+Real histories from Codex, Antigravity and DeepSeek all started with tool/process
+groups collapsed. The inspected Antigravity transcript had four closed execution
+groups. No browser console errors or warnings were observed during this bounded
+inspection. These observations do not establish every conversation, native
+version, viewport or accessibility combination.
+
+Separate native checks used existing dedicated Windows conversations. Through
+the deployed center API, Antigravity delivered one initial fixed no-tool message
+and one message queued until completion. Native history contained exactly one
+input and one matching assistant result for each; a cancelled waiting message
+produced no native input. Settings were unchanged. Separate DeepSeek provider
+round trips verified a model selection and a native model with Max reasoning
+effort. Each used one change and one restoration. The effort case confirmed
+`reasoningEffort: max` in both native `next` and the default; independent read-back
+after reconnect confirmed idle state and exact restoration of both original
+values, including their original absence of an effort field. Permissions were
+unchanged, and neither test sent prompts, tool requests or permission writes.
+These API/provider checks are distinct from the read-only browser inspection;
+they do not claim that a browser click performed the native writes or that every
+model/effort combination was tested.
+
+A later dedicated DeepSeek queue check observed native running, Hub waiting,
+cancellation, explicit insertion on the same waiting command ID, and automatic
+delivery of the remaining message after the prior turn ended. Each of the three
+delivered inputs appeared exactly once in native history; the cancelled input
+was absent, the session became idle, and settings were unchanged. An earlier
+short-turn attempt returned HTTP 409 when insertion arrived after the original
+turn ended and the queued message had already started its next turn. The stale
+insertion did not lose or duplicate a message. Both checks used the deployed
+center API and native history; they were not browser submission tests.
+
+Deployment verification checked the CasaOS center, macOS components and Windows
+collector/workers for expected source, liveness and unchanged protected
+configuration. Native Harnesses were not restarted. The Windows one-time restart
+task was removed after verification. Deployment health and regression results do
+not replace the native and browser evidence above.
