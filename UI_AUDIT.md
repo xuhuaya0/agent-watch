@@ -260,3 +260,30 @@ collector/workers for expected source, liveness and unchanged protected
 configuration. Native Harnesses were not restarted. The Windows one-time restart
 task was removed after verification. Deployment health and regression results do
 not replace the native and browser evidence above.
+
+## Sent-message visibility while reading older history
+
+A follow-up regression reproduced a double-hide case: a delivered reply's
+collector summary could remove its local echo while an already loaded older
+history page hid the captured-message fallback. The persisted native message
+was still present, but neither view displayed it. A cached history match could
+also permanently suppress an echo after navigating to a page without that row.
+
+Reconciliation now requires the matching native user row to be mounted in the
+selected conversation's visible history. A collector summary or an unmounted,
+hidden or different conversation's page is insufficient. Moving back to an older
+page restores the local echo without changing the reader's position. Combined
+history/control regressions cover these transitions and retain identity/time/text
+checks so an older identical input cannot consume a new reply's echo.
+When history is empty or unavailable, a delivered echo is reconciled only against
+an actually visible matching captured input with current session and activity
+metadata. Synchronous history mounting also reconciles the echo immediately, so
+switching back to cached history does not leave a duplicate until the next poll.
+The five JavaScript suites passed 164 tests, including all three Harnesses'
+fallback paths, old-page reading and cached-session switching.
+
+The investigation separately confirmed that the inspected native conversation
+retained its messages in both persisted records and the live owner snapshot.
+That does not establish the cause of an original application's visual omission.
+Browser and native-window tools were unavailable for this follow-up, so the
+visibility repair has logic regression coverage, not a new visual acceptance.

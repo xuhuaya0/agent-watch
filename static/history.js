@@ -149,6 +149,9 @@ function renderHistory(prepend=false) {
  if(controls.historyHtml!==controlsHtml){controls.innerHTML=controlsHtml;controls.historyHtml=controlsHtml;}
  if(list.historyMessages!==state.messages)updateHistoryRows(list,state,id);
  if(latest)latest.hidden=state.loaded && state.messages.length>0;
+ // A cached page can mount synchronously after renderInteraction. Reconcile
+ // with the final visible sources now, without waiting for a control poll.
+ if(typeof renderOutgoing==='function')renderOutgoing();
  if(anchor?.node.isConnected)pane.scrollTop+=anchor.node.getBoundingClientRect().top-anchor.top;
  if(typeof hydrateMessageAttachments==='function')hydrateMessageAttachments(el);
 }

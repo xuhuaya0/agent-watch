@@ -4,8 +4,9 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const crypto=require('node:crypto').webcrypto;
 function setup(){
  const input={value:''},pane={dataset:{},querySelector(){return null},querySelectorAll(){return []}};
- const ctx=vm.createContext({crypto,console,Date,setInterval(){return 1},clearInterval(){},
-  document:{getElementById(id){return id==='native-reply'?input:id==='session-control'?pane:null}},
+ const historyRoot={dataset:{},isConnected:true,hidden:false,lastElementChild:{children:[]}};
+ const ctx=vm.createContext({crypto,console,Date,historyRoot,setInterval(){return 1},clearInterval(){},
+  document:{getElementById(id){return id==='session-history'?historyRoot:id==='native-reply'?input:id==='session-control'?pane:null}},
   workspace:{selected:'chat',page:'sessions'},histories:new Map(),
   esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),
   jsArg:value=>JSON.stringify(value),toast(){},showAuthView(){},harnessName:()=> 'Harness',settingsSummaryHtml:()=>''});
@@ -16,6 +17,11 @@ function setup(){
  run('interaction.byTask.set("chat",data)');
  ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});
  return {ctx,input,run};
+}
+function mountHistory(ctx){
+ const messages=ctx.histories.get('chat').messages;
+ ctx.historyRoot.dataset.session='chat';
+ ctx.historyRoot.lastElementChild={historyMessages:messages,children:messages.map(historyMessage=>({historyMessage,isConnected:true,hidden:false}))};
 }
 
 test('running Send persists one wait, clears accepted draft, and accepts a second distinct queue item',async()=>{
@@ -69,16 +75,19 @@ test('outgoing echo reconciles a new native message despite browser clock skew',
  const {ctx,run}=setup();
  ctx.histories.set('chat',{loaded:true,messages:[{id:'old',role:'user',text:'Same reply',timestamp:'2026-01-01T10:00:00Z'},
   {id:'new',role:'user',text:'Same reply\n',timestamp:'2026-01-01T10:00:04Z'}]});
+ mountHistory(ctx);
  run(`interaction.outgoing.set('chat',{id:'command',text:'Same reply',state:'delivered',createdAt:Date.parse('2026-01-01T11:00:00Z'),previousHistoryIds:['old'],historyBaselineAt:Date.parse('2026-01-01T10:00:00Z')})`);
  assert.equal(run('outgoingHtml("chat")'),'');
- assert.equal(run('interaction.outgoing.get("chat").confirmedInHistory'),true);
+ assert.equal(run('historyContainsOutgoing("chat",interaction.outgoing.get("chat"))'),true);
 });
 
 test('an old identical user message or unconfirmed dispatch cannot hide the local reply',()=>{
  const {ctx,run}=setup();ctx.histories.set('chat',{loaded:true,messages:[{id:'old',role:'user',text:'Same reply',timestamp:'2026-01-01T10:00:00Z'}]});
+ mountHistory(ctx);
  run(`interaction.outgoing.set('chat',{id:'command',text:'Same reply',state:'delivered',createdAt:Date.parse('2026-01-01T10:01:00Z'),previousHistoryIds:['old'],historyBaselineAt:Date.parse('2026-01-01T10:00:00Z')})`);
  assert.match(run('outgoingHtml("chat")'),/local-outgoing/);
  ctx.histories.get('chat').messages.push({id:'new',role:'user',text:'Same reply',timestamp:'2026-01-01T10:01:02Z'});
+ mountHistory(ctx);
  run('interaction.outgoing.get("chat").state="unknown"');
  assert.match(run('outgoingHtml("chat")'),/local-outgoing/);
 });

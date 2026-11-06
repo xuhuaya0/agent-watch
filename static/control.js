@@ -104,28 +104,38 @@ function receiptDetail(receipt) {
 function historyContainsOutgoing(id,message) {
  const history=typeof histories!=='undefined'?histories.get(id):null;
  if(!history?.loaded||!Array.isArray(message.previousHistoryIds))return false;
+ const region=document.getElementById('session-history'),list=region?.lastElementChild;
+ // A cached page or collector summary can be newer than the page being read.
+ // Reconcile only against this conversation's currently mounted user records.
+ if(workspace.page!=='sessions'||workspace.selected!==id||!region?.isConnected||region.hidden||
+    region.dataset.session!==id||list?.historyMessages!==history.messages)return false;
  const submittedSecond=Math.floor((message.serverCreatedAt||message.createdAt/1000));
  // Native history removes surrounding whitespace from user messages. Keep
  // internal whitespace exact, and still require a new identity and timestamp.
  const submittedText=message.text.trim();
- return history.messages.some(row=>row.role==='user'&&typeof row.text==='string'&&row.text.trim()===submittedText&&
-  row.id&&!message.previousHistoryIds.includes(row.id)&&
-  (message.historyBaselineAt?Date.parse(row.timestamp)>message.historyBaselineAt:Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond));
+ return Array.from(list.children).some(node=>{
+  const row=node.historyMessage;
+  return node.isConnected&&!node.hidden&&history.messages.includes(row)&&row?.role==='user'&&
+   typeof row.text==='string'&&row.text.trim()===submittedText&&row.id&&!message.previousHistoryIds.includes(row.id)&&
+   (message.historyBaselineAt?Date.parse(row.timestamp)>message.historyBaselineAt:Math.floor(Date.parse(row.timestamp)/1000)>=submittedSecond);
+ });
+}
+function visibleCaptureContainsOutgoing(id,message) {
+ const region=document.getElementById('latest-messages');
+ if(workspace.page!=='sessions'||workspace.selected!==id||!region?.isConnected||region.hidden||region.dataset.session!==id)return false;
+ const node=region.querySelector(`[data-captured-kind="${message.notification?'notification':'user'}"]`),source=node?.capturedMessage;
+ return Boolean(node?.isConnected&&!node.hidden&&source?.session===id&&source.at>message.baselineAt&&source.text===message.text);
 }
 function outgoingHtml(id) {
  const message=interaction.outgoing.get(id);if(!message)return '';
  if(message.state==='waiting')return '';
- const captured=capturedOutgoing(id),turn=captured?.turn;
- // Equal text alone may be an earlier, identical message. Wait for a newer
- // native activity record as well as delivery before replacing the local echo.
- if(message.state==='delivered'&&captured?.at>message.baselineAt&&
-    [turn?.notification,turn?.user].includes(message.text))return '';
  // The native message may arrive before its control receipt. Once a new native
- // identity/time/text matches, render that message just once; the receipt is
- // separate evidence and must not hold a duplicate optimistic bubble on screen.
- if(['sending','queued','dispatched','delivered'].includes(message.state)&&(message.confirmedInHistory||historyContainsOutgoing(id,message))) {
-  message.confirmedInHistory=true;return '';
- }
+ // identity/time/text is rendered, show it just once. Recheck the mounted page
+ // each time: pagination must not leave both the native row and its echo hidden.
+ if(['sending','queued','dispatched','delivered'].includes(message.state)&&historyContainsOutgoing(id,message))return '';
+ // Empty/unavailable history falls back to the actual mounted capture. Its
+ // model alone is insufficient: an older history page may hide this region.
+ if(message.state==='delivered'&&visibleCaptureContainsOutgoing(id,message))return '';
  const labels={sending:'发送中',queued:'等待设备接收',dispatched:'正在送达',delivered:'已送达',rejected:'发送失败',expired:'已过期，未发送',cancelled:'已取消',unknown:'送达情况待确认'};
  const warning=['rejected','expired','cancelled','unknown'].includes(message.state);
  const detail=receiptDetail(message);
@@ -211,12 +221,17 @@ function interactionHtml(id) {
  }else body+=`<p class="capture-note">${esc(data.reason||'此会话的交互连接暂时不可用')}</p>`;
  return body+`<div class="interaction-feedback" aria-live="polite">${interactionFeedbackHtml(id)}</div>`;
 }
+function renderOutgoing() {
+ const id=workspace.selected,outgoing=document.getElementById('chat-outgoing');
+ if(!id||!outgoing)return;
+ const markup=outgoingHtml(id);
+ if(outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
+}
 function renderInteraction(force=false) {
  if(typeof renderSessionActions==='function')renderSessionActions();
  const id=workspace.selected,el=document.getElementById('session-control');if(!id||!el)return;
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
- const outgoing=document.getElementById('chat-outgoing'),markup=outgoingHtml(id);
- if(outgoing && outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
+ renderOutgoing();
  const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id),[...interaction.queueMutations]]);
  const structure=JSON.stringify([id,data?.connected,data?.reason,data?.capability?.reply,Boolean(data?.capability?.delivery),data?.capability?.reason,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;

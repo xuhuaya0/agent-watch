@@ -3,9 +3,17 @@ const fs=require('fs'),vm=require('vm');
 class HistoryElement {
  constructor(tag='div') {this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.html='';this.open=false;}
  get innerHTML(){return this.html+this.children.map(node=>node.innerHTML).join('');}
- set innerHTML(value){this.replaceChildren();this.html=value;}
+ set innerHTML(value){this.replaceChildren();this.html=value;this.capturedNodes={};}
+ addEventListener(){}
  setAttribute(name,value){this[name]=value;}
- querySelector(selector){return this.children.find(element=>'#'+element.id===selector)||null;}
+ querySelector(selector){
+  const kind=selector.match(/^\[data-captured-kind="(user|notification)"\]$/)?.[1];
+  if(kind&&this.html.includes(`data-captured-kind="${kind}"`)){
+   this.capturedNodes ||= {};const node=this.capturedNodes[kind] ||= new HistoryElement('article');node.parentElement=this;return node;
+  }
+  return this.children.find(element=>'#'+element.id===selector)||null;
+ }
+ querySelectorAll(){return [];}
  get firstElementChild(){return this.children[0]||null;}
  get lastElementChild(){return this.children.at(-1)||null;}
  get nextElementSibling(){return this.parentElement?.children[this.parentElement.children.indexOf(this)+1]||null;}
@@ -29,6 +37,30 @@ function setup(){
  const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id],createElement:tag=>new HistoryElement(tag)},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
  vm.runInContext(fs.readFileSync('static/history.js','utf8'),ctx);return{ctx,elements,run:s=>vm.runInContext(s,ctx)};
 }
+function combinedReader(tool='codex'){
+ const result=setup(),{ctx,elements,run}=result,pane=elements['session-detail'];
+ for(const id of ['session-info','detail-title','detail-context','detail-facts','detail-extra-actions','detail-subagents'])elements[id]=new HistoryElement();
+ const descriptor=Object.getOwnPropertyDescriptor(HistoryElement.prototype,'innerHTML');
+ Object.defineProperty(pane,'innerHTML',{get(){return descriptor.get.call(this)},set(value){
+  if(!value.includes('id="session-history"'))return descriptor.set.call(this,value);
+  for(const id of ['session-history','latest-messages','chat-outgoing']){elements[id]=new HistoryElement();elements[id].id=id;}
+  this.replaceChildren(elements['session-history'],elements['latest-messages'],elements['chat-outgoing']);this.html='';this.scrollTop=0;
+ }});
+ Object.assign(ctx,{readerPane:pane,sessionInfo:elements['session-info'],ZH:{done:'已完成'},renderSubagents:()=>'',settingsSummaryHtml:()=>'',harnessName:()=>tool,jsArg:JSON.stringify});
+ const source=fs.readFileSync('static/workspace.js','utf8');
+ vm.runInContext(source.slice(source.indexOf('function setDetailHtml('),source.indexOf('function openProject(')),ctx);
+ vm.runInContext(fs.readFileSync('static/control.js','utf8'),ctx);
+ ctx.task={ui_key:'a',key:'a',tool,state:'done',title:'Synthetic chat',machine:'Test device',activity_at:20,extra:{latest_turn:tool==='antigravity'?{user:'Earlier request',notification:'Unique new reply'}:{user:'Unique new reply'}}};
+ run(`Object.assign(workspace,{tasks:[task],detail:task,detailSignature:'detail-20',renderedSignature:'',scroll:new Map([['a',420]])});
+ interaction.outgoing.set('a',{id:'command',text:'Unique new reply',state:'delivered',createdAt:1000,baselineAt:10,previousHistoryIds:[],notification:task.tool==='antigravity'});
+ Object.assign(historyState('a'),{version:'20'})`);
+ ctx.apiFetch=()=>{throw Error('This cached render must not perform a history request')};
+ return result;
+}
+function visibleReplyCount(elements){
+ const fallback=elements['latest-messages'];
+ return ((fallback.hidden?'':fallback.innerHTML)+elements['chat-outgoing'].innerHTML+elements['session-history'].innerHTML).split('Unique new reply').length-1;
+}
 test('history escapes content and never renders a reasoning role',()=>{
  const {run}=setup();const html=run(`historyMessageBody({role:'user',label:'<img>',text:'<script>',id:'1',timestamp:''},'a')`);
  assert.doesNotMatch(html,/<img>|<script>/);assert.match(html,/&lt;script>/);
@@ -47,6 +79,81 @@ test('loading earlier pages deduplicates messages and retains order',async()=>{
 test('unavailable history leaves the latest captured messages visible',async()=>{
  const {ctx,elements,run}=setup();ctx.apiFetch=async()=>({ok:false,json:async()=>({error:'history_unavailable'})});
  await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,false);assert.match(elements['session-history'].innerHTML,/无法读取历史/);
+});
+test('delivered reply stays visible beside retained older history despite a matching collector summary',()=>{
+ const {ctx,elements,run}=setup();
+ vm.runInContext(fs.readFileSync('static/control.js','utf8'),ctx);
+ run(`workspace.detail={ui_key:'a',activity_at:20,extra:{latest_turn:{user:'New reply'}}};
+ Object.assign(historyState('a'),{messages:[{id:'earlier-answer',role:'assistant',text:'Earlier result',timestamp:'2026-01-01T00:00:00Z'}],loaded:true,older:true,version:'1'});
+ interaction.outgoing.set('a',{id:'command',text:'New reply',state:'delivered',createdAt:1000,baselineAt:10,previousHistoryIds:['earlier-answer']});
+ renderHistory()`);
+ const pane=elements['session-detail'],list=elements['session-history'].lastElementChild;
+ const earlier=list.firstElementChild;pane.scrollTop=420;
+ assert.equal(elements['latest-messages'].hidden,true);
+ assert.match(run(`outgoingHtml('a')`),/New reply/);
+ ctx.apiFetch=()=>{throw Error('Older reading must not trigger a latest-page request')};
+ run(`workspace.tasks[0].activity_at=20;ensureHistory()`);
+ assert.equal(run(`historyState('a').older`),true);
+ assert.equal(run(`historyState('a').updated`),true);
+ assert.equal(list.firstElementChild,earlier);assert.equal(pane.scrollTop,420);
+ assert.match(elements['session-history'].innerHTML,/有新内容/);
+ assert.match(run(`outgoingHtml('a')`),/已送达/);
+});
+test('echo reconciliation requires the matching native message mounted in this conversation',()=>{
+ const {ctx,elements,run}=setup();
+ vm.runInContext(fs.readFileSync('static/control.js','utf8'),ctx);
+ run(`Object.assign(historyState('a'),{messages:[{id:'old',role:'assistant',text:'Earlier answer'}],loaded:true});renderHistory();
+ interaction.outgoing.set('a',{id:'command',text:'New reply',state:'delivered',createdAt:1000,previousHistoryIds:['old']});
+ historyState('a').messages=[{id:'native-user',role:'user',text:'New reply',timestamp:'2026-01-01T00:00:01Z'}]`);
+ // A newer model in memory is not yet the mounted history page.
+ assert.match(run(`outgoingHtml('a')`),/New reply/);
+ run('renderHistory()');assert.equal(run(`outgoingHtml('a')`),'');
+ const root=elements['session-history'];root.hidden=true;
+ assert.match(run(`outgoingHtml('a')`),/New reply/);root.hidden=false;
+ root.dataset.session='other-chat';assert.match(run(`outgoingHtml('a')`),/New reply/);root.dataset.session='a';
+ // Returning to an older page must not inherit a sticky reconciliation bit.
+ run(`historyState('a').messages=[{id:'older',role:'assistant',text:'An earlier page'}];renderHistory()`);
+ assert.match(run(`outgoingHtml('a')`),/New reply/);
+ run(`historyState('a').messages=[{id:'native-user',role:'user',text:'New reply',timestamp:'2026-01-01T00:00:01Z'}];renderHistory()`);
+ assert.equal(run(`outgoingHtml('a')`),'');
+ run(`workspace.selected='other-chat'`);assert.match(run(`outgoingHtml('a')`),/New reply/);
+});
+test('actual fallback and outgoing echo show one delivered message when history is unavailable or empty for every harness',()=>{
+ for(const tool of ['codex','antigravity','dsh'])for(const loaded of [false,true]){
+  const {elements,run}=combinedReader(tool);
+  run(`Object.assign(historyState('a'),{loaded:${loaded},messages:[],error:${loaded?"''":"'history_unavailable'"}});renderDetail()`);
+  assert.equal(elements['latest-messages'].hidden,false);
+  assert.equal(visibleReplyCount(elements),1,`${tool}: ${loaded?'empty':'unavailable'} history`);
+  assert.equal(elements['session-detail'].scrollTop,420);
+ }
+});
+test('cached history mounting reconciles the echo in the same renderDetail without waiting for a control poll',()=>{
+ for(const matching of [false,true]){
+  const {elements,run}=combinedReader();
+  run(`Object.assign(historyState('a'),{loaded:true,older:true,messages:[${matching?"{id:'native-user',role:'user',text:'Unique new reply',timestamp:'2026-01-01T00:00:01Z'}":"{id:'old',role:'assistant',text:'Earlier result'}"}]});renderDetail()`);
+  assert.equal(elements['latest-messages'].hidden,true);
+  assert.equal(visibleReplyCount(elements),1,matching?'Native user mounted':'Only the older page mounted');
+  assert.equal(elements['session-detail'].scrollTop,420);
+ }
+});
+test('fallback reconciliation requires visible same-chat provenance and never hides failed or uncertain replies',()=>{
+ for(const tool of ['codex','antigravity','dsh']){
+  const {elements,run}=combinedReader(tool);
+  run(`Object.assign(historyState('a'),{loaded:true,messages:[]});renderDetail()`);
+  const region=elements['latest-messages'],node=region.querySelector(`[data-captured-kind="${tool==='antigravity'?'notification':'user'}"]`);
+  assert.equal(run(`outgoingHtml('a')`),'');
+  region.hidden=true;assert.match(run(`outgoingHtml('a')`),/Unique new reply/);region.hidden=false;
+  node.hidden=true;assert.match(run(`outgoingHtml('a')`),/Unique new reply/);node.hidden=false;
+  region.dataset.session='other-chat';assert.match(run(`outgoingHtml('a')`),/Unique new reply/);region.dataset.session='a';
+  node.capturedMessage.session='other-chat';assert.match(run(`outgoingHtml('a')`),/Unique new reply/);node.capturedMessage.session='a';
+  node.capturedMessage.at=10;assert.match(run(`outgoingHtml('a')`),/Unique new reply/);node.capturedMessage.at=20;
+  node.capturedMessage.text='Different mounted text';assert.match(run(`outgoingHtml('a')`),/Unique new reply/);node.capturedMessage.text='Unique new reply';
+  run(`workspace.selected='other-chat'`);assert.match(run(`outgoingHtml('a')`),/Unique new reply/);run(`workspace.selected='a'`);
+  for(const [state,label] of [['rejected','发送失败'],['unknown','送达情况待确认']]){
+   run(`interaction.outgoing.get('a').state='${state}';renderOutgoing()`);
+   assert.match(elements['chat-outgoing'].innerHTML,new RegExp(label));
+  }
+ }
 });
 test('empty native history keeps the captured reply visible with a single source of empty-state text',async()=>{
  const {ctx,elements,run}=setup();

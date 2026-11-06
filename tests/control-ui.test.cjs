@@ -6,13 +6,19 @@ function setup(){
  const feedback={innerHTML:''},summary={innerHTML:''},queue={innerHTML:''},outgoing={innerHTML:'',querySelector(){return null}},button={disabled:false},input={value:''},timers=new Map();let timerId=0;
  const node={dataset:{},innerHTML:'',contains(){return false},querySelector(selector){return selector==='.settings-summary-slot'?summary:selector==='.reply-queue-slot'?queue:selector==='.outgoing-message'?outgoing:selector==='.local-outgoing'?{scrollIntoView(){}}:feedback},querySelectorAll(){return [button]}};
  const optionsFeedback={innerHTML:''},body={...node,dataset:{},innerHTML:'',querySelector(selector){return selector==='.interaction-feedback'?optionsFeedback:node.querySelector(selector)}},actions={innerHTML:''},listeners=new Map();
+ const historyRoot={dataset:{},isConnected:true,hidden:false,lastElementChild:{children:[]}};
  const dialog={open:false,modalCalls:0,menuCalls:0,style:{},classList:{toggle(){}},
   showModal(){this.open=true;this.modalCalls++},show(){this.open=true;this.menuCalls++},close(){this.open=false},
   querySelector(){return null},querySelectorAll(){return []},contains(target){return target===this||target===body}};
- const ctx=vm.createContext({console,crypto,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'chat-outgoing':outgoing,'composer-send':button,'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},addEventListener(kind,listener){listeners.set(kind,listener)},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>String(JSON.stringify(s)??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
+ const ctx=vm.createContext({console,crypto,historyRoot,setInterval(fn,ms){timers.set(++timerId,{fn,ms});return timerId},clearInterval(id){timers.delete(id)},document:{getElementById(id){return ({'session-history':historyRoot,'chat-outgoing':outgoing,'composer-send':button,'native-reply':input,'session-options-body':body,'session-options':dialog,'session-actions':actions})[id]||node},querySelector(){return null},addEventListener(kind,listener){listeners.set(kind,listener)},activeElement:null},workspace:{selected:'a',page:'sessions'},esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),jsArg:s=>String(JSON.stringify(s)??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),toast(){},showAuthView(){}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/control.js'),'utf8'),ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../static/session-options.js'),'utf8'),ctx);return {ctx,node,body,actions,dialog,feedback,optionsFeedback,summary,outgoing,button,input,timers,listeners};
 }
 function run(ctx,s){return vm.runInContext(s,ctx)}
+function mountHistory(ctx,id='a'){
+ const messages=ctx.histories.get(id).messages;
+ ctx.historyRoot.dataset.session=id;
+ ctx.historyRoot.lastElementChild={historyMessages:messages,children:messages.map(historyMessage=>({historyMessage,isConnected:true,hidden:false}))};
+}
 function menuChoices(body){return [...body.innerHTML.matchAll(/<button\b([^>]*role="menuitemradio"[^>]*)>([\s\S]*?)<\/button>/g)].map(([,attributes,html])=>({
  value:attributes.match(/data-choice="([^"]*)"/)?.[1],checked:attributes.includes('aria-checked="true"'),disabled:/\sdisabled(?:\s|$)/.test(attributes),html
 }));}
@@ -182,10 +188,10 @@ test('uncertain delivery keeps the visible message without claiming success',asy
  ctx.apiFetch=async()=>{throw Error('offline')};ctx.fetch=async()=>{throw Error('offline')};await run(ctx,'sendReply()');
  const html=run(ctx,'outgoingHtml("a")');assert.match(html,/Visible even offline/);assert.match(html,/送达情况待确认/);assert.doesNotMatch(html,/已送达/);
 });
-test('newer matching native capture replaces the delivered echo, not an old identical message',()=>{
+test('matching collector summaries never hide the delivered echo while native history is absent',()=>{
  const {ctx}=setup();run(ctx,'workspace.detail={key:"a",activity_at:10,extra:{latest_turn:{notification:"Same message"}}};interaction.outgoing.set("a",{id:"c",text:"Same message",createdAt:1000,baselineAt:10,state:"delivered"})');
  assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
- run(ctx,'workspace.detail.activity_at=11');assert.equal(run(ctx,'outgoingHtml("a")'),'');
+ run(ctx,'workspace.detail.activity_at=11');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
  run(ctx,'workspace.detail.extra.latest_turn.notification="Different message"');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
  run(ctx,'workspace.detail={key:"b",activity_at:12,extra:{latest_turn:{notification:"Same message"}}}');assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
 });
@@ -198,12 +204,13 @@ test('native history replaces the echo before its receipt or collector catches u
  assert.deepEqual(Array.from(run(ctx,'interaction.outgoing.get("a").previousHistoryIds')),['old-user']);
  const created=run(ctx,'interaction.outgoing.get("a").createdAt');
  ctx.histories.get('a').messages.push({id:'new-user',role:'user',text:'Repeat this',timestamp:new Date(Math.floor(created/1000)*1000).toISOString()});
+ mountHistory(ctx);
  run(ctx,'renderInteraction()');assert.equal(outgoing.innerHTML,'');
  assert.equal(run(ctx,'interaction.outgoing.get("a").state'),'sending');
  assert.equal(run(ctx,'interaction.pending.has("a")'),true);
  release({ok:true,json:async()=>({command})});await sending;
- assert.equal(outgoing.innerHTML,'');assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
- ctx.histories.get('a').messages=[];run(ctx,'renderInteraction()');assert.equal(outgoing.innerHTML,'');
+ assert.equal(outgoing.innerHTML,'');assert.equal(run(ctx,'historyContainsOutgoing("a",interaction.outgoing.get("a"))'),true);
+ ctx.histories.get('a').messages=[];mountHistory(ctx);run(ctx,'renderInteraction()');assert.match(outgoing.innerHTML,/Repeat this/);
 });
 test('history echo matching rejects old ids, older or invalid times, wrong roles and other conversations',()=>{
  const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[]}]]);
@@ -216,10 +223,10 @@ test('history echo matching rejects old ids, older or invalid times, wrong roles
   {id:'new',role:'assistant',text:'Same text',timestamp:new Date(1001000).toISOString()},
   {id:'new',role:'user',text:'Different text',timestamp:new Date(1001000).toISOString()},
  ];
- for(const row of invalid){ctx.histories.get('a').messages=[row];assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);}
+ for(const row of invalid){ctx.histories.get('a').messages=[row];mountHistory(ctx);assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);}
  const valid={id:'fresh',role:'user',text:'Same text',timestamp:new Date(1000000).toISOString()};
- ctx.histories.set('b',{loaded:true,messages:[valid]});ctx.histories.get('a').messages=[];assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
- ctx.histories.get('a').messages=[valid];ctx.histories.get('a').loaded=false;assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
+ ctx.histories.set('b',{loaded:true,messages:[valid]});ctx.histories.get('a').messages=[];mountHistory(ctx,'b');assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
+ ctx.histories.get('a').messages=[valid];mountHistory(ctx);ctx.histories.get('a').loaded=false;assert.match(run(ctx,'outgoingHtml("a")'),/Same text/);
  ctx.histories.get('a').loaded=true;assert.equal(run(ctx,'outgoingHtml("a")'),'');
 });
 test('native history trimming the submitted trailing newline does not duplicate a delivered reply',()=>{
@@ -232,16 +239,17 @@ test('native history trimming the submitted trailing newline does not duplicate 
   {...native,text:'Same text Second line'},
   {...native,text:'Same  text\nSecond line'},
  ]) {
-  ctx.histories.get('a').messages=[row];assert.match(run(ctx,'outgoingHtml("a")'),/local-outgoing/);
+  ctx.histories.get('a').messages=[row];mountHistory(ctx);assert.match(run(ctx,'outgoingHtml("a")'),/local-outgoing/);
  }
- ctx.histories.get('a').messages=[native];
+ ctx.histories.get('a').messages=[native];mountHistory(ctx);
  assert.equal(run(ctx,'outgoingHtml("a")'),'');
- assert.equal(run(ctx,'interaction.outgoing.get("a").confirmedInHistory'),true);
+ assert.equal(run(ctx,'historyContainsOutgoing("a",interaction.outgoing.get("a"))'),true);
 });
 test('native history hides pending duplicate echoes while failed and uncertain results stay visible',()=>{
  const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'new',role:'user',text:'Visible',timestamp:'2000-01-01T00:00:00Z'}]}]]);
+ mountHistory(ctx);
  for(const state of ['sending','queued','dispatched','rejected','expired','cancelled','unknown']){
-  ctx.state=state;run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Visible",createdAt:1000,state,previousHistoryIds:[],confirmedInHistory:true})');
+  ctx.state=state;run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Visible",createdAt:1000,state,previousHistoryIds:[]})');
   if(['sending','queued','dispatched'].includes(state))assert.equal(run(ctx,'outgoingHtml("a")'),'');
   else assert.match(run(ctx,'outgoingHtml("a")'),/Visible/);
  }

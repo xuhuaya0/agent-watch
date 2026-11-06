@@ -441,8 +441,8 @@ function capturedChatHtml(task, loaded) {
   const user = turn?.user ?? task.prompt;
   const reply = turn?.assistant ?? task.detail;
   const messages = [];
-  if (user) messages.push(`<article class="message user-message" aria-label="你"><div class="message-body">${markdown(user)}</div></article>`);
-  if (turn?.notification) messages.push(`<article class="message user-message"><small>原生系统通知</small><div class="message-body">${markdown(turn.notification)}</div></article>`);
+  if (user) messages.push(`<article class="message user-message" data-captured-kind="user" aria-label="你"><div class="message-body">${markdown(user)}</div></article>`);
+  if (turn?.notification) messages.push(`<article class="message user-message" data-captured-kind="notification"><small>原生系统通知</small><div class="message-body">${markdown(turn.notification)}</div></article>`);
   if (reply && turn?.assistant_phase === 'commentary') {
     messages.push(`<details class="history-tools" data-captured-process><summary>过程</summary><div class="history-tools-list"><article class="message history-commentary"><div class="message-body">${markdown(reply)}</div></article></div></details>`);
   } else if (reply) messages.push(`<article class="message" aria-label="${turn?'最新回复':'最新结果摘要'}">${turn?'':'<small>结果摘要</small>'}<div class="message-body">${markdown(reply)}</div><div class="message-actions"><button type="button" title="复制回复" aria-label="复制回复" onclick="copyReply()">${icon('copy')}</button></div></article>`);
@@ -458,6 +458,12 @@ function updateCapturedChat(task, loaded) {
   const turn = JSON.stringify([taskId(task),task.turn_started_at,task.extra?.latest_turn?.user]);
   const expanded = region.capturedTurn === turn && region.querySelector('[data-captured-process]')?.open;
   setDetailHtml('latest-messages', capturedChatHtml(task, loaded));
+  region.dataset.session = taskId(task);
+  const sources = {user:task.extra?.latest_turn?.user ?? task.prompt,notification:task.extra?.latest_turn?.notification};
+  for (const [kind,text] of Object.entries(sources)) {
+    const record = region.querySelector(`[data-captured-kind="${kind}"]`);
+    if (record) record.capturedMessage = {session:taskId(task),at:activityAt(task),text};
+  }
   region.capturedTurn = turn;
   const process = region.querySelector('[data-captured-process]');
   if (process) process.open = Boolean(expanded);
