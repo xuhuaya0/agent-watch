@@ -62,7 +62,7 @@ def start(provider, command):
             # create capability, and only for this same native connection.
             provider.session_ids.add(destination)
         reply = rpc.call('turn/start', {'threadId': destination,
-            'input':[{'type':'text', 'text':action['text']}], 'clientUserMessageId':command['id']})
+            'input':[{'type':'text', 'text':action['text'], 'text_elements':[]}], 'clientUserMessageId':command['id']})
         if isinstance(reply.get('turn'), dict) and reply['turn'].get('id'):
             # An empty native thread may not yet have a persisted rollout.
             # Verify its identity after the server accepted the first turn.

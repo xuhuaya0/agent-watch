@@ -151,3 +151,35 @@ conversation, bounded in size and delivered only to an authenticated reader.
 Ordinary local file chips do not grant arbitrary file downloads. These checks
 do not imply complete parity with every native Markdown extension or attachment
 format. No native permission or model was changed during this follow-up.
+
+## Native reply rendering contract
+
+A later report exposed a gap in the native reply acceptance: successful engine
+execution did not prove the desktop could render its optimistic user message.
+The desktop follower path retained the submitted input before normalization, and
+its renderer required `text_elements` on every text input. Plain replies omitted
+that array, causing a renderer TypeError even though the engine could complete.
+
+All Codex text senders now include the empty native span array. The transport
+fixture checks the consumer's collection access before acknowledging delivery,
+including multiline text, while retaining the original message identity and
+inherited settings. An isolated reproduction of the installed renderer predicate
+confirmed the missing-field failure and the corrected-input result. Engine
+success, native-state readback and visual desktop acceptance must remain separate
+checks; this contract regression alone does not certify the whole desktop UI or
+repair malformed rows already cached by a running native owner.
+
+The corrected production sender was exercised through an isolated browser Hub
+against the existing dedicated macOS acceptance conversation. Its fixed reply
+completed with no native turn error; the actual dispatched input passed the
+installed renderer predicate that rejects the old payload. Desktop visual
+inspection was blocked by the computer-use tool's application restriction, so
+it is not claimed as completed. No model, permission or production-conversation
+test message was changed by this check.
+
+The native retry page, a follower reconnect and a plain history read do not
+guarantee rebuilding an already malformed owner cache. Do not attempt an
+internal cache-discard operation while work is active: that path can interrupt
+the conversation. After all native tasks are idle, a normal application restart
+and reopening the affected conversation is the recovery direction to check;
+that recovery has not been visually verified in this acceptance.

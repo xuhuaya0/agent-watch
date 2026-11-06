@@ -183,7 +183,7 @@ class Codex:
             return start(self, command)
         if sid not in (self.scope() if self.scope else self.session_ids):raise ControlError('native_session_unavailable')
         if a['kind']=='reply':
-            result=self.rpc.call('turn/start',{'threadId':sid,'input':[{'type':'text','text':a['text']}],
+            result=self.rpc.call('turn/start',{'threadId':sid,'input':[{'type':'text','text':a['text'],'text_elements':[]}],
                                                'clientUserMessageId':command['id']})
             return 'delivered' if isinstance(result.get('turn'),dict) and result['turn'].get('id') else 'unknown'
         with self.lock:

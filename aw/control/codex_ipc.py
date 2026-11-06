@@ -565,7 +565,9 @@ class CodexDesktop:
                 return 'policy_updated' if confirmed and sid in self.states and unchanged_permissions(before,self.states[sid]) else 'unknown'
         if action['kind'] == 'reply':
             method = 'thread-follower-start-turn'
-            params['turnStart'] = {'request': {'threadId': sid, 'input': [{'type': 'text', 'text': action['text']}],
+            # The desktop renders this input before the engine normalizes it.
+            # Plain text still needs the native text-span collection.
+            params['turnStart'] = {'request': {'threadId': sid, 'input': [{'type': 'text', 'text': action['text'], 'text_elements': []}],
                                              'clientUserMessageId': command['id']},
                                    'context': {'inheritThreadSettings': True}}
         elif asynchronous is not None:

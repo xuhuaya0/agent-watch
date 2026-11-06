@@ -77,7 +77,7 @@ class CreationTests(unittest.TestCase):
         self.assertEqual(result, {'state':'delivered','created_session_id':TARGET})
         self.assertEqual(self.writes(), [
             ('thread/start', {'cwd':self.tmp,'threadSource':'user'}),
-            ('turn/start', {'threadId':TARGET,'input':[{'type':'text','text':self.text}], 'clientUserMessageId':'cmd'})])
+            ('turn/start', {'threadId':TARGET,'input':[{'type':'text','text':self.text,'text_elements':[]}], 'clientUserMessageId':'cmd'})])
 
     def test_created_user_thread_remains_controllable_by_same_provider(self):
         self.db.execute('ALTER TABLE threads ADD COLUMN thread_source TEXT')

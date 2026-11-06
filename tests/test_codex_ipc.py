@@ -26,6 +26,11 @@ class FakeDesktop:
         self.calls.append((method, copy.deepcopy(params), owner))
         if method == 'thread-owner-discovery':
             self.follow(SID, self.owner)
+        if method == 'thread-follower-start-turn':
+            # The native UI scans text spans directly, before any engine
+            # round-trip can supply defaults. A missing collection must fail.
+            self.rendered_text_elements = [span for item in params['turnStart']['request']['input']
+                                           if item['type'] == 'text' for span in item['text_elements']]
         result = {'result': {'turn': {'id': 'native-turn'}}}
         if method.endswith('approval-decision') or method.endswith('submit-user-input'):
             self.requests = []
@@ -73,8 +78,18 @@ class DesktopTests(unittest.TestCase):
         method, params, owner = self.p.rpc.calls[-1]
         self.assertEqual(method, 'thread-follower-start-turn')
         self.assertEqual(owner, 'desktop-owner')
-        self.assertEqual(params['turnStart']['request'], {'threadId': SID, 'input': [{'type': 'text', 'text': 'Hello & $(literal)'}], 'clientUserMessageId': 'dedup'})
+        self.assertEqual(params['turnStart']['request'], {'threadId': SID, 'input': [{'type': 'text', 'text': 'Hello & $(literal)', 'text_elements': []}], 'clientUserMessageId': 'dedup'})
         self.assertEqual(params['turnStart']['context'], {'inheritThreadSettings': True})
+        self.assertEqual(self.p.rpc.rendered_text_elements, [])
+
+    def test_multiline_reply_renders_without_fabricated_spans_or_changed_text(self):
+        text = '请继续\n[说明](https://example.test) ![示例](/example/image.png)\n'
+        self.assertEqual(self.p.execute({'id': 'multiline', 'session_id': SID,
+            'action': {'kind': 'reply', 'text': text}}), 'delivered')
+        request = self.p.rpc.calls[-1][1]['turnStart']['request']
+        self.assertEqual(request['input'][0]['text'], text)
+        self.assertEqual(self.p.rpc.rendered_text_elements, [])
+        self.assertEqual(request['clientUserMessageId'], 'multiline')
 
     def test_approval_uses_original_numeric_request_id_and_one_shot(self):
         self.approval()
