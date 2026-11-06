@@ -217,7 +217,7 @@ function renderInteraction(force=false) {
  const data=interaction.byTask.get(id),pending=interaction.pending.get(id);
  const outgoing=document.getElementById('chat-outgoing'),markup=outgoingHtml(id);
  if(outgoing && outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
- const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id)]);
+ const signature=JSON.stringify([id,data,pending?.id,pending?.uncertain,interaction.outgoing.get(id),capturedOutgoing(id),[...interaction.queueMutations]]);
  const structure=JSON.stringify([id,data?.connected,data?.reason,data?.capability?.reply,Boolean(data?.capability?.delivery),data?.capability?.reason,(data?.capability?.requests||[]).map(r=>[r.id,r.revision])]);
  if(!force && el.dataset.interactionSignature===signature)return;
  // Keep focused drafts and selection on ordinary polls. A resolved approval may
