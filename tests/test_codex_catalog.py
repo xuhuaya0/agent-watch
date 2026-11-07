@@ -151,6 +151,70 @@ class NativeCatalogTests(unittest.TestCase):
         catalog.query = lambda *_: self.fail('failure cache should suppress another probe')
         self.assertIsNone(catalog.get(str(self.root), 'openai'))
 
+    def test_cached_catalog_rechecks_desktop_context_and_revokes_failed_gate_reads(self):
+        class Features:
+            value = {'guardian_approval': True, 'revision': 'a'*64}
+            calls = []
+            def get(self, fresh=False):
+                self.calls.append(fresh)
+                return copy.deepcopy(self.value)
+        calls, reader = [], Features()
+        def query(*_):
+            calls.append(True)
+            return {'provider': 'openai', 'revision': 'native', 'models': [model()]}
+        catalog = NativeCatalog(self.root/'cli', self.root, query=query, feature_reader=reader)
+        first = catalog.get(str(self.root), 'openai')
+        reader.value = {'guardian_approval': False, 'revision': 'b'*64}
+        second = catalog.get(str(self.root), 'openai')
+        self.assertFalse(second['desktop_features']['guardian_approval'])
+        self.assertNotEqual(first['revision'], second['revision'])
+        self.assertEqual(len(calls), 1)
+        for invalid in (None, {'guardian_approval': 'true', 'revision': 'a'*64},
+                        {'guardian_approval': True, 'revision': 'bad'},
+                        {'guardian_approval': True, 'revision': 'a'*64, 'account': 'unwanted'}):
+            reader.value = invalid
+            result = catalog.get(str(self.root), 'openai')
+            self.assertNotIn('desktop_features', result)
+            self.assertNotEqual(result['revision'], first['revision'])
+        reader.value = {'guardian_approval': True, 'revision': 'c'*64}
+        catalog.get(str(self.root), 'openai', fresh=True)
+        self.assertTrue(reader.calls[-1])
+        self.assertEqual(len(calls), 2)
+
+    def test_fresh_model_catalog_can_keep_the_shared_feature_cache(self):
+        calls = []
+        class Features:
+            def get(self, fresh=False):
+                calls.append(fresh)
+                return {'guardian_approval': True, 'revision': 'a'*64}
+        catalog = NativeCatalog(self.root/'cli', self.root,
+            query=lambda *_: {'provider': 'openai', 'revision': 'native', 'models': [model()]},
+            feature_reader=Features())
+        catalog.get(str(self.root), 'openai', fresh=True, fresh_features=False)
+        self.assertEqual(calls, [False])
+
+    def test_account_change_during_desktop_feature_read_revokes_entire_catalog(self):
+        root = self.root
+        class Features:
+            def get(self, fresh=False):
+                (root/'auth.json').write_text('synthetic account changed during feature request')
+                return {'guardian_approval': True, 'revision': 'a'*64}
+        catalog = NativeCatalog(self.root/'cli', self.root,
+            query=lambda *_: {'provider': 'openai', 'revision': 'native', 'models': [model()]},
+            feature_reader=Features())
+        self.assertIsNone(catalog.get(str(self.root), 'openai'))
+
+    def test_feature_transport_failure_keeps_readable_catalog_without_old_gate(self):
+        class Features:
+            def get(self, fresh=False):
+                raise TimeoutError('synthetic feature transport timeout')
+        catalog = NativeCatalog(self.root/'cli', self.root,
+            query=lambda *_: {'provider': 'openai', 'revision': 'native', 'models': [model()]},
+            feature_reader=Features())
+        result = catalog.get(str(self.root), 'openai')
+        self.assertTrue(result['models'])
+        self.assertNotIn('desktop_features', result)
+
     def test_metadata_transport_rejects_session_methods_and_bounds_output(self):
         class Process:
             stdin = io.BytesIO()

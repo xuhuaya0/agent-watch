@@ -24,14 +24,16 @@ class Scope:
 class Catalog:
     def __init__(self):
         self.calls = []
+        self.feature_calls = []
         self.before_fresh = lambda: None
         self.data = {'revision': 'catalog-v1', 'config': {}, 'requirements': {}, 'profiles': [],
             'models': [
                 {'value': 'model-a', 'label': 'Model A', 'efforts': ['low', 'high'], 'default_effort': 'low'},
                 {'value': 'model-b', 'label': 'Model B', 'efforts': ['medium', 'high'], 'default_effort': 'medium'}]}
 
-    def get(self, cwd, provider, fresh=False):
+    def get(self, cwd, provider, fresh=False, *, fresh_features=None):
         self.calls.append((cwd, provider, fresh))
+        self.feature_calls.append(fresh if fresh_features is None else fresh_features)
         if fresh:
             self.before_fresh()
         return copy.deepcopy(self.data)
@@ -230,6 +232,7 @@ class ModelControlTests(unittest.TestCase):
         self.assertEqual(row['model']['current'], 'model-b')
         self.assertEqual(row['model']['effort'], 'high')
         self.assertIn(('/synthetic/project', 'openai', True), self.catalog.calls)
+        self.assertFalse(any(self.catalog.feature_calls))
         self.assertFalse(any(name in ('thread/start', 'thread/resume', 'turn/start')
                              for name, _, _ in self.provider.rpc.calls))
 
@@ -322,6 +325,133 @@ class ModelControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ControlError, 'model_changed'):
             self.provider.execute(command)
         self.assertEqual(self.writes(), [])
+
+    def guardian_command(self):
+        self.catalog.data['profiles'] = [
+            {'id': ':workspace', 'allowed': True, 'description': None},
+            {'id': ':danger-full-access', 'allowed': True, 'description': None}]
+        self.catalog.data['desktop_features'] = {'guardian_approval': True, 'revision': 'a'*64}
+        row = self.provider.session_snapshot(SID)[0]
+        action = {'kind': 'policy', 'revision': row['policy']['revision'], 'value': 'guardian-approvals'}
+        validate_action(row, action)
+        return {'id': 'guardian-command', 'tool': 'codex', 'session_id': SID, 'action': action}
+
+    def test_fresh_guardian_gate_loss_rejects_an_offered_choice_before_native_write(self):
+        for gate in (None, {'guardian_approval': False, 'revision': 'b'*64}):
+            with self.subTest(gate=gate):
+                command = self.guardian_command()
+                self.catalog.before_fresh = lambda: self.catalog.data.update(desktop_features=gate)
+                with self.assertRaisesRegex(ControlError, 'policy_changed'):
+                    self.provider.execute(command)
+                self.assertEqual(self.writes(), [])
+                self.catalog.before_fresh = lambda: None
+
+    def test_guardian_native_write_preserves_model_and_confirms_new_owner_settings(self):
+        command = self.guardian_command()
+        before = copy.deepcopy(self.provider.rpc.history['latestThreadSettings'])
+        self.provider.rpc.after_update = lambda: self.provider.rpc.history['latestThreadSettings'].update(
+            activePermissionProfile={'id': ':workspace', 'extends': None})
+        self.assertEqual(self.provider.execute(command), 'policy_updated')
+        self.assertEqual(len(self.writes()), 1)
+        sent = self.writes()[0][1]
+        self.assertEqual(sent['threadSettings'], {'permissions': ':workspace',
+            'approvalPolicy': 'on-request', 'approvalsReviewer': 'guardian_subagent'})
+        self.assertNotIn('model', sent['threadSettings'])
+        self.assertNotIn('effort', sent['threadSettings'])
+        row = self.provider.session_snapshot(SID)[0]
+        self.assertEqual(row['policy']['current_option'], 'guardian-approvals')
+        self.assertEqual((row['model']['current'], row['model']['effort']), (before['model'], before['effort']))
+        self.assertTrue(any(fresh for _, _, fresh in self.catalog.calls))
+        self.assertIn(True, self.catalog.feature_calls)
+
+    def test_delayed_permission_patch_precedes_readback_instead_of_invalidating_it(self):
+        command = self.guardian_command()
+        before = copy.deepcopy(self.provider.rpc.history['latestThreadSettings'])
+        self.provider.rpc.after_update = lambda: self.provider.rpc.history['latestThreadSettings'].update(
+            activePermissionProfile={'id': ':workspace', 'extends': None})
+        original_follow, original_get = self.provider.rpc.follow, self.catalog.get
+        emitted, timers = threading.Event(), []
+        def delayed_follow(*args, **kwargs):
+            if not self.provider.rpc.updated:
+                return original_follow(*args, **kwargs)
+            def emit():
+                original_follow(*args, **kwargs)
+                emitted.set()
+            timer = threading.Timer(0.02, emit)
+            timers.append(timer)
+            timer.start()
+        def catalog_read(*args, **kwargs):
+            result = original_get(*args, **kwargs)
+            if self.provider.rpc.updated:
+                self.assertTrue(emitted.wait(1))
+            return result
+        self.provider.rpc.follow, self.catalog.get = delayed_follow, catalog_read
+        try:
+            result = self.provider.execute(command)
+        finally:
+            for timer in timers:
+                timer.join(1)
+        self.assertEqual(result, 'policy_updated')
+        self.assertEqual(len(self.writes()), 1)
+        after = self.provider.states[SID]['history']['latestThreadSettings']
+        self.assertEqual(after['activePermissionProfile']['id'], ':workspace')
+        self.assertEqual((after['model'], after['effort']), (before['model'], before['effort']))
+
+    def test_late_picker_normalization_allows_one_read_retry_without_rewriting_policy(self):
+        self.picker()
+        command = self.guardian_command()
+        self.provider.rpc.after_update = lambda: self.provider.rpc.history['latestThreadSettings'].update(
+            activePermissionProfile={'id': ':workspace', 'extends': None})
+        original, invalidations = self.provider.rpc.call, []
+        def delayed_normalization(method, *args, **kwargs):
+            response = original(method, *args, **kwargs)
+            if method == 'thread-follower-read-model-settings' and self.provider.rpc.updated:
+                invalidations.append(method)
+                if len(invalidations) == 1:
+                    revision = self.provider.states[SID]['revision']
+                    self.provider.event({'method': 'thread-stream-state-changed',
+                        'sourceClientId': self.provider.rpc.owner, 'version': 11,
+                        'params': {'hostId': 'local', 'conversationId': SID, 'change': {
+                            'type': 'patches', 'baseRevision': revision, 'revision': revision + 1,
+                            'patches': [{'op': 'replace', 'path': ['latestCollaborationMode'],
+                                'value': copy.deepcopy(self.provider.rpc.history['latestCollaborationMode'])}]}}})
+            return response
+        self.provider.rpc.call = delayed_normalization
+        self.assertEqual(self.provider.execute(command), 'policy_updated')
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(len(invalidations), 2)
+
+    def test_permission_confirmation_aborts_changed_owner_scope_state_runtime_or_model(self):
+        original_provider = self.provider
+        for change in ('owner', 'scope', 'state', 'running', 'request', 'model'):
+            with self.subTest(change=change):
+                self.provider = CodexDesktop('/unused', Scope(), SettingsDesktop,
+                    background=False, catalog=self.catalog)
+                try:
+                    self.provider.refresh()
+                    command = self.guardian_command()
+                    self.provider.rpc.after_update = lambda: self.provider.rpc.history['latestThreadSettings'].update(
+                        activePermissionProfile={'id': ':workspace', 'extends': None})
+                    original_call = self.provider.rpc.call
+                    def disrupted(method, *args, **kwargs):
+                        result = original_call(method, *args, **kwargs)
+                        if method == 'thread-follower-update-thread-settings':
+                            if change == 'owner': self.provider.owners[SID] = 'another-owner'
+                            elif change == 'scope': self.provider.scope = lambda: []
+                            elif change == 'state': self.provider.states.pop(SID)
+                            elif change == 'running':
+                                self.provider.states[SID]['history']['threadRuntimeStatus'] = {'type': 'active'}
+                            elif change == 'request': self.provider.states[SID]['requests'] = [{'id': 'new-request'}]
+                            else:
+                                self.provider.rpc.history['latestThreadSettings']['model'] = 'model-b'
+                                self.provider.states[SID]['history']['latestThreadSettings']['model'] = 'model-b'
+                        return result
+                    self.provider.rpc.call = disrupted
+                    self.assertEqual(self.provider.execute(command), 'unknown')
+                    self.assertEqual(len(self.writes()), 1)
+                finally:
+                    self.provider.close()
+        self.provider = original_provider
 
     def test_model_without_reasoning_preserves_catalog_and_clears_old_effort(self):
         self.catalog.data['models'].append({'value': 'without-reasoning',

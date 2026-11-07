@@ -161,6 +161,17 @@ def _allowed_preset(preset, requirements):
         and (reviewers is None or any(_reviewer_matches(item, reviewer) for item in reviewers)))
 
 
+def _desktop_guardian(catalog):
+    """Only a validated current desktop evaluation can supply the runtime gate."""
+    value = catalog.get('desktop_features')
+    if (not isinstance(value, dict) or set(value) != {'guardian_approval', 'revision'}
+            or type(value.get('guardian_approval')) is not bool
+            or not isinstance(value.get('revision'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', value['revision'])):
+        return None
+    return value['guardian_approval']
+
+
 def _native_choices(catalog):
     parts = _catalog_parts(catalog)
     if parts is None:
@@ -173,9 +184,10 @@ def _native_choices(catalog):
         if preset[0] in profiles and _allowed_preset(preset, requirements)]
     features = config.get('features') or {}
     guardian_disabled = isinstance(features, dict) and features.get('guardian_approval') is False
-    # Feature permission alone does not establish the desktop's Statsig/UI gate.
-    # Keep the option only with an authoritative default or managed requirement.
-    guardian_known = (required or config.get('approvals_reviewer') in AUTO_REVIEWERS
+    # Engine support alone does not establish the desktop's account rollout.
+    # Read that gate independently, retaining native defaults and requirements.
+    guardian_known = (_desktop_guardian(catalog) is True
+                      or required or config.get('approvals_reviewer') in AUTO_REVIEWERS
                       or available == ['guardian-approvals'])
     if guardian_disabled or not guardian_known:
         available = [value for value in available if value != 'guardian-approvals']
@@ -243,7 +255,9 @@ def _unavailable_reason(value, catalog, editable):
     if value == 'guardian-approvals':
         if isinstance(features, dict) and features.get('guardian_approval') is False:
             return '已在 Codex 配置中禁用自动审查'
-        return '尚未读取到 Codex 原生自动审查选项的可用状态'
+        if _desktop_guardian(catalog) is False:
+            return 'Codex 当前未提供自动审查切换'
+        return '暂无法确认 Codex 自动审查是否可切换'
     return '当前原生设置不允许此选项'
 
 

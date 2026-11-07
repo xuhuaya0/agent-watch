@@ -359,7 +359,7 @@ class CodexDesktop:
                     failure = category
             self.stop.wait(2)
 
-    def refresh_settings(self, sid, owner, fresh=False):
+    def refresh_settings(self, sid, owner, fresh=False, fresh_features=None):
         if not self.catalog:
             return
         token = object()
@@ -375,7 +375,8 @@ class CodexDesktop:
             pass
         if isinstance(native, dict) and isinstance(native.get('model'), str):
             try:
-                catalog = self.catalog.get(cwd, native.get('modelProvider'), fresh=fresh)
+                extra = {} if fresh_features is None else {'fresh_features': fresh_features}
+                catalog = self.catalog.get(cwd, native.get('modelProvider'), fresh=fresh, **extra)
             except (ControlError, KeyError, TypeError, TimeoutError, OSError):
                 pass
             if catalog:
@@ -629,7 +630,11 @@ class CodexDesktop:
     def update_settings(self, sid, owner, action):
         from .codex_policy import FIELDS, matches_selection, settings_for
         from .codex_settings import same_model, effective_model_settings
-        self.refresh_settings(sid, owner, fresh=True)
+        # Only selecting automatic review requires a new account rollout read.
+        # Model/effort and other native permission choices still refresh their
+        # catalog and context, without an unrelated network bootstrap each time.
+        self.refresh_settings(sid, owner, fresh=True,
+            fresh_features=action['kind'] == 'policy' and action['value'] == 'guardian-approvals')
         with self.condition:
             if sid not in self.scope() or self.owners.get(sid) != owner or sid not in self.states:
                 raise ControlError('native_session_unavailable')
@@ -642,6 +647,9 @@ class CodexDesktop:
             previous_model = effective_model_settings(state, options['model'], options['catalog'])
             if previous_model is None:
                 raise ControlError('model_changed' if action['kind'] == 'model' else 'policy_changed')
+            before_revision = state['revision']
+            selected_before = (action['kind'] == 'policy'
+                and matches_selection(state, action['value'], options['catalog']))
             if action['kind'] == 'model':
                 patch = {'model': action['model'], 'effort': action.get('effort')}
             else:
@@ -652,17 +660,52 @@ class CodexDesktop:
             {'conversationId': sid, 'threadSettings': patch, 'activeTurnId': None}, owner=owner)['result']
         if not isinstance(result, dict) or result.get('applied') is not True:
             return 'unknown'
+        def readback_state():
+            state = self.states.get(sid)
+            if (not state or self.owners.get(sid) != owner or sid not in self.scope()
+                    or state.get('requests') or pending(state.get('history') or {})
+                    or (state['history'].get('threadRuntimeStatus') or {}).get('type') != 'idle'):
+                return None
+            return state
+        if action['kind'] == 'policy':
+            # Acknowledgement can precede the permission broadcast. Reading
+            # immediately lets that expected broadcast invalidate the in-flight
+            # read. First observe the selected native state, then read it back.
+            with self.condition:
+                def published():
+                    state = readback_state()
+                    return (state is None or (selected_before or state['revision'] > before_revision)
+                        and matches_selection(state, action['value'], options['catalog']))
+                if not self.condition.wait_for(published, timeout=8) or readback_state() is None:
+                    return 'unknown'
         # This native read waits for the owner's pending settings update, and
         # verifies the model that the next real turn will inherit.
         self.refresh_settings(sid, owner)
+        if action['kind'] == 'policy':
+            with self.condition:
+                current = readback_state()
+                known = self.native_settings.get(sid)
+                selected = effective_model_settings(current, previous_model, options['catalog']) if current else None
+                retry_read = (current is not None and known is not None
+                    and known.get('owner') == owner and known.get('checked') == float('-inf')
+                    and matches_selection(current, action['value'], options['catalog'])
+                    and selected is not None
+                    and selected.get('reasoningEffort') == previous_model.get('reasoningEffort')
+                    and all((current['history'].get('latestThreadSettings') or {}).get(key) == before.get(key)
+                            for key in ('model', 'effort')))
+            # A second normalization broadcast or another background metadata
+            # reader can supersede the first read. Retry only that read, once,
+            # after the selected permission and unchanged model are still known.
+            if retry_read:
+                self.refresh_settings(sid, owner)
         with self.condition:
             options = self.native_settings.get(sid)
             if (not options or not options.get('catalog') or time.monotonic() - options['checked'] > 30
-                    or self.owners.get(sid) != owner):
+                    or options.get('owner') != owner or readback_state() is None):
                 return 'unknown'
             native = options['model']
             def confirmed():
-                state = self.states.get(sid)
+                state = readback_state()
                 if not state:
                     return True
                 if action['kind'] == 'model':
@@ -674,7 +717,7 @@ class CodexDesktop:
                             and all(values.get(key) == before.get(key) for key in FIELDS))
                 return matches_selection(state, action['value'], options['catalog'])
             done = self.condition.wait_for(confirmed, timeout=8)
-            if not done or sid not in self.states or self.owners.get(sid) != owner:
+            if not done or readback_state() is None:
                 return 'unknown'
             native = effective_model_settings(self.states[sid], native, options['catalog'])
             if native is None:

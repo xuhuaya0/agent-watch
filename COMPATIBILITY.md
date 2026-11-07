@@ -54,7 +54,7 @@ operation succeeded.
 | --- | --- | --- |
 | New conversation | DeepSeek creates in the selected directory. Antigravity creates in the selected native project, retaining only the source model choice. Both Windows provider paths verified. Codex macOS opens a prefilled native draft requiring user submission | Full Codex creation is implemented for an existing shared app-server but native acceptance is pending. No arbitrary directory, permission copy or second engine. See transport-specific evidence below |
 | Model selection | Codex desktop exposes the native model and reasoning choices allowed for the session's provider, directory and policy; changes apply through the existing desktop owner. DeepSeek exposes its native model/effort catalog and explicitly confirms the session-and-default scope | One Codex model/effort change and restoration verified on macOS. DeepSeek model and model/effort round trips, including exact restoration of both the session selection and native default, verified on Windows. DeepSeek browser write acceptance, other combinations and Windows Codex require native acceptance. Antigravity model switching is not exposed because a session-only native setter has not been verified |
-| Permission changes | Codex offers permitted native presets for an idle session's next turn. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex read-only and restoration verified; Full access, automatic review and other Codex transitions need native acceptance. DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching needs native acceptance. Global settings are not exposed |
+| Permission changes | Codex offers permitted native presets for an idle session's next turn. DeepSeek uses native session presets. Antigravity uses the named project's native permission picker, with device opt-in and explicit project confirmation | Codex read-only, Ask for approval, Approve for me and restoration verified on macOS; Full access and other Codex transitions need native acceptance. DeepSeek write-and-restore verified. Antigravity native same-preset write/read-back verified; cross-preset switching needs native acceptance. Global settings are not exposed |
 | Tool approval | Buttons are derived from the current native request's supported one-time choices | Additional request types need complete arguments/diffs, allowed decisions and a native stale-request check; unknown requests stay in the native app |
 | Antigravity user-style message | Current native `send-message` produces a `SYSTEM_MESSAGE` notification labeled Agent Watch, which can continue the same conversation | The new-conversation first turn uses native user input; existing-chat user-style reply dispatch still needs separate validation |
 | Antigravity leading hyphen | Messages beginning with `-` are rejected by the bridge | Verify literal argument handling in the installed CLI; do not strip, rewrite or interpret the user's text silently |
@@ -434,3 +434,44 @@ stale settings on snapshot or patch changes. A null legacy scalar therefore no
 longer hides a verified current selection. Missing or conflicting native menu
 state still cannot be replaced by a previous turn or catalog default. Native
 Medium and Ultra selections were checked without changing either chat.
+
+### Automatic-review availability (2026-11-07)
+
+For the reviewed macOS desktop build 25241, the worker can read the same
+authenticated feature-bootstrap endpoint as the native permission menu. It binds
+the result to the current account and plan, native stable ID, signed application, running
+process/session, version, locale and beta state. This closes the missing runtime
+gate described above; an engine feature being enabled alone is still insufficient.
+The existing native profile and managed-policy checks continue to restrict the
+choices. Selecting Approve for me refreshes this gate before the existing desktop
+owner receives the permission update.
+
+The reader uses the system HTTPS client with compression, bounded output and
+timeouts, no redirects or proxy environment, and credentials passed only over
+stdin. It exports only a boolean and an opaque revision; bootstrap responses and
+account credentials are not sent to the center or saved as application data.
+Ordinary reads share a ten-minute cache across projects, invalidate it when the
+native context changes, and revoke a previous positive result after a failed
+refresh. A forced read is specific to selecting automatic review; model, effort
+and other permission changes do not force an unrelated feature download.
+
+This reader currently requires the default local Codex profile, the reviewed
+macOS build, a non-enterprise ChatGPT account and desktop beta disabled. Other
+builds, profiles, platforms or unresolved beta/managed context return unknown;
+they do not inherit availability from this installation. Windows Codex remains
+unverified. No plugin or modification of the native application is required.
+
+A dedicated idle chat on this build passed authenticated HTTP Hub → worker →
+existing desktop-owner acceptance: Ask for approval, then Approve for me, then
+restoration of its original permissions. Both panel commands resolved, with one
+native write each. An independent reconnect verified the original sandbox,
+approval policy/reviewer, model, effort and collaboration state; configuration
+hashes were unchanged. The comparison allows only the native schema's omission
+of an empty input-only permissions selector when no named profile is selected.
+No message, tool decision, model change or global setting change was performed.
+
+This acceptance also exposed a delayed native-state broadcast that could report
+a successful permission change as unknown. Permission confirmation now waits for
+the selected state before reading it back, with at most one additional read if a
+later normalization update invalidates that read. It never repeats the write;
+changed ownership, scope, runtime, requests or model state still prevent success.

@@ -223,10 +223,31 @@ def query_catalog(executable, root, cwd, provider, rpc_factory=MetadataRpc):
 
 
 class NativeCatalog:
-    def __init__(self, executable, root, query=query_catalog):
+    def __init__(self, executable, root, query=query_catalog, feature_reader=None):
         self.executable, self.root, self.query = Path(executable), Path(root).resolve(), query
+        self.feature_reader = feature_reader
         self.cache = {}
         self.lock = threading.Lock()
+
+    def _with_desktop_features(self, result, fresh):
+        if result is None or self.feature_reader is None or result.get('provider') != 'openai':
+            return result
+        result = copy.deepcopy(result)
+        result.pop('desktop_features', None)
+        try:
+            features = self.feature_reader.get(fresh=fresh)
+        except (OSError, ValueError, TypeError, TimeoutError):
+            features = None
+        if (isinstance(features, dict) and set(features) == {'guardian_approval', 'revision'}
+                and type(features.get('guardian_approval')) is bool
+                and isinstance(features.get('revision'), str)
+                and re.fullmatch(r'[0-9a-f]{64}', features['revision'])):
+            result['desktop_features'] = features
+        # Keep changing identity/context in the action revision, without
+        # retaining raw identities, credentials or the bootstrap response.
+        result.pop('revision', None)
+        result['revision'] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+        return result
 
     def _fingerprint(self, cwd):
         paths = [self.executable, self.root/'auth.json', self.root/'config.toml']
@@ -240,7 +261,7 @@ class NativeCatalog:
                 values.append((str(path), None))
         return tuple(values)
 
-    def get(self, cwd, model_provider, fresh=False):
+    def get(self, cwd, model_provider, fresh=False, *, fresh_features=None):
         if (not isinstance(cwd, str) or not Path(cwd).is_absolute()
                 or not isinstance(model_provider, str) or not model_provider):
             return None
@@ -255,17 +276,24 @@ class NativeCatalog:
             key = (str(directory), model_provider)
             cached = self.cache.get(key)
             if not fresh and cached and cached[0] == fingerprint and cached[1] > time.monotonic():
-                return copy.deepcopy(cached[2])
-            try:
-                result = self.query(self.executable, self.root, str(directory), model_provider)
-                if fingerprint != self._fingerprint(directory):
+                result = copy.deepcopy(cached[2])
+            else:
+                try:
+                    result = self.query(self.executable, self.root, str(directory), model_provider)
+                    if fingerprint != self._fingerprint(directory):
+                        result = None
+                except (OSError, ValueError, TypeError, TimeoutError, queue.Empty, subprocess.SubprocessError):
                     result = None
-            except (OSError, ValueError, TypeError, TimeoutError, queue.Empty, subprocess.SubprocessError):
-                result = None
-            if len(self.cache) >= 32 and key not in self.cache:
-                self.cache.pop(next(iter(self.cache)))
-            self.cache[key] = (fingerprint, time.monotonic() + (60 if result else 15), copy.deepcopy(result))
-            return result
+                if len(self.cache) >= 32 and key not in self.cache:
+                    self.cache.pop(next(iter(self.cache)))
+                self.cache[key] = (fingerprint, time.monotonic() + (60 if result else 15), copy.deepcopy(result))
+        # One feature reader is shared across project catalogs. Its own context
+        # checks still run on cache hits; writes require a fresh native read.
+        result = self._with_desktop_features(result, fresh if fresh_features is None else fresh_features)
+        try:
+            return result if fingerprint == self._fingerprint(directory) else None
+        except (OSError, ValueError):
+            return None
 
 
 def _metadata_executable(app):
@@ -298,7 +326,9 @@ def native_catalog(root, executable=None):
             for name in ('ChatGPT.app', 'Codex.app'):
                 executable = _metadata_executable(base/name)
                 if executable is not None:
-                    return NativeCatalog(executable, root)
+                    from .codex_features import DesktopFeatures
+                    return NativeCatalog(executable, root,
+                                         feature_reader=DesktopFeatures(base/name, root))
     if executable is None:
         return None
     path = Path(executable).expanduser()

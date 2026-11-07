@@ -318,3 +318,32 @@ browser visual check or a model-setting write.
 The follow-up passed 461 Python tests (one platform skip) and 167 JavaScript
 tests. The deployed component to update is the macOS Codex control worker;
 existing Hub capability validators remain compatible.
+
+### Automatic-review switching follow-up
+
+The Codex permission dropdown previously recognized a selected Approve for me
+mode but could not establish whether it was selectable again after Ask. The
+worker now reads the account-bound native bootstrap gate and combines it with
+the existing profile/configuration/managed-policy constraints. It uses the same
+anchored permission menu and action/receipt flow; no new control or dialog is
+introduced. Native writes remain limited to an idle owned chat, use a refreshed
+revision, and verify that its model and effort remain unchanged.
+
+The affected flow is UI-07, with stale/busy/unavailable and failed-read behavior
+covered by code tests. A current native read confirmed the automatic-review
+gate with matching account and running-app context. This is not a browser
+visual check. The existing frontend assets and center protocol are unchanged.
+
+Dedicated native acceptance passed through authenticated HTTP Hub routes and a
+real worker: Ask for approval → Approve for me → original permissions restored.
+Both action receipts resolved; each action wrote once. An independent native
+reconnect confirmed restored permissions and unchanged model, effort,
+collaboration mode and configuration. An empty input-only selector may be
+omitted by the native final-state schema; other values remain strictly checked.
+No test message or tool approval was sent. Browser interaction/visual acceptance
+was not repeated for this backend-only change.
+
+The run also found and fixed a confirmation race caused by delayed native state
+notifications. Regression coverage includes delayed and split notifications,
+fresh gate withdrawal, and owner/scope/runtime/request/model changes. The final
+suite passed 487 Python tests (one platform skip) and 167 JavaScript tests.

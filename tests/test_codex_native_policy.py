@@ -49,7 +49,7 @@ class NativePolicyTests(unittest.TestCase):
         self.assertEqual(choices['full-access']['label'], 'Full access')
         self.assertNotIn('guardian-approvals', choices)
         self.assertEqual(result['unavailable_options'], [{'value': 'guardian-approvals',
-            'label': 'Approve for me', 'reason': '尚未读取到 Codex 原生自动审查选项的可用状态'}])
+            'label': 'Approve for me', 'reason': '暂无法确认 Codex 自动审查是否可切换'}])
         self.assertEqual(settings_for('read-only', data), {'permissions': ':read-only',
             'approvalPolicy': 'on-request', 'approvalsReviewer': 'user'})
         self.assertEqual(settings_for('auto', data), {'permissions': ':workspace',
@@ -96,6 +96,48 @@ class NativePolicyTests(unittest.TestCase):
         self.assertIsNone(settings_for('guardian-approvals', data))
         data = catalog()
         data['requirements']['allowedApprovalsReviewers'] = ['auto_review']
+        self.assertEqual(set(options(native_capability(state(), data))), {'guardian-approvals'})
+
+    def test_live_desktop_gate_allows_return_to_guardian_from_ask(self):
+        data = catalog()
+        data['desktop_features'] = {'guardian_approval': True, 'revision': 'a'*64}
+        result = native_capability(state(), data)
+        self.assertEqual(result['current_option'], 'auto')
+        self.assertIn('guardian-approvals', options(result))
+        self.assertEqual(settings_for('guardian-approvals', data), {
+            'permissions': ':workspace', 'approvalPolicy': 'on-request',
+            'approvalsReviewer': 'guardian_subagent'})
+        for restriction in ('disabled', 'reviewer', 'sandbox', 'policy', 'profile'):
+            with self.subTest(restriction=restriction):
+                restricted = copy.deepcopy(data)
+                if restriction == 'disabled':
+                    restricted['config']['features'] = {'guardian_approval': False}
+                else:
+                    key, allowed = {'reviewer': ('allowedApprovalsReviewers', ['user']),
+                        'sandbox': ('allowedSandboxModes', ['read-only']),
+                        'policy': ('allowedApprovalPolicies', ['never']),
+                        'profile': ('allowedPermissionProfiles', {':read-only': True})}[restriction]
+                    restricted['requirements'][key] = allowed
+                self.assertIsNone(settings_for('guardian-approvals', restricted))
+
+    def test_false_missing_or_malformed_desktop_gate_never_authorizes_guardian(self):
+        data = catalog()
+        data['config']['features'] = {'guardian_approval': True}
+        for gate in (None, {}, True, {'guardian_approval': True},
+                     {'guardian_approval': 'true', 'revision': 'a'*64},
+                     {'guardian_approval': True, 'revision': 'invalid'},
+                     {'guardian_approval': False, 'revision': 'a'*64}):
+            with self.subTest(gate=gate):
+                data['desktop_features'] = gate
+                self.assertIsNone(settings_for('guardian-approvals', data))
+                self.assertNotIn('guardian-approvals', options(native_capability(state(), data)))
+        data['desktop_features'] = {'guardian_approval': True, 'revision': 'a'*64}
+        old = native_capability(state(), data)
+        data['desktop_features']['guardian_approval'] = False
+        new = native_capability(state(), data)
+        self.assertNotEqual(old['revision'], new['revision'])
+        self.assertIn('未提供', new['unavailable_options'][0]['reason'])
+        data['requirements']['autoReview'] = {'requiredOnModels': ['example-model']}
         self.assertEqual(set(options(native_capability(state(), data))), {'guardian-approvals'})
 
     def test_all_managed_requirements_filter_the_exact_policy_reviewer_and_profile(self):
