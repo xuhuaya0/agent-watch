@@ -213,6 +213,7 @@ class CodexDesktop:
         self.native_settings = {}
         self.settings_reads = {}
         self.states, self.owners = {}, {}
+        self.picker_context_owners = {}
         self.next_probe = {}
         self.owner_checked = {}
         self.condition = threading.Condition(threading.RLock())
@@ -228,6 +229,7 @@ class CodexDesktop:
                 self.owner_checked.clear()
                 self.native_settings.clear()
                 self.settings_reads.clear()
+                self.picker_context_owners.clear()
                 self.condition.notify_all()
                 return
             if message.get('method') == 'client-status-changed':
@@ -238,6 +240,7 @@ class CodexDesktop:
                             self.owners.pop(sid, None)
                             self.states.pop(sid, None)
                             self.native_settings.pop(sid, None)
+                            self.picker_context_owners.pop(sid, None)
                 return
             if message.get('method') != 'thread-stream-state-changed':
                 return
@@ -271,7 +274,10 @@ class CodexDesktop:
                     before = previous_history.get('latestThreadSettings') or {}
                     after = history.get('latestThreadSettings') or {}
                     model_changed = (any(before.get(key) != after.get(key) for key in ('model', 'effort'))
-                        or any(previous_history.get(key) != history.get(key) for key in ('latestModel', 'latestReasoningEffort'))
+                        or any((key in previous_history, previous_history.get(key)) !=
+                               (key in history, history.get(key)) for key in
+                               ('latestModel', 'latestReasoningEffort', 'latestCollaborationMode',
+                                'resumeState', 'modelProvider'))
                         or any(patch.get('path', [None])[0] == 'latestCollaborationMode'
                                for patch in change.get('patches', []) if patch.get('path')))
                     if model_changed or before != after:
@@ -281,7 +287,10 @@ class CodexDesktop:
                         if known:
                             self.native_settings[sid] = {**known, 'checked': float('-inf'),
                                 'model_invalidated': model_changed or known.get('model_invalidated', False)}
+                if any(key in history for key in ('latestCollaborationMode', 'resumeState', 'modelProvider')):
+                    self.picker_context_owners[sid] = self.owners[sid]
                 self.states[sid] = {'requests': requests, 'history': history, 'revision': revision,
+                                    'picker_context_required': self.picker_context_owners.get(sid) == self.owners[sid],
                                     'received': time.monotonic()}
             except (ValueError, KeyError, IndexError, TypeError):
                 self.states.pop(sid, None)
@@ -299,6 +308,7 @@ class CodexDesktop:
                 self.rpc.follow(sid, self.owners.pop(sid), False)
                 self.states.pop(sid, None)
                 self.native_settings.pop(sid, None)
+                self.picker_context_owners.pop(sid, None)
         def probe(sid):
             if self.stop.is_set():
                 return
@@ -400,7 +410,7 @@ class CodexDesktop:
         unsupported = len(requests) != len(state['requests'])
         requests.extend(pending(state.get('history', {})))
         from .codex_policy import capability, native_capability
-        from .codex_settings import summary, model_capability
+        from .codex_settings import summary, model_capability, effective_model_settings
         # Once native catalogs are configured, unavailable or stale metadata
         # must revoke edits, never broaden them to the older approval-only API.
         policy = capability(state) if not requests and self.catalog is None else None
@@ -415,6 +425,9 @@ class CodexDesktop:
             catalog = {**catalog, 'selected_approval_policy': latest.get('approvalPolicy'),
                        'selected_reviewer': latest.get('approvalsReviewer')}
         editable = bool(recent and catalog and not requests)
+        if editable and effective_model_settings(state, options['model'], catalog) is None:
+            # A policy change also verifies that model preferences stayed put.
+            editable = False
         if self.catalog is not None:
             policy = native_capability(state, catalog, editable=editable)
         if owned and not options.get('model_invalidated'):
@@ -615,7 +628,7 @@ class CodexDesktop:
 
     def update_settings(self, sid, owner, action):
         from .codex_policy import FIELDS, matches_selection, settings_for
-        from .codex_settings import same_model
+        from .codex_settings import same_model, effective_model_settings
         self.refresh_settings(sid, owner, fresh=True)
         with self.condition:
             if sid not in self.scope() or self.owners.get(sid) != owner or sid not in self.states:
@@ -626,7 +639,9 @@ class CodexDesktop:
             if not options:
                 raise ControlError('model_changed' if action['kind'] == 'model' else 'policy_changed')
             before = copy.deepcopy(state['history'].get('latestThreadSettings') or {})
-            previous_model = dict(options['model'])
+            previous_model = effective_model_settings(state, options['model'], options['catalog'])
+            if previous_model is None:
+                raise ControlError('model_changed' if action['kind'] == 'model' else 'policy_changed')
             if action['kind'] == 'model':
                 patch = {'model': action['model'], 'effort': action.get('effort')}
             else:
@@ -651,13 +666,18 @@ class CodexDesktop:
                 if not state:
                     return True
                 if action['kind'] == 'model':
+                    selected = effective_model_settings(state, native, options['catalog'])
                     values = state['history'].get('latestThreadSettings') or {}
-                    return (same_model(native.get('model'), action['model'], options['catalog'], native.get('modelProvider'))
-                            and native.get('reasoningEffort') == action.get('effort')
+                    return (selected is not None
+                            and same_model(selected.get('model'), action['model'], options['catalog'], selected.get('modelProvider'))
+                            and selected.get('reasoningEffort') == action.get('effort')
                             and all(values.get(key) == before.get(key) for key in FIELDS))
                 return matches_selection(state, action['value'], options['catalog'])
             done = self.condition.wait_for(confirmed, timeout=8)
             if not done or sid not in self.states or self.owners.get(sid) != owner:
+                return 'unknown'
+            native = effective_model_settings(self.states[sid], native, options['catalog'])
+            if native is None:
                 return 'unknown'
             if action['kind'] == 'policy' and (not same_model(native.get('model'), previous_model.get('model'),
                     options['catalog'], native.get('modelProvider'))

@@ -424,3 +424,13 @@ capability; its control snapshot now distinguishes this from an unknown value.
 DeepSeek's inherited model/default-effort resolution follows its native catalog
 and selection rules. These were read-only checks plus regression tests, not new
 model changes or browser acceptance. Windows Codex remains unverified.
+
+A follow-up read-only comparison found a resumed desktop chat whose follower
+`reasoningEffort` scalar was null while its current collaboration settings
+explicitly selected Medium. The installed native picker reads those settings
+for resumed chats. The bridge now retains only the mode, model and effort needed
+for that selection, checks owner/provider/model consistency, and invalidates
+stale settings on snapshot or patch changes. A null legacy scalar therefore no
+longer hides a verified current selection. Missing or conflicting native menu
+state still cannot be replaced by a previous turn or catalog default. Native
+Medium and Ultra selections were checked without changing either chat.

@@ -93,6 +93,130 @@ class ModelControlTests(unittest.TestCase):
     def writes(self):
         return [item for item in self.provider.rpc.calls if item[0] == 'thread-follower-update-thread-settings']
 
+    def picker(self, model='model-a', effort='low'):
+        self.provider.rpc.history.update(resumeState='resumed', modelProvider='openai',
+            latestCollaborationMode={'mode': 'default', 'settings': {'model': model, 'reasoning_effort': effort}})
+
+    def test_real_picker_effort_survives_null_follower_and_stale_owner_is_rejected(self):
+        self.picker(effort='high')
+        self.provider.rpc.updated = True
+        self.provider.rpc.readback = {'reasoningEffort': None}
+        row = self.provider.session_snapshot(SID)[0]
+        self.assertEqual((row['model']['effort'], row['settings']['reasoning']), ('high', 'High'))
+        self.provider.native_settings[SID]['owner'] = 'previous-owner'
+        self.assertNotIn('model', self.provider.snapshot()[0])
+        self.assertEqual(self.writes(), [])
+
+    def test_collaboration_snapshot_and_patch_changes_invalidate_cached_model(self):
+        self.picker()
+        self.provider.session_snapshot(SID)
+        original = self.provider.snapshot()[0]['model']['revision']
+        self.picker(effort='high')
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        self.assertNotIn('model', self.provider.snapshot()[0])
+        updated = self.provider.session_snapshot(SID)[0]['model']
+        self.assertEqual(updated['effort'], 'high')
+        self.assertNotEqual(updated['revision'], original)
+        for change in ({'op': 'replace', 'path': ['latestCollaborationMode'], 'value': {
+                           'mode': 'default', 'settings': {'model': 'model-a', 'reasoning_effort': None}}},
+                       {'op': 'remove', 'path': ['latestCollaborationMode']}):
+            revision = self.provider.states[SID]['revision']
+            self.provider.event({'method': 'thread-stream-state-changed', 'sourceClientId': self.provider.rpc.owner,
+                'version': 11, 'params': {'hostId': 'local', 'conversationId': SID, 'change': {
+                    'type': 'patches', 'baseRevision': revision, 'revision': revision + 1, 'patches': [change]}}})
+            self.assertNotIn('model', self.provider.snapshot()[0])
+            self.provider.refresh_settings(SID, self.provider.rpc.owner)
+            self.assertEqual(self.provider.snapshot()[0]['model']['effort_status'], 'unknown')
+        self.assertEqual(self.writes(), [])
+
+    def test_late_null_read_cannot_restore_model_after_picker_patch(self):
+        self.picker()
+        self.provider.session_snapshot(SID)
+        arrived, release = threading.Event(), threading.Event()
+        original = self.provider.rpc.call
+        def delayed(method, *args, **kwargs):
+            response = original(method, *args, **kwargs)
+            if method == 'thread-follower-read-model-settings':
+                arrived.set()
+                self.assertTrue(release.wait(2))
+            return response
+        self.provider.rpc.call = delayed
+        reader = threading.Thread(target=self.provider.refresh_settings, args=(SID, self.provider.rpc.owner))
+        reader.start()
+        try:
+            self.assertTrue(arrived.wait(2))
+            self.picker(effort='high')
+            self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        finally:
+            release.set(); reader.join(2)
+        self.assertFalse(reader.is_alive())
+        self.assertNotIn('model', self.provider.snapshot()[0])
+        self.provider.rpc.call = original
+        self.provider.refresh_settings(SID, self.provider.rpc.owner)
+        self.assertEqual(self.provider.snapshot()[0]['model']['effort'], 'high')
+
+    def test_removing_all_picker_fields_never_revives_old_follower_effort(self):
+        self.picker()
+        self.provider.session_snapshot(SID)
+        for key in ('latestCollaborationMode', 'resumeState', 'modelProvider'):
+            self.provider.rpc.history[key] = None
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        self.provider.refresh_settings(SID, self.provider.rpc.owner)
+        self.assertEqual(self.provider.snapshot()[0]['model']['effort_status'], 'unknown')
+        for key in ('latestCollaborationMode', 'resumeState', 'modelProvider'):
+            self.provider.rpc.history.pop(key)
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        self.assertNotIn('model', self.provider.snapshot()[0])
+        self.provider.refresh_settings(SID, self.provider.rpc.owner)
+        row = self.provider.snapshot()[0]
+        self.assertEqual(row['model']['effort_status'], 'unknown')
+        self.assertEqual(row['model']['options'], [])
+        self.assertNotIn('effort', row['model'])
+
+    def test_model_readback_uses_confirmed_picker_and_rejects_conflicting_model(self):
+        self.picker()
+        command = self.command()
+        self.provider.rpc.readback = {'reasoningEffort': None}
+        self.provider.rpc.after_update = lambda: self.picker('model-b', 'high')
+        self.assertEqual(self.provider.execute(command), 'model_updated')
+        self.assertEqual(self.provider.snapshot()[0]['model']['effort'], 'high')
+        command = self.command()
+        self.provider.rpc.after_update = lambda: self.picker('model-a', 'high')
+        with patch.object(self.provider.condition, 'wait_for', side_effect=lambda predicate, timeout: predicate()):
+            self.assertEqual(self.provider.execute(command), 'unknown')
+        self.assertEqual(len(self.writes()), 2)
+
+    def test_lost_patch_does_not_forget_same_owner_picker_contract(self):
+        self.picker(effort='high')
+        self.provider.session_snapshot(SID)
+        revision = self.provider.states[SID]['revision']
+        self.provider.event({'method': 'thread-stream-state-changed', 'sourceClientId': self.provider.rpc.owner,
+            'version': 11, 'params': {'hostId': 'local', 'conversationId': SID, 'change': {
+                'type': 'patches', 'baseRevision': revision - 1, 'revision': revision + 1, 'patches': []}}})
+        self.assertNotIn(SID, self.provider.states)
+        for key in ('latestCollaborationMode', 'resumeState', 'modelProvider'):
+            self.provider.rpc.history.pop(key)
+        self.provider.rpc.follow(SID, self.provider.rpc.owner)
+        row = self.provider.snapshot()[0]
+        self.assertEqual(row['model']['effort_status'], 'unknown')
+        self.assertEqual(row['model']['options'], [])
+        self.assertNotIn('effort', row['model'])
+        self.provider.refresh_settings(SID, self.provider.rpc.owner)
+        self.assertEqual(self.provider.snapshot()[0]['model']['effort_status'], 'unknown')
+
+    def test_malformed_picker_effort_keeps_unknown_model_and_clears_old_summary(self):
+        for effort in (True, {}, [], '', ' ', 'high effort', 'x' * 33):
+            with self.subTest(effort=effort):
+                self.picker(effort=effort)
+                row = self.provider.session_snapshot(SID)[0]
+                self.assertEqual(row['model']['effort_status'], 'unknown')
+                self.assertEqual(row['model']['options'], [])
+                self.assertEqual(row['policy']['options'], [])
+                self.assertNotIn('effort', row['model'])
+                self.assertNotIn('reasoning', row['settings'])
+                self.assertEqual(row['settings']['model'], 'Model A')
+        self.assertEqual(self.writes(), [])
+
     def test_model_and_effort_go_to_same_owner_and_permissions_are_preserved(self):
         command = self.command()
         before = copy.deepcopy(self.provider.rpc.history['latestThreadSettings'])

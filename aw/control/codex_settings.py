@@ -121,12 +121,51 @@ def same_model(a, b, catalog, provider):
     return a == b or model_selection(a, catalog, provider)[0] == model_selection(b, catalog, provider)[0]
 
 
+def effective_model_settings(state, native, catalog):
+    """Read the loaded desktop picker's selection from the same owner snapshot.
+
+    The follower read exposes latestReasoningEffort, which can be null even
+    while the picker's collaboration mode has a selected effort. Never infer
+    that selection from prior turns or a model catalog's default.
+    """
+    if not isinstance(native, dict):
+        return native
+    history = state.get('history') or {}
+    if ('latestCollaborationMode' not in history
+            and not state.get('picker_context_required')
+            and not any(key in history for key in ('resumeState', 'modelProvider'))):
+        return native
+    selected = history.get('latestCollaborationMode')
+    settings = selected.get('settings') if isinstance(selected, dict) else None
+    provider = native.get('modelProvider')
+    matches = (isinstance(settings, dict) and selected.get('mode') in ('default', 'plan')
+        and history.get('resumeState') == native.get('resumeState') == 'resumed'
+        and isinstance(provider, str) and bool(provider)
+        and history.get('modelProvider') == provider
+        and (not catalog or catalog.get('provider', provider) == provider)
+        and isinstance(settings.get('model'), str) and bool(settings['model'].strip())
+        and 'reasoning_effort' in settings
+        and (settings['reasoning_effort'] is None or
+             isinstance(settings['reasoning_effort'], str) and
+             re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', settings['reasoning_effort']))
+        and same_model(settings['model'], native.get('model'), catalog, provider))
+    # Explicit null, a partial replacement or a conflicting owner model does
+    # not authorize falling back to an older effort field.
+    return {**native, 'reasoningEffort': settings['reasoning_effort']} if matches else None
+
+
 def model_capability(state, catalog, native, editable=True):
     from .broker import encoded
     from .codex_policy import matches_selection
     history = state.get('history') or {}
     if not isinstance(native, dict) or not native.get('model'):
         return None
+    selected_settings = effective_model_settings(state, native, catalog)
+    if selected_settings is None:
+        native = {**native, 'reasoningEffort': None}
+        editable = False
+    else:
+        native = selected_settings
     model, effort = native.get('model'), native.get('reasoningEffort')
     catalog = catalog if isinstance(catalog, dict) else {}
     current, label = model_selection(model, catalog, native.get('modelProvider'))
@@ -143,7 +182,8 @@ def model_capability(state, catalog, native, editable=True):
                 continue
         options.append(option)
     result = {'current': current, 'current_label': label, 'revision': hashlib.sha256(encoded(
-        [catalog.get('revision'), native, history.get('latestThreadSettings'), runtime, bool(editable)]).encode()).hexdigest(),
+        [catalog.get('revision'), native, history.get('latestThreadSettings'),
+         history.get('latestCollaborationMode'), runtime, bool(editable)]).encode()).hexdigest(),
         'options': options}
     if effort is not None:
         result['effort'] = effort
@@ -155,6 +195,6 @@ def model_capability(state, catalog, native, editable=True):
         # A null owner value does not prove which default the desktop would
         # use. In particular, do not substitute the previous turn's effort or
         # an unrelated catalog option's default, even while writes are disabled.
-        result['effort_status'] = ('unsupported' if selected is not None
+        result['effort_status'] = ('unsupported' if selected_settings is not None and selected is not None
                                   and selected.get('efforts') == [] else 'unknown')
     return result if valid_model_capability(result) else None

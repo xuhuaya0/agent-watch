@@ -6,6 +6,69 @@ from aw.control.codex_settings import summary, model_selection, same_model, mode
 
 
 class SettingsTests(unittest.TestCase):
+    def test_loaded_picker_uses_collaboration_effort_when_follower_field_is_null(self):
+        catalog = {'revision': 'r', 'provider': 'openai', 'models': [
+            {'value': 'model-a', 'label': 'Model A', 'efforts': ['medium', 'ultra'], 'default_effort': 'ultra'}]}
+        state = {'history': {'resumeState': 'resumed', 'modelProvider': 'openai',
+            'threadRuntimeStatus': {'type': 'idle'},
+            'latestThreadSettings': {'model': 'model-a', 'effort': 'low'},
+            'latestCollaborationMode': {'mode': 'default', 'settings': {
+                'model': 'model-a', 'reasoning_effort': 'medium'}}}}
+        native = {'model': 'model-a', 'reasoningEffort': None, 'modelProvider': 'openai', 'resumeState': 'resumed'}
+        actual = model_capability(state, catalog, native)
+        self.assertEqual((actual['effort_status'], actual['effort'], actual['effort_label']),
+                         ('explicit', 'medium', 'Medium'))
+        self.assertEqual(len(actual['options']), 1)
+        state['history']['threadRuntimeStatus']['type'] = 'active'
+        state['history']['latestCollaborationMode']['settings']['reasoning_effort'] = 'ultra'
+        actual = model_capability(state, catalog, {**native, 'reasoningEffort': 'ultra'})
+        self.assertEqual((actual['effort_status'], actual['effort_label']), ('explicit', 'Ultra'))
+        self.assertEqual(actual['options'], [])
+
+    def test_picker_null_partial_and_conflicting_fields_never_borrow_old_effort(self):
+        catalog = {'revision': 'r', 'provider': 'openai', 'models': [
+            {'value': 'model-a', 'label': 'Model A', 'efforts': ['low', 'high'], 'default_effort': 'high'}]}
+        native = {'model': 'model-a', 'reasoningEffort': 'high', 'modelProvider': 'openai', 'resumeState': 'resumed'}
+        baseline = {'history': {'resumeState': 'resumed', 'modelProvider': 'openai',
+            'threadRuntimeStatus': {'type': 'idle'}, 'latestThreadSettings': {'effort': 'high'},
+            'latestCollaborationMode': {'mode': 'plan', 'settings': {'model': 'model-a', 'reasoning_effort': 'low'}}}}
+        for broken in ('null', 'missing-effort', 'missing-mode', 'future-mode', 'removed', 'null-collaboration',
+                       'partial', 'different-model', 'different-provider', 'different-catalog-provider', 'not-resumed'):
+            with self.subTest(broken=broken):
+                state, data = copy.deepcopy(baseline), copy.deepcopy(catalog)
+                collab = state['history']['latestCollaborationMode']
+                if broken == 'null': collab['settings']['reasoning_effort'] = None
+                elif broken == 'missing-effort': collab['settings'].pop('reasoning_effort')
+                elif broken == 'missing-mode': collab.pop('mode')
+                elif broken == 'future-mode': collab['mode'] = 'future'
+                elif broken == 'removed': state['history'].pop('latestCollaborationMode')
+                elif broken == 'null-collaboration': state['history']['latestCollaborationMode'] = None
+                elif broken == 'partial': collab['settings'] = {}
+                elif broken == 'different-model': collab['settings']['model'] = 'model-b'
+                elif broken == 'different-provider': state['history']['modelProvider'] = 'other'
+                elif broken == 'different-catalog-provider': data['provider'] = 'other'
+                else: state['history']['resumeState'] = 'needs_resume'
+                actual = model_capability(state, data, native)
+                self.assertEqual(actual['effort_status'], 'unknown')
+                self.assertNotIn('effort', actual)
+                if broken != 'null': self.assertEqual(actual['options'], [])
+
+    def test_collaboration_projection_patches_keep_only_picker_fields(self):
+        raw = {'resumeState': 'resumed', 'modelProvider': 'openai',
+               'latestCollaborationMode': {'mode': 'default', 'settings': {
+                   'model': 'model-a', 'reasoning_effort': 'medium', 'developer_instructions': 'private instructions'},
+                   'extra': 'private metadata'}}
+        state = project(raw)
+        self.assertNotIn('private', str(state))
+        new = patch_history(state, [{'op': 'replace', 'path': ['latestCollaborationMode', 'settings', 'reasoning_effort'], 'value': 'ultra'}])
+        self.assertEqual(new['latestCollaborationMode']['settings']['reasoning_effort'], 'ultra')
+        replacement = patch_history(new, [{'op': 'replace', 'path': ['latestCollaborationMode'], 'value': {
+            'mode': 'plan', 'settings': {'model': 'model-b', 'reasoning_effort': None, 'developer_instructions': 'private text'}}}])
+        self.assertNotIn('private', str(replacement))
+        self.assertIsNone(replacement['latestCollaborationMode']['settings']['reasoning_effort'])
+        removed = patch_history(replacement, [{'op': 'remove', 'path': ['latestCollaborationMode']}])
+        self.assertNotIn('latestCollaborationMode', removed)
+
     def test_model_aliases_require_the_same_provider_and_an_unambiguous_native_catalog_match(self):
         data = {'provider': 'openai', 'models': [{'value': 'model-a', 'label': 'Model A'}]}
         self.assertEqual(model_selection('openai/model-a', data, 'openai'), ('model-a', 'Model A'))

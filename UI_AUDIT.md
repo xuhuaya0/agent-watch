@@ -307,3 +307,14 @@ changed for these checks. Browser tooling was unavailable, so the new grouping's
 narrow-screen layout, zoom and keyboard acceptance remain **not verified**.
 The full local regression run passed 451 Python tests (one platform skip) and
 167 JavaScript tests; these results do not substitute for browser acceptance.
+
+The initial native effort comparison covered an explicit scalar value but missed
+a resumed-chat case: the scalar was null while the native menu's collaboration
+settings held Medium. A follow-up fixes that source mismatch in the Codex worker;
+the frontend and capability wire format stay unchanged. Only minimal setting
+fields are retained, and ownership, model consistency and revision invalidation
+remain required. The verification is a native-state/API comparison, not a new
+browser visual check or a model-setting write.
+The follow-up passed 461 Python tests (one platform skip) and 167 JavaScript
+tests. The deployed component to update is the macOS Codex control worker;
+existing Hub capability validators remain compatible.
