@@ -232,6 +232,53 @@ class DshTreeTests(unittest.TestCase):
             dsh._LOGS.clear()
             self.assertEqual(dsh.scan(self.cfg, self.now)[0].state, "waiting_approval")
 
+    def test_child_error_stays_in_details_across_parent_turns(self):
+        self.write("child", tail=[self.ev("turn/end", 40, turn=1,
+            reason={"kind": "error", "error": {"message": "Synthetic request failed (413)"}})])
+        self.write("session-parent", ["child"])
+        task, = dsh.scan(self.cfg, self.now)
+        self.assertEqual(task.state, "running")
+        self.assertEqual(task.extra["subagents"][0]["state"], "error")
+        self.assertIn("413", task.extra["subagents"][0]["detail"])
+        self.assertAlmostEqual(task.state_since, self.now - 60, delta=.01)
+        self.write("session-parent", ["child"], [self.ev("turn/end", 20, turn=1,
+            reason={"kind": "completed"})])
+        dsh._LOGS.clear()
+        self.assertEqual(dsh.scan(self.cfg, self.now)[0].state, "done")
+        self.write("session-parent", ["child"], [self.ev("turn/end", 20, turn=1,
+            reason={"kind": "completed"}), self.ev("turn/start", 1, turn=2)])
+        dsh._LOGS.clear()
+        task, = dsh.scan(self.cfg, self.now)
+        self.assertEqual(task.state, "running")
+        self.assertAlmostEqual(task.state_since, self.now - 1, delta=.01)
+
+    def test_child_stall_does_not_replace_active_parent_but_parent_stall_remains(self):
+        self.write("child", tail=[self.ev("turn/start", 2000, turn=2)])
+        self.write("session-parent", ["child"])
+        task, = dsh.scan(self.cfg, self.now)
+        self.assertEqual(task.state, "running")
+        self.assertEqual(task.extra["subagents"][0]["state"], "stalled")
+        task, = dsh.scan(self.cfg, self.now + 2000)
+        self.assertEqual(task.state, "stalled")
+        self.assertFalse(task.detail.startswith("子代理"))
+
+    def test_nested_error_is_retained_without_masking_real_parent_error_or_question(self):
+        self.write("leaf", tail=[self.ev("turn/end", 10, turn=1,
+            reason={"kind": "error", "error": {"message": "Synthetic child failure"}})])
+        self.write("middle", ["leaf"])
+        self.write("session-parent", ["middle"])
+        task, = dsh.scan(self.cfg, self.now)
+        self.assertEqual(task.state, "running")
+        self.assertEqual(task.extra["subagents"][0]["subagents"][0]["state"], "error")
+        self.write("session-parent", ["middle"], [self.ev("turn/end", 1, turn=1,
+            reason={"kind": "error", "error": {"message": "Synthetic parent failure"}})])
+        dsh._LOGS.clear()
+        task, = dsh.scan(self.cfg, self.now)
+        self.assertEqual((task.state, task.detail), ("error", "Synthetic parent failure"))
+        self.write("session-parent", ["middle"], [self.ev("tool/call", 1, callId="q", name="ask_user")])
+        dsh._LOGS.clear()
+        self.assertEqual(dsh.scan(self.cfg, self.now)[0].state, "waiting_input")
+
     def test_cycle_and_missing_child_are_bounded_and_visible(self):
         self.write("session-parent", ["child", "missing"])
         self.write("child", ["session-parent"])

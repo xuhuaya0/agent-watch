@@ -536,3 +536,20 @@ Windows Codex remains unverified. Antigravity, DeepSeek, the legacy shared
 app-server adapter and native queue submissions without an original command-ID
 association retain their existing receipt behavior. Shared browser fixture tests
 for those Harnesses verify presentation only.
+
+### DeepSeek descendant attention (2026-11-07)
+
+A read-only Windows production comparison captured a running parent with no
+native questions or approvals, while the collector reported an older child's
+terminal error as the parent's state. A retained child catalog made that error
+reappear whenever the parent began another turn. Comparing the old and candidate
+adapters against the same in-memory native log snapshot changed only that
+session from error to running; all seven visible session identities and the
+child error details were retained. No native message or setting was changed.
+
+Only explicit descendant questions and approval requests now propagate through
+an active parent. Child failure or silence remains in child details; a parent's
+own failure, stall, completion or cancellation keeps its native meaning. Tests
+cover repeated parent turns, nested errors, stalled children and preservation
+of real parent errors/questions and descendant approvals. This validates the
+DeepSeek collector projection, not a change to native approval behavior.

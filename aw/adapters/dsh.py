@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 
 from .native_sidebar import dsh_pins, unknown_pin
 
-from ..model import (ATTENTION_STATES, PRIORITY, DONE, ERROR, IDLE, RUNNING, STALLED, WAITING_APPROVAL,
+from ..model import (PRIORITY, DONE, ERROR, IDLE, RUNNING, STALLED, WAITING_APPROVAL,
                      WAITING_INPUT, Task)
 
 try:
@@ -404,7 +404,7 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
         return log
 
     def derive_tree(sid: str, ancestors: frozenset = frozenset()):
-        """Fold attention states through descendants; tolerate missing logs and cycles."""
+        """Surface explicit descendant requests; retain child failures as details."""
         if sid in ancestors or len(ancestors) >= 32:
             return ("unknown", now, None, "", "子代理关系循环或过深"), []
         try:
@@ -421,10 +421,13 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
             child, descendants = derive_tree(cid, ancestors | {sid})
             subs.append({"id": cid, "label": label, "state": child[0],
                          "detail": child[4], "subagents": descendants})
-            if child[0] in ATTENTION_STATES:
+            if child[0] in (WAITING_APPROVAL, WAITING_INPUT):
                 blockers.append((child, label))
-        # A finished/cancelled parent turn stays finished/cancelled. Descendant
-        # states are still exposed; only an active parent inherits attention.
+        # A child failure or silence does not establish a parent blocker: the
+        # parent can retry, replace the child or continue without it. Catalogs
+        # retain old children across turns. Preserve those diagnostics in subs;
+        # only explicit human requests propagate through an active parent.
+        # Finished/cancelled parents retain their native state.
         if state in (RUNNING, STALLED) and blockers:
             child, label = min(blockers, key=lambda x: (PRIORITY[x[0][0]], x[0][1]))
             if PRIORITY[child[0]] <= PRIORITY[state]:
