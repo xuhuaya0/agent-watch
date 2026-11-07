@@ -417,3 +417,23 @@ retains the draft, and background replacement is deferred. No native writes or
 real-device history were used in these browser cases. Full-history transfer time
 still depends on the device and page count; this removes the wait before showing
 already received pages, rather than promising an immediate full transcript.
+
+
+### Immediate reply composer feedback
+
+The shared composer used to retain submitted text until the native receipt
+arrived. It now clears before awaiting the HTTP request and retains the outgoing
+message and delivery status. Failure/uncertainty restores an untouched draft;
+edit generations protect subsequent edits, including identical text and manual
+clearing. The broker receives only the command identity and action, not local
+composer metadata. Native delivery and queue semantics are unchanged.
+
+186 JavaScript checks pass, covering delayed HTTP acceptance, queued receipts,
+rejection/expiry/cancellation/uncertainty, identical subsequent text, manual
+clearing and switching chats during a request. Edge synthetic browser checks
+at 1280x844 and 390x844 confirmed immediate clearing and a sending bubble for
+all three Harnesses. Delayed rejection restored untouched input; a narrow-screen
+Codex case retained a new draft after rejection. Checks used current preview
+assets with a delayed read-only mock endpoint; no native message was sent.
+Uncertain receipt and IME edge cases were covered by code tests, not repeated
+native-browser acceptance in this change.

@@ -32,7 +32,7 @@ function setup(text='A reply'){
  return {context,run,data,posts,input,button,pane,outgoing,key,up,composition,advance(ms){now+=ms},done(){return submission}};
 }
 
-test('plain Enter and Ctrl/Cmd+Enter use the real reply submission and clear only after delivery',async()=>{
+test('plain Enter and Ctrl/Cmd+Enter use the real reply submission and clear immediately',async()=>{
  for(const modifiers of [{},{ctrlKey:true},{metaKey:true}]){
   const s=setup('Send from keyboard');const e=s.key(modifiers);
   assert.equal(e.prevented,true);assert.equal(s.posts.length,1);
@@ -50,14 +50,16 @@ test('Shift+Enter leaves newline handling to the textarea and preserves a multil
  s.key();await s.done();assert.equal(s.posts[0].action.text,'First line\nSecond line');
 });
 
-test('queued keyboard replies keep the draft and cannot double-submit before delivery',async()=>{
+test('queued keyboard replies clear immediately and cannot double-submit before delivery',async()=>{
  const s=setup('Still waiting');let release;
  s.context.apiFetch=(url,options)=>{const request=JSON.parse(options.body);s.posts.push(request);return new Promise(resolve=>release=resolve)};
  s.key();assert.equal(s.posts.length,1);assert.match(s.outgoing.innerHTML,/发送中/);
+ assert.equal(s.input.value,'');assert.equal(s.run('interactionDraft("demo").text'),'');
+ assert.deepEqual(Object.keys(s.posts[0]).sort(),['action','id']);
  s.button.disabled=false;s.key();s.key({repeat:true});assert.equal(s.posts.length,1);
  const command={id:s.posts[0].id,kind:'reply',state:'queued'};s.data.commands=[command];
  release({ok:true,json:async()=>({command})});await s.done();
- assert.equal(s.run('interactionDraft("demo").text'),'Still waiting');assert.match(s.outgoing.innerHTML,/等待设备接收/);
+ assert.equal(s.run('interactionDraft("demo").text'),'');assert.match(s.outgoing.innerHTML,/等待设备接收/);
  command.state='delivered';await s.run('refreshInteraction()');assert.equal(s.input.value,'');
 });
 
@@ -109,4 +111,36 @@ test('non-Enter keys, Alt+Enter and detached inputs do not submit; markup expose
  assert.match(html,/aria-keyshortcuts="Enter Control\+Enter Meta\+Enter"/);
  assert.match(html,/Shift\+Enter 换行/);assert.match(html,/oncompositionstart="composerComposition\(event\)"/);
  assert.match(html,/oncompositionend="composerComposition\(event\)"/);assert.match(html,/onkeyup="composerKeyup\(event\)"/);
+});
+
+
+test('late receipts preserve subsequent edits, even identical or manually cleared drafts',async()=>{
+ for(const state of ['delivered','waiting','rejected','expired','cancelled','unknown']){
+  for(const edited of ['A reply','New draft','']){
+   const s=setup();let release;
+   s.context.apiFetch=(url,options)=>{s.posts.push(JSON.parse(options.body));return new Promise(resolve=>release=resolve)};
+   s.key();s.context.edited=edited;s.run('setReplyDraft("temporary edit");setReplyDraft(edited)');s.input.value=edited;
+   const command={id:s.posts[0].id,kind:'reply',state};s.data.commands=[command];
+   release({ok:true,json:async()=>({command})});await s.done();
+   assert.equal(s.input.value,edited,state);assert.equal(s.run('interactionDraft("demo").text'),edited,state);
+  }
+ }
+});
+
+test('failed or uncertain receipts restore an untouched draft without automatic retry',async()=>{
+ for(const state of ['rejected','expired','cancelled','unknown']){
+  const s=setup('Restore this reply');
+  s.context.apiFetch=async(url,options)=>{const request=JSON.parse(options.body);s.posts.push(request);
+   const command={id:request.id,kind:'reply',state};s.data.commands=[command];return {ok:true,json:async()=>({command})}};
+  s.key();assert.equal(s.input.value,'');await s.done();
+  assert.equal(s.input.value,'Restore this reply');assert.equal(s.posts.length,1);
+ }
+});
+
+test('a failed request cannot overwrite the next chat composer',async()=>{
+ const s=setup('First chat draft');let release;
+ s.context.apiFetch=()=>new Promise(resolve=>release=resolve);
+ s.key();s.run('workspace.selected="other";setReplyDraft("Other chat draft")');s.input.value='Other chat draft';
+ release({ok:false,json:async()=>({error:'reply_unavailable'})});await s.done();
+ assert.equal(s.input.value,'Other chat draft');assert.equal(s.run('interactionDraft("demo").text'),'First chat draft');
 });

@@ -152,6 +152,11 @@ across updates. Withdraw stale actions as soon as their native request changes.
 
 Feedback belongs to the initiating action. A dialog must contain its own visible
 error/status region; a page toast behind a modal backdrop is not sufficient.
+Submitting a reply clears the composer immediately and retains the text in a
+local message with its delivery state. A failed or uncertain submission restores
+the original draft only if the user has not edited the composer since sending.
+Late receipts must not clear a subsequent draft, even when its text is identical.
+Uncertainty never triggers an automatic resend.
 During a running turn, Enter queues the reply to wait for completion. Show pending
 replies compactly with Cancel and, only where a native insertion is supported,
 Insert now. Insertion is an explicit action on the same queued item, not another

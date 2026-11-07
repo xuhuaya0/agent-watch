@@ -35,7 +35,7 @@ async function setControlEnabled(device,enabled,button) {
 }
 function interactionDraft(id) {if(!interaction.drafts.has(id))interaction.drafts.set(id,{text:'',createText:'',answers:{}});return interaction.drafts.get(id);}
 function setReplyDraft(value) {
- interactionDraft(workspace.selected).text=value;
+ const draft=interactionDraft(workspace.selected);draft.text=value;draft.editVersion=(draft.editVersion||0)+1;
  const send=document.getElementById('composer-send');
  if(send)send.disabled=!value.trim() || Boolean(interactionBusy(workspace.selected));
 }
@@ -302,7 +302,8 @@ async function refreshInteraction() {
   const local=interaction.pending.get(id),receipt=data.commands?.find(c=>c.id===local?.id);
   if(receipt && !['queued','dispatched'].includes(receipt.state)) {
    interaction.pending.delete(id);
-   if(['delivered','waiting'].includes(receipt.state)&&local?.action.kind==='reply'&&interactionDraft(id).text===local.action.text) {
+   if(['rejected','expired','cancelled','unknown'].includes(receipt.state))restoreReplyDraft(id,local);
+   if(['delivered','waiting'].includes(receipt.state)&&local?.action.kind==='reply'&&(!local.draftCleared || (local.draftRestored && (interactionDraft(id).editVersion||0)===local.draftVersion))&&interactionDraft(id).text===local.action.text) {
     interactionDraft(id).text='';
     const input=document.getElementById('native-reply');
     if(workspace.selected===id&&input?.value===local.action.text)input.value='';
@@ -325,11 +326,21 @@ function newCommandId() {
  const hex=[...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
 }
+function restoreReplyDraft(id,record) {
+ if(!record?.draftCleared)return;
+ const draft=interactionDraft(id);
+ if(draft.text || (draft.editVersion||0)!==record.draftVersion)return;
+ draft.text=record.action.text;record.draftRestored=true;
+ const input=document.getElementById('native-reply');
+ if(workspace.selected===id&&input)input.value=draft.text;
+}
 async function submitNative(action) {
  const id=workspace.selected;if(!id||interaction.pending.has(id))return;
  if(typeof sessionOptions!=='undefined'&&sessionOptions.id===id)sessionOptions.message='';
  const record={id:newCommandId(),action};interaction.pending.set(id,record);
  if(action.kind==='reply'){
+  const draft=interactionDraft(id);record.draftVersion=draft.editVersion||0;record.draftCleared=true;
+  draft.text='';const input=document.getElementById('native-reply');if(input)input.value='';
   const before=interaction.byTask.get(id);
   interaction.outgoing.set(id,{
    id:record.id,text:action.text,createdAt:Date.now(),baselineAt:capturedOutgoing(id)?.at||0,
@@ -342,12 +353,12 @@ async function submitNative(action) {
  renderInteraction(true);
  if(action.kind==='reply')document.getElementById('chat-outgoing')?.querySelector('.local-outgoing')?.scrollIntoView({block:'nearest'});
  try{
-  const r=await apiFetch('/api/control/tasks/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(record)});
-  if(r.status===401){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:'登录已失效，请重新登录'});showAuthView(false);return;}
+  const r=await apiFetch('/api/control/tasks/'+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:record.id,action:record.action})});
+  if(r.status===401){restoreReplyDraft(id,record);interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:'登录已失效，请重新登录'});showAuthView(false);return;}
   const data=await r.json();
-  if(!r.ok){interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:data.error||'操作未接收'});controlNotice(CONTROL_ERRORS[data.error]||'操作未接收，请检查原应用状态',id,action.kind);}
+  if(!r.ok){restoreReplyDraft(id,record);interaction.pending.delete(id);updateOutgoing(id,{id:record.id,state:'rejected',detail:data.error||'操作未接收'});controlNotice(CONTROL_ERRORS[data.error]||'操作未接收，请检查原应用状态',id,action.kind);}
   else {const before=interaction.byTask.get(id);interaction.byTask.set(id,{...before,commands:[{...data.command,...(data.command.state==='waiting'?{text:action.text}:{})},...(before?.commands||[]).filter(command=>command.id!==data.command.id)]});updateOutgoing(id,data.command);}
- }catch(_){record.uncertain=true;updateOutgoing(id,{id:record.id,state:'unknown',detail:'未收到服务器回执，请勿重复发送'});}
+ }catch(_){restoreReplyDraft(id,record);record.uncertain=true;updateOutgoing(id,{id:record.id,state:'unknown',detail:'未收到服务器回执，请勿重复发送'});}
  if(workspace.selected===id){renderInteraction(true);await refreshInteraction();if(interactionBusy(id))watchInteraction(id);}
 }
 function sendReply(){const value=interactionDraft(workspace.selected).text;if(!value.trim()){toast('请输入回复内容');return;}const cap=interaction.byTask.get(workspace.selected)?.capability;return submitNative({kind:'reply',text:value,...(cap?.delivery?{mode:'after-turn'}:{})});}
