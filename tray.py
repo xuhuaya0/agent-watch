@@ -69,6 +69,11 @@ def open_dashboard(_icon=None, _item=None):
 
 
 def main():
+    if sys.platform == 'darwin':
+        from aw.mac_instance import acquire
+        instance_lock = acquire(hub.DATA_DIR)
+        if instance_lock is None:
+            return
     port = int(hub.CFG.get("port", 8090))
     hub.start_background_scanner()
     if not _port_in_use(port):

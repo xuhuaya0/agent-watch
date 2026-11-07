@@ -553,3 +553,22 @@ own failure, stall, completion or cancellation keeps its native meaning. Tests
 cover repeated parent turns, nested errors, stalled children and preservation
 of real parent errors/questions and descendant approvals. This validates the
 DeepSeek collector projection, not a change to native approval behavior.
+
+### Mac first-install wizard
+
+The Mac installer uses a private managed Python 3.13 environment and an
+AppleScript menu-bar launcher built with macOS's bundled tools. A fresh
+Apple Silicon preparation run downloaded the runtime, installed binary wheels,
+built the application and passed codesign verification and runtime imports,
+without requiring Git, Homebrew, a preinstalled Python or a compiler invocation.
+The prepare-only path creates no collector configuration, reads no real sessions,
+and does not register login items or provision control credentials.
+
+Synthetic configuration tests cover Push connection, explicit Codex all-session
+opt-in, administrator login/CSRF provisioning, private credential storage,
+uncertain-provisioning refusal, destination mismatch, conflicting login items,
+archive path validation and duplicate menu-process prevention. The tests do not
+establish a newly paired MacBook's native Codex compatibility. That device must
+report a successful control heartbeat; the wizard distinguishes configuration
+from confirmed connection. Intel and Apple Silicon preparation jobs are defined
+separately from the existing Harness regression matrix.

@@ -102,6 +102,39 @@ python hub.py
 
 ## 3. 在 Windows / Mac 上一键启动与驻留图标
 
+### Mac 首次安装（推荐）
+
+在新 Mac 的终端粘贴一条命令，按向导填写中心地址和中心的 **Push 接收令牌**：
+
+```bash
+bash <(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xuhuaya0/agent-watch/main/install_mac.command)
+```
+
+安装器会准备独立 Python 3.13、依赖、菜单栏应用并验证中心上报；不需要预装
+Python、Git、Homebrew 或 Xcode。应用位于 `~/Applications/Agent Watch.app`，
+程序和独立运行环境位于 `~/Library/Application Support/AgentWatch/`。
+运行环境通过固定版本的 [uv 官方安装器](https://docs.astral.sh/uv/reference/installer/)
+准备，安装脚本有 SHA-256 校验，不修改 shell 配置或系统 Python。
+
+默认启用 Codex 采集。向导可选择是否自动登录启动，以及是否允许中心对本机全部
+普通 Codex 会话提供历史查看、回复和单次交互。选择启用交互后，输入中心网页登录
+密码完成一次设备授权：该密码不保存，设备控制凭据单独存入私有文件；无需安装
+Codex 插件。Codex 应已运行并登录，且至少有一个可采集会话。向导区分“控制桥已
+配置”和“中心已确认连接”，具体能力仍由安装版 Codex 的原生接口决定。
+
+本机设置使用独立随机密码，保存在
+`~/Library/Application Support/AgentWatch/private/local-access.json`。
+日常直接访问中心面板；需要本机设置时才使用该密码。地址或 Push Token 验证失败
+可以重新填写；重复运行保留设备 ID 和已签发的控制凭据。签发回执不确定时停止
+自动重试，避免无意撤销原凭据。当前安装器用于首次安装和补接入，不自动升级
+既有安装的代码；Antigravity / DeepSeek 控制桥仍按原生接入文档配置。
+
+开发验收可运行 `bash install_mac.command --source "$PWD" --prepare-only`，并用
+`AGENT_WATCH_INSTALL_HOME` 指向独立测试目录。这只准备依赖和应用，不连接中心、
+配置登录项、启动采集或读取真实会话。
+
+### 已有源码目录的启动方式
+
 - **Windows**：双击 [`start_win.vbs`](start_win.vbs)（无黑框）或 [`start_hub.bat`](start_hub.bat)，右下角系统托盘出现状态图标（橙=需介入、蓝=运行中、绿=刚完成、灰=空闲）。
 - **macOS**：本机生成应用后，在 Finder 中双击 [`Agent Watch.app`](Agent%20Watch.app)，只驻留顶部菜单栏，不打开终端、不显示 Python Dock 图标。应用包需与 `tray.py` 保持在同一项目目录中；可给应用创建替身放到桌面。首次启动会创建 `.venv` 并安装依赖，失败时弹窗提示日志位置。从源码首次使用时先运行 `bash build_mac_app.command`（需安装 Apple Command Line Tools；应用二进制不入库）。已有的 [`start_mac.command`](start_mac.command) 仍可用于从终端启动和排查问题。
 - **开机自启**：在托盘图标右键菜单直接勾选 **「☑ 开机自动启动」**，或在网页「⚙ 设置」中勾选保存即可。

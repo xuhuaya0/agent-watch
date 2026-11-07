@@ -1,0 +1,44 @@
+name: Mac installer preparation
+on:
+  push:
+    branches: [main]
+    paths:
+      - install_mac.command
+      - tools/mac_setup.py
+      - aw/mac_instance.py
+      - tray.py
+      - start_mac.command
+      - .github/workflows/mac-installer.yml
+  pull_request:
+    paths:
+      - install_mac.command
+      - tools/mac_setup.py
+      - aw/mac_instance.py
+      - tray.py
+      - start_mac.command
+      - .github/workflows/mac-installer.yml
+permissions:
+  contents: read
+jobs:
+  prepare:
+    name: ${{ matrix.os }} / isolated installer
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Prepare without system Python, Git or compiler invocation
+        env:
+          AGENT_WATCH_INSTALL_HOME: ${{ runner.temp }}/agent-watch-install
+        run: bash install_mac.command --source "$PWD" --prepare-only
+      - name: Verify dependencies, bundle and absence of pairing
+        env:
+          AGENT_WATCH_INSTALL_HOME: ${{ runner.temp }}/agent-watch-install
+        run: |
+          test ! -e "$AGENT_WATCH_INSTALL_HOME/program/config.json"
+          test ! -e "$AGENT_WATCH_INSTALL_HOME/program/data"
+          codesign --verify --deep --strict "$AGENT_WATCH_INSTALL_HOME/Agent Watch.app"
+          "$AGENT_WATCH_INSTALL_HOME/program/.venv/bin/python" -c "import flask, pystray, PIL, zstandard, AppKit, Foundation; print('Runtime imports passed')"
