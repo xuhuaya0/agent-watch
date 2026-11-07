@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 from aw.control.broker import Broker, ControlError
@@ -205,15 +206,16 @@ class ReceiptReconciliationBrokerTests(unittest.TestCase):
     def test_confirmation_column_migrates_existing_database_without_changing_receipts(self):
         legacy_dir = self.enterContext(tempfile.TemporaryDirectory())
         command_id = str(uuid.uuid4())
-        with sqlite3.connect(str(Path(legacy_dir) / 'control.sqlite3')) as db:
-            db.execute('''CREATE TABLE commands (
-                id TEXT PRIMARY KEY, device TEXT NOT NULL, tool TEXT NOT NULL, session TEXT NOT NULL,
-                fingerprint TEXT NOT NULL, action TEXT, state TEXT NOT NULL, worker TEXT,
-                created REAL NOT NULL, deadline REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
-                result TEXT, kind TEXT NOT NULL DEFAULT '')''')
-            db.execute('INSERT INTO commands VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                       (command_id, 'device', 'codex', 'conversation', 'fingerprint', None,
-                        'delivered', 'worker', self.now, self.now + 120, 'Accepted', None, 'reply'))
+        with closing(sqlite3.connect(str(Path(legacy_dir) / 'control.sqlite3'))) as db:
+            with db:
+                db.execute('''CREATE TABLE commands (
+                    id TEXT PRIMARY KEY, device TEXT NOT NULL, tool TEXT NOT NULL, session TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL, action TEXT, state TEXT NOT NULL, worker TEXT,
+                    created REAL NOT NULL, deadline REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
+                    result TEXT, kind TEXT NOT NULL DEFAULT '')''')
+                db.execute('INSERT INTO commands VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (command_id, 'device', 'codex', 'conversation', 'fingerprint', None,
+                            'delivered', 'worker', self.now, self.now + 120, 'Accepted', None, 'reply'))
         migrated = Broker(legacy_dir, lambda: self.now)
         status = migrated.status('device', 'codex', 'conversation')['commands'][0]
         self.assertEqual(status['state'], 'delivered')

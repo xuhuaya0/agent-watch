@@ -16,6 +16,7 @@ def private_path(name):
                           'ssh-credentials.json', '.env', 'id_rsa', 'id_ed25519'}
             or (p.name.startswith('.env.') and p.name not in {'.env.example', '.env.sample'})
             or p.name.startswith('control-worker-state')
+            or p.name.startswith('control-diagnostics.jsonl')
             or p.suffix in {'.bundle', '.pem', '.key', '.log', '.machine-id'})
 
 

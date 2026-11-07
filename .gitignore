@@ -10,6 +10,7 @@ config.json
 *.log
 control.json
 control-worker-state*.json
+control-diagnostics.jsonl*
 
 .DS_Store
 .private/

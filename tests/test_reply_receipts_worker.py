@@ -70,15 +70,15 @@ class WorkerReceiptTests(unittest.TestCase):
     def test_intent_is_durable_before_native_write_and_contains_no_body(self):
         original = self.provider.execute
         def execute(command):
-            saved = json.loads(self.path.read_text())
+            saved = json.loads(self.path.read_text(encoding='utf-8'))
             self.assertIn(command['id'], saved['reply_receipts'])
             self.assertEqual(saved['receipts'][0]['state'], 'executing')
-            self.assertNotIn(command['action']['text'], self.path.read_text())
+            self.assertNotIn(command['action']['text'], self.path.read_text(encoding='utf-8'))
             return original(command)
         self.provider.execute = execute
         self.dispatch()
         self.assertEqual(self.worker.state['receipts'][0]['state'], 'unknown')
-        log = self.path.with_name('control-diagnostics.jsonl').read_text()
+        log = self.path.with_name('control-diagnostics.jsonl').read_text(encoding='utf-8')
         self.assertNotIn('private input', log)
         self.assertIn('"category":"timeout"', log)
         self.assertIn('"phase":"native_execute"', log)
@@ -111,12 +111,12 @@ class WorkerReceiptTests(unittest.TestCase):
         self.worker.exchange = fail
         with self.assertRaises(ConnectionError):
             self.worker.step()
-        saved = json.loads(self.path.read_text())
+        saved = json.loads(self.path.read_text(encoding='utf-8'))
         self.assertEqual(saved['receipts'][0]['confirmation'], 'late_ack')
         self.assertEqual(saved['receipts'][0]['state'], 'delivered')
         self.assertFalse(saved['reply_receipts'])
         self.assertEqual(self.provider.calls, [self.command['id']])
-        log = self.path.with_name('control-diagnostics.jsonl').read_text()
+        log = self.path.with_name('control-diagnostics.jsonl').read_text(encoding='utf-8')
         self.assertNotIn('secret token', log)
         self.assertIn('"phase":"exchange"', log)
 
@@ -155,7 +155,7 @@ class WorkerReceiptTests(unittest.TestCase):
         self.dispatch()
         self.assertEqual(self.worker.state['receipts'][0]['state'], 'delivered')
         self.assertFalse(self.worker.reply_receipts.pending)
-        self.assertNotIn('secret request', self.path.with_name('control-diagnostics.jsonl').read_text())
+        self.assertNotIn('secret request', self.path.with_name('control-diagnostics.jsonl').read_text(encoding='utf-8'))
 
     def test_expiry_stops_reading_without_claiming_failure_or_retrying(self):
         self.dispatch()
@@ -268,11 +268,11 @@ class DiagnosticsTests(unittest.TestCase):
     def test_rotation_is_bounded_and_never_serializes_exception_or_command_body(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         logger = Diagnostics(root / 'state.json')
-        logger.path.write_text('x' * LIMIT)
+        logger.path.write_text('x' * LIMIT, encoding='utf-8')
         command = {'id': str(uuid.uuid4()), 'tool': 'codex', 'session_id': 'private-session',
                    'action': {'kind': 'reply', 'text': 'private-input'}, 'token': 'private-token'}
         logger.record('exception', 'native_execute', command, RuntimeError('private-error'))
-        text = logger.path.read_text()
+        text = logger.path.read_text(encoding='utf-8')
         self.assertTrue(logger.path.with_suffix('.jsonl.1').exists())
         self.assertLess(len(text), 1000)
         self.assertNotIn('private', text)
