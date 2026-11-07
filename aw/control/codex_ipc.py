@@ -274,6 +274,7 @@ class CodexDesktop:
         self.reply_confirmed = {}
         self.reply_watched = {}
         self.reply_refresh_sessions = set()
+        self.reply_history_reads = {}
         self.states, self.owners = {}, {}
         self.picker_context_owners = {}
         self.next_probe = {}
@@ -597,6 +598,9 @@ class CodexDesktop:
         for key in list(self.reply_confirmed):
             if key not in self.reply_watched:
                 self.reply_confirmed.pop(key, None)
+        for key in list(self.reply_history_reads):
+            if key not in self.reply_watched:
+                self.reply_history_reads.pop(key, None)
         self.reply_refresh_sessions.intersection_update(session for session, _ in self.reply_watched)
 
     def _watch_reply_receipt(self, intent):
@@ -657,6 +661,14 @@ class CodexDesktop:
                 # Use the same validated owner and native read-only subscription.
                 # Unrelated histories cannot evict a registered receipt identity.
                 rpc.follow(sid, owner)
+        if self.history_reader:
+            from .codex_receipts import ReceiptHistory
+            with self.condition:
+                reader = self.reply_history_reads.setdefault((sid, identity), ReceiptHistory())
+            try:
+                return reader.check(self.history_reader, intent)
+            except ControlError:
+                return None
         return None
 
     def retire_reply_receipt(self, intent):

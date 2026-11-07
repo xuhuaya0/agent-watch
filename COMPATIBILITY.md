@@ -519,6 +519,18 @@ the reply unknown; they never cause a native retry. Existing receipt formats are
 compatible with the Hub's optional confirmation source, and terminal receipts
 cannot be downgraded by delayed uncertainty reports.
 
+Native snapshots can omit older paged turns. The inspected installation also
+persists server `event_msg/item_completed` records with an exact `thread_id` and
+`UserMessage.client_id`. These identities provide a second read-only evidence
+source; matching text, timestamps, optimistic params and tool output do not.
+The reader scans only the authorized, unarchived, uncompressed rollout: up to
+4 MiB per check, a 2-second scan deadline, 512 KiB per record and 64 MiB total per
+pending reply within one bridge process. It keeps an in-memory cursor, alternates
+older history with appended records, and reads only growth after reaching the
+beginning. A bridge restart can begin a new bounded scan from the tail. Rotation,
+truncation, an exhausted budget or absent identity leaves the result unknown;
+compressed histories are not fully decompressed for receipt reconciliation.
+
 This native confirmation path is verified for the inspected macOS desktop build.
 Windows Codex remains unverified. Antigravity, DeepSeek, the legacy shared
 app-server adapter and native queue submissions without an original command-ID
