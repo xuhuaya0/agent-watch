@@ -400,3 +400,20 @@ Separately, installed macOS Codex source and a read-only owner snapshot confirme
 the original client-message identity for an existing reply; a random command ID
 did not match. This establishes native evidence reading, not a newly sent action.
 See COMPATIBILITY.md for the exact native version and unsupported cases.
+
+### Progressive history and reading position
+
+Completed history pages are now rendered while the bounded multi-page read is
+still running. Later pages preserve the arrival-time reading anchor. Automatic
+refresh defers replacement when the reader is away from the bottom, including
+scrolling during an in-flight request; the explicit new-content action remains
+available. This changes shared presentation only, not native history scope.
+
+Code checks: 183 JavaScript tests pass, including delayed initial-page visibility
+and scrolling away during a live read. Chromium synthetic acceptance covers all
+three Harnesses at 1280 and 390 px: the first page appears before the delayed
+continuation; subsequent prepending retains the viewed message within 1 px,
+retains the draft, and background replacement is deferred. No native writes or
+real-device history were used in these browser cases. Full-history transfer time
+still depends on the device and page count; this removes the wait before showing
+already received pages, rather than promising an immediate full transcript.

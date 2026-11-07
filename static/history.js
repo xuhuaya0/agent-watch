@@ -192,12 +192,16 @@ function copyHistoryReply(button) {
  const message=histories.get(id)?.messages.find(m=>m.id===button.dataset.historyId&&m.role==='assistant');
  if(message)return copyText(message.text);
 }
+function historyAwayFromLatest() {
+ const pane=document.getElementById('session-detail');
+ return Boolean(pane?.clientHeight && pane.scrollHeight-pane.scrollTop-pane.clientHeight>48);
+}
 function ensureHistory() {
  const task=workspace.tasks.find(t=>taskId(t)===workspace.selected);
  if(!['codex','antigravity','dsh'].includes(task?.tool))return;
  const s=historyState(workspace.selected),version=String(activityAt(task));
  renderHistory();
- if(!s.busy&&s.version!==version){s.version=version;if(s.loaded&&(s.older||s.updated)){s.updated=true;renderHistory();}else loadHistory(true,true);}
+ if(!s.busy&&s.version!==version){s.version=version;if(s.loaded&&(s.older||s.updated||historyAwayFromLatest())){s.updated=true;renderHistory();}else loadHistory(true,true);}
 }
 async function loadHistory(reset=true,background=false) {
  const id=workspace.selected,task=workspace.tasks.find(t=>taskId(t)===id);
@@ -207,6 +211,7 @@ async function loadHistory(reset=true,background=false) {
  s.busy=true;s.error='';s.retryOlder=false;const generation=++s.generation;renderHistory();
  const started=Date.now(),visited=new Set(),abort=new AbortController();
  const timeout=setTimeout(()=>abort.abort(),HISTORY_BATCH_MS);
+ const progressive=!reset || !s.loaded;
  const initial=reset?[]:s.messages,baseline=historyVisibleItems(initial),known=new Set(initial.map(m=>m.id));
  let messages=initial,received=false,pages=0,bytes=0,body=false,partial=false,error='';
  const active=()=>workspace.selected===id&&workspace.page==='sessions'&&s.generation===generation;
@@ -240,6 +245,14 @@ async function loadHistory(reset=true,background=false) {
    for(const message of data.messages)known.add(message.id);
    messages=mergeHistoryMessages(data.messages,messages);received=true;
    cursor=data.next_cursor??null;
+   // Publish completed pages immediately. Measure the reader at each arrival,
+   // not at request start; later pages prepend without resetting the viewport.
+   if(progressive && active()) {
+    const first=!s.loaded;
+    Object.assign(s,{messages,next:cursor,loaded:true,older:!reset,updated:false});
+    renderHistory(!first || !reset);
+    if(first && (s.messages.length || workspace.detail) && typeof settleChatOpening==='function')settleChatOpening();
+   }
    if(cursor && visited.has(cursor))throw new Error('history_no_progress');
    if(!cursor)break;
    // A process page extending the already-visible first group adds zero
@@ -256,12 +269,12 @@ async function loadHistory(reset=true,background=false) {
   clearTimeout(timeout);
   if(s.generation===generation) {
    let replace=received;
-   if(replace && background && s.loaded && active()) {
+   if(replace && !progressive && background && s.loaded && active()) {
     const list=document.getElementById('session-history')?.lastElementChild;
     const anchor=list&&historyReadingAnchor(document.getElementById('session-detail'),list,true);
     // Live pagination must preserve the record actually on screen when the
     // response arrives, including any scrolling during the request.
-    if(anchor?.ids?.length && !messages.some(message=>anchor.ids.includes(message.id))) {
+    if(historyAwayFromLatest() || (anchor?.ids?.length && !messages.some(message=>anchor.ids.includes(message.id)))) {
      replace=false;s.updated=true;
     }
    }

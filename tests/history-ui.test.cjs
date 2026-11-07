@@ -613,3 +613,25 @@ test('navigation during a queued-read polling delay does not send another GET',a
  run("workspace.selected='b'");poll();await loading;
  assert.equal(calls,1);assert.equal(run("historyState('a').busy"),false);
 });
+
+test('first page is readable while the remaining history batch is delayed',async()=>{
+ const {ctx,elements,run}=setup();let release,calls=0;
+ ctx.apiFetch=async()=>{
+  if(++calls===1)return {ok:true,json:async()=>({ready:true,messages:[{id:'recent',role:'assistant',text:'Already readable'}],next_cursor:'older'})};
+  return new Promise(resolve=>release=()=>resolve({ok:true,json:async()=>({ready:true,messages:[{id:'earlier',role:'user',text:'Earlier question'}],next_cursor:null})}));
+ };
+ const loading=run('loadHistory(true)');while(!release)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run("historyState('a').loaded"),true);assert.equal(run("historyState('a').busy"),true);
+ assert.match(elements['session-history'].innerHTML,/Already readable/);
+ release();await loading;
+ assert.equal(run("historyState('a').messages.map(m=>m.id).join(',')"),'earlier,recent');
+});
+test('scrolling away during a live read defers replacement until explicitly requested',async()=>{
+ const {ctx,elements,run}=setup();initialMessages(run);let release;
+ Object.assign(elements['session-detail'],{clientHeight:400,scrollHeight:1200,scrollTop:800});
+ ctx.apiFetch=()=>new Promise(resolve=>release=()=>resolve({ok:true,json:async()=>({ready:true,messages:[{id:'new',role:'assistant',text:'New result'}],next_cursor:null})}));
+ const loading=run('loadHistory(true,true)');elements['session-detail'].scrollTop=300;
+ release();await loading;
+ assert.equal(elements['session-detail'].scrollTop,300);
+ assert.equal(run("historyState('a').messages[0].id"),'a');assert.equal(run("historyState('a').updated"),true);
+});
