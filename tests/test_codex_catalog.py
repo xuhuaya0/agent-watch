@@ -63,7 +63,8 @@ class NativeCatalogTests(unittest.TestCase):
     def test_native_only_directory_filters_permissions_and_removes_private_config(self):
         result = self.query()
         self.assertEqual(result['models'], [{'value': 'example-model', 'label': 'Example model',
-            'efforts': ['low', 'high'], 'default_effort': 'low'}])
+            'efforts': ['low', 'high'], 'effort_labels': {'low': 'Light', 'high': 'High'},
+            'default_effort': 'low'}])
         self.assertEqual([item['id'] for item in result['profiles']], [':workspace'])
         self.assertNotIn('must not escape', json.dumps(result))
         self.assertEqual(result['config']['features'], {'guardian_approval': True})

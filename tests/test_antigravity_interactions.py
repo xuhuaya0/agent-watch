@@ -14,9 +14,12 @@ class Rpc:
                        'options':[{'id':'1','text':'Blue'},{'id':'2','text':'Green'}]}]}}}
         self.writes=[];self.result={};self.tid=TID;self.total=1
     def call(self,method,body):
-        if method=='GetConversationMetadata':return {'trajectoryId':TID}
-        if method=='GetCascadeTrajectory':return {'numTotalSteps':self.total,'trajectory':{
-            'trajectoryId':self.tid,'cascadeId':SID,'steps':[copy.deepcopy(self.step)]}}
+        if method=='GetConversationMetadata':return {'trajectoryId':TID,'numSteps':self.total}
+        if method=='GetAllCascadeTrajectories':return {'trajectorySummaries':{SID:{
+            'trajectoryId':self.tid,'stepCount':self.total,'status':'CASCADE_RUN_STATUS_IDLE',
+            'waitingSteps':[{'stepIndex':0,'step':copy.deepcopy(self.step)}] if self.step['status']=='CORTEX_STEP_STATUS_WAITING' else []}}}
+        if method=='GetCascadeTrajectorySteps':return {'steps':[copy.deepcopy(self.step)]}
+        if method=='GetTrajectoryTurns':return {'turns':[]}
         self.writes.append(copy.deepcopy(body));return self.result
 
 
@@ -63,7 +66,7 @@ class NativeQuestionTests(unittest.TestCase):
         for payload in (None, [], {'trajectory':None}, {'trajectory':[]}, {'trajectory':{}}):
             with self.subTest(payload=payload):
                 original=self.rpc.call
-                self.rpc.call=lambda method,body: {'trajectoryId':TID} if method=='GetConversationMetadata' else payload
+                self.rpc.call=lambda method,body: {'trajectoryId':TID,'numSteps':1} if method=='GetConversationMetadata' else payload
                 with self.assertRaisesRegex(ControlError,'native_session_unavailable'):
                     self.provider.inspect(SID)
                 self.rpc.call=original
@@ -81,7 +84,7 @@ class NativeQuestionTests(unittest.TestCase):
         original=self.rpc.call
         for metadata in (None,[],['unexpected'],42,True,'unexpected'):
             with self.subTest(metadata=metadata):
-                self.rpc.call=lambda method,body: {'trajectoryId':TID,'metadata':metadata} if method=='GetConversationMetadata' else original(method,body)
+                self.rpc.call=lambda method,body: {'trajectoryId':TID,'numSteps':1,'metadata':metadata} if method=='GetConversationMetadata' else original(method,body)
                 context={}
                 row,_=self.provider.inspect(SID,context=context)
                 self.assertIsNone(context['project_id'])

@@ -121,6 +121,7 @@ def _pages(rpc, method, params):
 
 
 def _models(rows):
+    from .codex_settings import NATIVE_REASONING_LABELS
     options, seen, duplicates = [], set(), set()
     for row in rows:
         if not isinstance(row, dict) or row.get('hidden') is not False:
@@ -145,7 +146,8 @@ def _models(rows):
         default = row.get('defaultReasoningEffort')
         if default is not None and default not in efforts:
             continue
-        option = {'value': value, 'label': label, 'efforts': efforts}
+        option = {'value': value, 'label': label, 'efforts': efforts,
+                  'effort_labels': {effort: NATIVE_REASONING_LABELS.get(effort, effort) for effort in efforts}}
         if default is not None:
             option['default_effort'] = default
         options.append(option)

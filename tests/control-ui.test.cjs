@@ -590,9 +590,42 @@ test('missing and unoffered native effort are checked read-only rather than sile
  for(const effort of [undefined,'native-special']){
   const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',model:{...structuredClone(nativeModels),effort}}};
   run(ctx,'interaction.byTask.set("a",data);openSessionOptions("effort")');const current=menuChoices(body).find(o=>o.checked);
-  assert.equal(current.value,effort||'');assert.equal(current.disabled,true);assert.match(current.html,effort?/native-special/:/原应用默认/);
+  assert.equal(current.value,effort||'');assert.equal(current.disabled,true);assert.match(current.html,effort?/native-special/:/当前强度未读取/);
   assert.equal(menuChoice(body,'low').checked,false);assert.equal(menuChoice(body,'high').checked,false);
  }
+});
+test('the current non-reasoning model has no fake default effort from other models or old settings',()=>{
+ for(const effort_status of [undefined,'unsupported']){
+  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'dsh',settings:{reasoning:'Previous High'},
+   model:{...structuredClone(nativeModels),current:'model-c',effort:undefined,effort_status}}};
+  run(ctx,'interaction.byTask.set("a",data)');
+  const html=run(ctx,'settingsSummaryHtml(data.capability)');
+  assert.doesNotMatch(html,/data-setting-kind="effort"|默认|Previous High/);
+  run(ctx,'openSessionOptions("effort")');
+  assert.equal(menuChoices(body).length,0);assert.match(body.innerHTML,/不提供独立的推理强度/);
+ }
+});
+test('resolved native effort stays selected and labeled when writable options are absent',()=>{
+ for(const [effort_status,effort,effort_label] of [['explicit','ultra','Ultra'],['default','medium','Medium']]){
+  const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{reasoning:'Stale Low'},
+   model:{...structuredClone(nativeModels),options:[],effort_status,effort,effort_label}}};
+  run(ctx,'interaction.byTask.set("a",data)');
+  const html=run(ctx,'settingsSummaryHtml(data.capability)');
+  assert.match(html,new RegExp('推理强度：'+effort_label));assert.doesNotMatch(html,/Stale Low|默认/);
+  assert.match(html,/role="group" aria-label="模型与推理强度">[\s\S]*data-setting-kind="model"[\s\S]*data-setting-kind="effort"[\s\S]*<\/div><button[^>]*data-setting-kind="permission"/);
+  run(ctx,'openSessionOptions("effort")');const selected=menuChoices(body).find(o=>o.checked);
+  assert.equal(selected.value,effort);assert.match(selected.html,new RegExp(effort_label));assert.equal(selected.disabled,true);
+ }
+});
+test('unknown effort does not borrow a catalog default or a previous turn value',()=>{
+ const {ctx,body}=setup();ctx.data={...cap,capability:{...cap.capability,tool:'codex',settings:{reasoning:'Stale High'},
+  model:{...structuredClone(nativeModels),effort:undefined,effort_status:'unknown'}}};
+ run(ctx,'interaction.byTask.set("a",data)');
+ const html=run(ctx,'settingsSummaryHtml(data.capability)');
+ assert.match(html,/推理强度：未读取/);assert.doesNotMatch(html,/Stale High|默认/);
+ run(ctx,'openSessionOptions("effort")');
+ assert.match(menuChoices(body).find(o=>o.checked).html,/当前强度未读取/);
+ assert.equal(menuChoice(body,'low').checked,false);
 });
 test('native values remain selected outside catalogs including catalogs with no writable choices',()=>{
  for(const options of [[],structuredClone(nativeModels.options)]){

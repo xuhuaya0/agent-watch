@@ -57,26 +57,15 @@ class ProjectCreation:
         name = project.get('name')
         if not isinstance(name, str) or not 1 <= len(name) <= 200 or '\x00' in name:
             return None
-        trajectory = self.rpc.call('GetCascadeTrajectory', {'cascadeId':sid,'disableRehydration':True})
-        data = trajectory.get('trajectory') if isinstance(trajectory, dict) else None
-        if not isinstance(data, dict) or data.get('cascadeId') != sid:
+        # Settings and creation share the bounded latest-input model read.
+        # Import here because the settings module uses _plan_model above.
+        from .antigravity_state import read_state
+        from .antigravity_settings import selected_model
+        fresh_meta, trajectory, _, _, _ = read_state(self.rpc, sid)
+        fresh_metadata = fresh_meta.get('metadata')
+        if not isinstance(fresh_metadata, dict) or fresh_metadata.get('projectId') != pid:
             return None
-        steps = data.get('steps', [])
-        if not isinstance(steps, list):
-            return None
-        model = None
-        for step in reversed(steps):
-            if not isinstance(step, dict):
-                return None
-            user = step.get('userInput')
-            if isinstance(user, dict) and 'userConfig' in user:
-                # The latest explicit model selection is authoritative. Do not
-                # silently fall back past an unsupported custom/alias model.
-                model = _plan_model(user['userConfig'])
-                break
-        else:
-            static = metadata.get('staticConfig', {})
-            model = _plan_model(static.get('cascadeConfig')) if isinstance(static, dict) else None
+        model = selected_model({'metadata': fresh_metadata, 'trajectory': trajectory})
         if not model:
             return None
         semantic_project = {key:value for key,value in project.items()

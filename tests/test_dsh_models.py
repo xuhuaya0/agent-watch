@@ -71,6 +71,7 @@ class DeepSeekModelTests(unittest.TestCase):
         self.assertEqual(normalize_sessions([row])[('dsh', SID)]['model'], cap)
         self.assertEqual(cap['scope'], SCOPE)
         self.assertEqual((cap['current_label'], cap['effort']), ('Next model', 'high'))
+        self.assertEqual((cap['effort_status'], cap['effort_label']), ('explicit', 'High'))
         self.assertEqual(cap['options'][0]['effort_labels'], {'high': 'High'})
         self.assertEqual(cap['options'][0]['provider_label'], 'Example provider')
         self.assertNotIn('lastUsed', cap)
@@ -102,6 +103,44 @@ class DeepSeekModelTests(unittest.TestCase):
         provider.refresh()
         self.assertEqual(provider.snapshot()[0]['model']['current_label'], 'Default model')
         self.assertNotEqual(provider.snapshot()[0]['model']['revision'], cap['revision'])
+
+    def test_effort_facts_distinguish_explicit_default_unsupported_and_unread_while_busy(self):
+        provider = self.provider()
+        gateway = provider.gateway
+        row = gateway.catalog[0]
+        row['running'] = True
+        selection = row['projections']['values']['modelSelection']
+        cases = [
+            ({'provider': 'example', 'model': 'next', 'reasoningEffort': 'high'}, 'explicit', 'high', 'High'),
+            ({'provider': 'example', 'model': 'fallback'}, 'default', 'medium', 'Medium'),
+            (None, 'default', 'medium', 'Medium'),
+            ({'provider': 'example', 'model': 'old'}, 'unsupported', None, None),
+            ({'provider': 'example', 'model': 'next'}, 'unknown', None, None),
+        ]
+        for value, status, effort, label in cases:
+            selection['next'] = value
+            provider.refresh()
+            cap = provider.snapshot()[0]['model']
+            self.assertEqual(cap['options'], [])
+            self.assertEqual((cap['effort_status'], cap.get('effort'), cap.get('effort_label')), (status, effort, label))
+            self.assertEqual(normalize_sessions(provider.snapshot())[('dsh', SID)]['model'], cap)
+        gateway.models['default']['reasoningEffort'] = 'medium'
+        selection['next'] = None
+        provider.settings.expires = 0
+        provider.refresh()
+        self.assertEqual(provider.snapshot()[0]['model']['effort_status'], 'default')
+        self.assertEqual(self.writes(provider), [])
+
+    def test_model_facts_reject_conflicting_status_and_invalid_labels(self):
+        cap = self.provider().snapshot()[0]['model']
+        legacy = {key: value for key, value in cap.items() if key not in ('effort_status', 'effort_label')}
+        self.assertTrue(valid_model_capability(legacy))
+        for patch in ({'effort_status': 'guessed'}, {'effort_status': None},
+                      {'effort_status': 'unknown'}, {'effort_status': 'unsupported'}, {'effort_label': ''}):
+            self.assertFalse(valid_model_capability({**cap, **patch}), patch)
+        for status in ('explicit', 'default'):
+            self.assertFalse(valid_model_capability({key: value for key, value in
+                {**cap, 'effort_status': status}.items() if key != 'effort'}))
 
     def test_missing_list_selection_hydrates_only_requested_chat_and_invalidates_by_sequence(self):
         provider = self.provider()

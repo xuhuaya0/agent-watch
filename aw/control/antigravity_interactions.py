@@ -5,8 +5,8 @@ interaction shapes are not exposed as actionable requests.
 """
 import copy
 import hashlib
-import uuid
 from .broker import ControlError, encoded, normalize_sessions, validate_action, text
+from .antigravity_state import read_state
 
 
 def command_prompt(permission):
@@ -45,32 +45,18 @@ class NativeInteractions:
         self.approvals = approvals
 
     def inspect(self, sid, *, context=None):
-        meta = self.rpc.call('GetConversationMetadata', {'conversationId':sid})
-        result = self.rpc.call('GetCascadeTrajectory', {'cascadeId':sid, 'disableRehydration':True})
-        if not isinstance(meta,dict) or not isinstance(result,dict):
-            raise ControlError('native_session_unavailable')
+        meta, trajectory, indexed_steps, native_status, pending = read_state(self.rpc, sid)
         if context is not None:
             metadata = meta.get('metadata')
             context['project_id'] = metadata.get('projectId') if isinstance(metadata,dict) else None
-        trajectory = result.get('trajectory', {})
-        if not isinstance(trajectory,dict):
-            raise ControlError('native_session_unavailable')
         tid = trajectory.get('trajectoryId')
-        try:
-            valid_id = isinstance(tid,str) and str(uuid.UUID(tid)) == tid
-        except ValueError:
-            valid_id = False
-        steps = trajectory.get('steps')
-        if (not valid_id or trajectory.get('cascadeId') != sid or meta.get('trajectoryId') != tid or
-            not isinstance(steps,list) or result.get('numTotalSteps') != len(steps)):
-            raise ControlError('native_session_unavailable')
         if context is not None:
             context['metadata'] = meta.get('metadata')
             context['trajectory'] = trajectory
-        row = {'tool':'antigravity','session_id':sid,'reply':True,'requests':[],
-               'reason':'文字回复通过原生系统通知发送；问题回答直接提交给原生请求'}
-        native_status = result.get('status')
-        completed = [(index, step.get('type')) for index, step in enumerate(steps) if isinstance(step,dict)
+        row = {'tool':'antigravity','session_id':sid,'reply':not pending,'requests':[],
+               'reason':'原应用正在等待交互；不支持的请求请在原应用处理' if pending
+                        else '文字回复通过原生系统通知发送；问题回答直接提交给原生请求'}
+        completed = [(index, step.get('type')) for index, step in indexed_steps if isinstance(step,dict)
                      and step.get('status') == 'CORTEX_STEP_STATUS_DONE'
                      and (step.get('type') == 'CORTEX_STEP_TYPE_ERROR_MESSAGE'
                           or step.get('type') == 'CORTEX_STEP_TYPE_PLANNER_RESPONSE'
@@ -80,8 +66,13 @@ class NativeInteractions:
                            else 'running' if native_status in (2, 'CASCADE_RUN_STATUS_RUNNING')
                            else 'unknown', 'steer': False,
                            'epoch': hashlib.sha256(encoded([tid, completed[-1]]).encode()).hexdigest() if completed else 'none'}
+        if (row['delivery']['state'] == 'idle' and indexed_steps
+                and (not completed or completed[-1][0] <= trajectory['lastUserInputStepIndex'])):
+            row['delivery']['state'] = 'unknown'
+            row['reply'] = False
+            row['reason'] = '原应用的完成状态尚未确认；消息将等待可确认的空闲状态'
         bindings = {}
-        for index,step in enumerate(steps):
+        for index,step in indexed_steps:
             if not isinstance(step,dict) or step.get('status') != 'CORTEX_STEP_STATUS_WAITING':
                 continue
             native = step.get('requestedInteraction')
@@ -131,7 +122,7 @@ class NativeInteractions:
             bindings[identity] = (tid,index,copy.deepcopy(questions))
         # Replying into a pending question can advance a turn without answering
         # that request. Offer its actual answer controls instead.
-        if row['requests']:
+        if pending:
             row['reply'] = False
             row['delivery']['state'] = 'waiting'
         normalize_sessions([row])

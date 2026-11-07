@@ -4,14 +4,22 @@ function harnessName(cap) {return ({codex:'Codex',antigravity:'Antigravity',dsh:
 function policyCurrent(policy) {return policy?.current_option??policy?.current;}
 function permissionLabel(cap) {const p=cap?.policy;return p?.current_label||cap?.settings?.permission||p?.options?.find(o=>o.value===policyCurrent(p))?.label;}
 function modelEfforts(option) {return (option?.efforts||[]).map(value=>typeof value==='string'?{value,label:option?.effort_labels?.[value]||value}:value);}
-function effortLabel(cap) {const m=cap?.model,option=m?.options.find(o=>o.value===m.current);return modelEfforts(option).find(o=>o.value===m.effort)?.label||cap?.settings?.reasoning||m?.effort;}
+function effortLabel(cap) {
+ const m=cap?.model;
+ if(!m)return cap?.settings?.reasoning;
+ if(m.effort_status==='unsupported')return null;
+ const option=m.options?.find(o=>o.value===m.current);
+ if(m.effort)return m.effort_label||modelEfforts(option).find(o=>o.value===m.effort)?.label||m.effort;
+ // Another model's choices or a previous turn's settings cannot establish
+ // this model's current effort. Missing native facts are not a default.
+ return (m.effort_status||modelEfforts(option).length)?'未读取':null;
+}
 function settingsSummaryHtml(cap) {
  const model=cap.model?.current_label||cap.model?.options?.find(o=>o.value===cap.model.current)?.label||cap.settings?.model||cap.model?.current;
  const project=cap.settings?.scope==='project'||cap.policy?.scope==='project-permissions';
- const entries=[['model',cap.tool==='antigravity'&&!cap.model?'记录模型':'模型',model]];
- if(effortLabel(cap)||cap.model?.options.some(o=>modelEfforts(o).length))entries.push(['effort','推理强度',effortLabel(cap)||'默认']);
- entries.push(['permission',project?'项目权限':'权限',permissionLabel(cap)]);
- return `<div class="composer-setting-controls">${entries.map(([kind,label,value])=>`<button type="button" class="composer-settings" data-setting-kind="${kind}" aria-label="${label}：${esc(value||'尚未读取')}" aria-haspopup="menu" aria-expanded="${sessionOptions.id===workspace.selected&&sessionOptions.kind===kind}" title="${label}：${esc(value||'尚未读取')}" onclick="openSessionOptions('${kind}',this)"><span class="sr-only">${label}：</span><span class="composer-${kind}">${esc(value||'未读取')}</span><span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`).join('')}</div>`;
+ const button=(kind,label,value)=>`<button type="button" class="composer-settings" data-setting-kind="${kind}" aria-label="${label}：${esc(value||'尚未读取')}" aria-haspopup="menu" aria-expanded="${sessionOptions.id===workspace.selected&&sessionOptions.kind===kind}" title="${label}：${esc(value||'尚未读取')}" onclick="openSessionOptions('${kind}',this)"><span class="sr-only">${label}：</span><span class="composer-${kind}">${esc(value||'未读取')}</span><span class="composer-settings-chevron" aria-hidden="true">⌄</span></button>`;
+ const effort=effortLabel(cap);
+ return `<div class="composer-setting-controls"><div class="composer-model-group" role="group" aria-label="模型与推理强度">${button('model',cap.tool==='antigravity'&&!cap.model?'记录模型':'模型',model)}${effort?button('effort','推理强度',effort):''}</div>${button('permission',project?'项目权限':'权限',permissionLabel(cap))}</div>`;
 }
 function menuChoice(kind,value,label,current,disabled=false,note='') {
  return `<button type="button" class="native-menu-choice${current?' selected':''}" role="menuitemradio" aria-checked="${Boolean(current)}" data-choice="${esc(value??'')}"${disabled?' disabled':''}${note?` title="${esc(note)}"`:''} onclick="${kind==='model'?'chooseSessionModel':kind==='effort'?'chooseModelEffort':'chooseSessionPolicy'}(${jsArg(value)})"><span class="menu-check" aria-hidden="true">${current?'✓':''}</span><span class="menu-choice-label">${esc(label)}</span>${disabled?`<small>${current?'当前':'不可选'}</small>`:''}</button>`;
@@ -25,8 +33,11 @@ function modelSettingsHtml(cap,disabled) {
 }
 function effortSettingsHtml(cap,disabled) {
  const m=cap.model,value=sessionOptions.modelValue??m?.current,option=m?.options.find(o=>o.value===value),options=modelEfforts(option),effort=sessionOptions.effortValue;
- const known=options.find(o=>o.value===effort)?.label||cap.settings?.reasoning||effort||'原应用默认';
- return `<div role="menu" aria-label="推理强度">${!options.some(o=>o.value===effort)?menuChoice('effort',effort,known,true,true):''}${options.map(o=>menuChoice('effort',o.value,o.label,o.value===effort,Boolean(disabled))).join('')}</div>${!options.length?'<p class="menu-note">当前模型未提供可选强度。</p>':''}`;
+ const unsupported=(value===m?.current&&m?.effort_status==='unsupported')||Boolean(option&&!options.length&&!effort);
+ if(unsupported)return '<p class="menu-note">当前模型不提供独立的推理强度选项。</p>';
+ const nativeLabel=value===m?.current&&effort===m?.effort&&effort?m.effort_label:null;
+ const known=nativeLabel||options.find(o=>o.value===effort)?.label||(!m&&cap.settings?.reasoning)||effort||'当前强度未读取';
+ return `<div role="menu" aria-label="推理强度">${!options.some(o=>o.value===effort)?menuChoice('effort',effort,known,true,true):''}${options.map(o=>menuChoice('effort',o.value,o.label,o.value===effort,Boolean(disabled))).join('')}</div>${!options.length?'<p class="menu-note">当前连接未提供可选强度。</p>':''}`;
 }
 function permissionSettingsHtml(cap,disabled) {
  const p=cap.policy;

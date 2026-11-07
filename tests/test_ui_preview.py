@@ -154,6 +154,22 @@ class PreviewTests(unittest.TestCase):
                 else:
                     self.assertNotIn('settings', cap)
 
+    def test_effort_fixture_keeps_unknown_busy_and_unsupported_distinct(self):
+        from aw.control.codex_settings import valid_model_capability as codex_valid
+        from aw.control.dsh_settings import valid_model_capability as dsh_valid
+        fixture = Preview('effort_states')
+        for sid, status in [('cx-ready','unknown'),('cx-running','explicit'),('ds-ready','unsupported')]:
+            cap = fixture.route('GET','/api/control/tasks/'+sid)[2]['capability']
+            model = cap['model']
+            self.assertTrue((dsh_valid if cap['tool']=='dsh' else codex_valid)(model))
+            self.assertEqual(model['effort_status'],status)
+            if status=='explicit':
+                self.assertEqual(model['effort_label'],'High')
+                self.assertEqual(model['options'],[])
+            else:
+                self.assertNotIn('effort',model)
+                self.assertNotIn('reasoning',cap['settings'])
+
     def test_changing_models_updates_revision_and_compatible_reasoning_effort(self):
         now = [1800000000]
         fixture = Preview('changed', clock=lambda: now[0])
@@ -165,6 +181,11 @@ class PreviewTests(unittest.TestCase):
         selected = next(option for option in changed['model']['options'] if option['value'] == changed['model']['current'])
         self.assertIn(changed['model']['effort'], selected['efforts'])
         self.assertEqual(changed['settings']['model'], selected['label'])
+        busy = fixture.route('GET','/api/control/tasks/cx-running')[2]['capability']
+        self.assertEqual(busy['model']['options'],[])
+        without_effort = fixture.route('GET','/api/control/tasks/ds-ready')[2]['capability']
+        self.assertEqual(without_effort['model']['effort_status'],'unsupported')
+        self.assertNotIn('effort',without_effort['model'])
 
 
 if __name__ == '__main__':unittest.main()

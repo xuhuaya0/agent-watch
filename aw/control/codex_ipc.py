@@ -400,7 +400,7 @@ class CodexDesktop:
         unsupported = len(requests) != len(state['requests'])
         requests.extend(pending(state.get('history', {})))
         from .codex_policy import capability, native_capability
-        from .codex_settings import summary, model_capability, REASONING
+        from .codex_settings import summary, model_capability
         # Once native catalogs are configured, unavailable or stale metadata
         # must revoke edits, never broaden them to the older approval-only API.
         policy = capability(state) if not requests and self.catalog is None else None
@@ -435,8 +435,8 @@ class CodexDesktop:
             if model:
                 settings['model'] = model['current_label']
                 settings.pop('reasoning', None)
-                if model.get('effort') in REASONING:
-                    settings['reasoning'] = REASONING[model['effort']]
+                if model.get('effort_label'):
+                    settings['reasoning'] = model['effort_label']
             if not recent and owned:
                 notes.append('当前设置暂无法重新确认；上次确认值仅供查看。')
             elif not catalog:

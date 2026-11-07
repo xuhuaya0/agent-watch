@@ -9,6 +9,11 @@ import re
 
 REASONING = {'none': '无', 'minimal': '最低', 'low': '低', 'medium': '中',
              'high': '高', 'xhigh': '很高', 'max': '最高', 'ultra': 'Ultra'}
+# The desktop composer's native labels differ from CLI enum spellings (low is
+# Light). Unknown future enum values remain identifiers, never invented labels.
+NATIVE_REASONING_LABELS = {'none': 'None', 'minimal': 'Minimal', 'low': 'Light',
+                          'medium': 'Medium', 'high': 'High', 'xhigh': 'Extra High',
+                          'max': 'Max', 'ultra': 'Ultra', 'persistent': 'Persistent'}
 SANDBOX = {'readOnly': '只读', 'workspaceWrite': '工作区可写',
            'dangerFullAccess': '完整文件访问', 'externalSandbox': '外部沙盒'}
 REVIEWER = {'user': '由你审批', 'auto_review': '自动审查', 'guardian_subagent': '自动审查'}
@@ -58,10 +63,16 @@ def summary(state):
 def valid_model_capability(value):
     from .broker import text
     if (not isinstance(value, dict)
-            or not {'current', 'revision', 'options'} <= value.keys() <= {'current', 'current_label', 'effort', 'revision', 'options'}
+            or not {'current', 'revision', 'options'} <= value.keys() <= {'current', 'current_label', 'effort', 'effort_status', 'effort_label', 'revision', 'options'}
             or not text(value.get('current'), 160) or not text(value.get('revision'))
             or ('current_label' in value and not text(value['current_label'], 200))
             or ('effort' in value and not text(value['effort'], 32))):
+        return False
+    status = value.get('effort_status')
+    if (('effort_status' in value and status not in ('explicit', 'default', 'unsupported', 'unknown'))
+            or status in ('explicit', 'default') and 'effort' not in value
+            or status in ('unsupported', 'unknown') and 'effort' in value
+            or 'effort_label' in value and ('effort' not in value or not text(value['effort_label'], 200))):
         return False
     options = value['options']
     if not isinstance(options, list) or not 0 <= len(options) <= 100:
@@ -69,7 +80,7 @@ def valid_model_capability(value):
     seen = set()
     for option in options:
         if (not isinstance(option, dict)
-                or not {'value', 'label', 'efforts'} <= option.keys() <= {'value', 'label', 'efforts', 'default_effort'}
+                or not {'value', 'label', 'efforts'} <= option.keys() <= {'value', 'label', 'efforts', 'effort_labels', 'default_effort'}
                 or not text(option.get('value'), 160) or not text(option.get('label'), 200)
                 or option['value'] in seen):
             return False
@@ -78,6 +89,10 @@ def valid_model_capability(value):
                 or any(not text(effort, 32) for effort in efforts)
                 or len(efforts) != len(set(efforts))
                 or ('default_effort' in option and option['default_effort'] not in efforts)):
+            return False
+        labels = option.get('effort_labels')
+        if 'effort_labels' in option and (not isinstance(labels, dict) or set(labels) != set(efforts)
+                                         or any(not text(label, 200) for label in labels.values())):
             return False
         seen.add(option['value'])
     return True
@@ -132,4 +147,14 @@ def model_capability(state, catalog, native, editable=True):
         'options': options}
     if effort is not None:
         result['effort'] = effort
+        result['effort_status'] = 'explicit'
+        if isinstance(effort, str):
+            result['effort_label'] = NATIVE_REASONING_LABELS.get(effort, effort)
+    else:
+        selected = next((option for option in catalog.get('models', []) if option['value'] == current), None)
+        # A null owner value does not prove which default the desktop would
+        # use. In particular, do not substitute the previous turn's effort or
+        # an unrelated catalog option's default, even while writes are disabled.
+        result['effort_status'] = ('unsupported' if selected is not None
+                                  and selected.get('efforts') == [] else 'unknown')
     return result if valid_model_capability(result) else None

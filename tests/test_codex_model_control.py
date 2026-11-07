@@ -116,7 +116,9 @@ class ModelControlTests(unittest.TestCase):
         self.assertEqual(row['model']['current'], 'model-b')
         self.assertEqual(row['model']['current_label'], 'Model B')
         self.assertEqual(row['settings']['model'], 'Model B')
-        self.assertEqual(row['settings']['reasoning'], '高')
+        self.assertEqual(row['settings']['reasoning'], 'High')
+        self.assertEqual(row['model']['effort_status'], 'explicit')
+        self.assertEqual(row['model']['effort_label'], 'High')
         self.assertEqual(self.provider.states[SID]['history']['latestThreadSettings']['model'], 'model-a')
         self.provider.rpc.history['threadRuntimeStatus']['type'] = 'active'
         self.provider.rpc.follow(SID, self.provider.rpc.owner)

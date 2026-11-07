@@ -287,3 +287,23 @@ retained its messages in both persisted records and the live owner snapshot.
 That does not establish the cause of an original application's visual omission.
 Browser and native-window tools were unavailable for this follow-up, so the
 visibility repair has logic regression coverage, not a new visual acceptance.
+
+## Effort truth and grouped model controls
+
+The composer incorrectly offered “default” for a current model without reasoning
+support whenever another model in the catalog supported it. It could also reuse
+a previous turn's effort when the current native value was missing. Providers
+now distinguish explicit values, resolved native defaults, unsupported effort
+and unknown effort. Known values retain their native labels during a busy turn,
+even when the writable catalog is temporarily empty. Unknown does not select
+a guessed default; unsupported models omit the effort trigger.
+
+Model and effort now share a compact visual group with independent menus;
+permissions remain separate. Logic regressions cover busy, unsupported, unknown,
+legacy and inherited-default snapshots. The `effort_states` preview makes these
+states reproducible. Read-only native checks confirmed an explicit Codex Ultra
+selection and a DeepSeek model with no reasoning support. No native setting was
+changed for these checks. Browser tooling was unavailable, so the new grouping's
+narrow-screen layout, zoom and keyboard acceptance remain **not verified**.
+The full local regression run passed 451 Python tests (one platform skip) and
+167 JavaScript tests; these results do not substitute for browser acceptance.

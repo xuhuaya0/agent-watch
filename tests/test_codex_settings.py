@@ -2,7 +2,7 @@ import copy
 import unittest
 
 from aw.control.codex_questions import patch_history, project
-from aw.control.codex_settings import summary, model_selection, same_model, model_capability
+from aw.control.codex_settings import summary, model_selection, same_model, model_capability, valid_model_capability
 
 
 class SettingsTests(unittest.TestCase):
@@ -24,7 +24,40 @@ class SettingsTests(unittest.TestCase):
                             'latestThreadSettings': {'effort': 'low'}}}
         result = model_capability(state, data, {'model': 'model-a', 'reasoningEffort': None, 'modelProvider': 'openai'})
         self.assertNotIn('effort', result)
+        self.assertEqual(result['effort_status'], 'unknown')
         self.assertEqual(result['current'], 'model-a')
+
+    def test_effort_facts_survive_busy_state_and_distinguish_unsupported_from_unknown(self):
+        catalog = {'revision': 'r', 'models': [
+            {'value': 'reasoning', 'label': 'Reasoning model', 'efforts': ['low', 'ultra'], 'default_effort': 'low'},
+            {'value': 'without-reasoning', 'label': 'Plain model', 'efforts': []}]}
+        state = {'history': {'threadRuntimeStatus': {'type': 'active'}}}
+        def read(model, effort):
+            return model_capability(state, catalog, {'model': model, 'reasoningEffort': effort, 'modelProvider': 'openai'})
+        actual = read('reasoning', 'ultra')
+        self.assertEqual((actual['effort_status'], actual['effort'], actual['effort_label']), ('explicit', 'ultra', 'Ultra'))
+        self.assertEqual(actual['options'], [])
+        self.assertEqual(read('reasoning', 'low')['effort_label'], 'Light')
+        self.assertEqual(read('without-reasoning', None)['effort_status'], 'unsupported')
+        for model in ('reasoning', 'unknown-model'):
+            unknown = read(model, None)
+            self.assertEqual(unknown['effort_status'], 'unknown')
+            self.assertNotIn('effort', unknown)
+            self.assertNotIn('effort_label', unknown)
+
+    def test_model_fact_validator_rejects_conflicting_status_and_malformed_labels(self):
+        legacy = {'current': 'model-a', 'revision': 'r', 'options': []}
+        self.assertTrue(valid_model_capability(legacy))
+        for patch in ({'effort_status': 'guessed'}, {'effort_status': None},
+                      {'effort_status': 'explicit'}, {'effort_status': 'default'},
+                      {'effort_status': 'unknown', 'effort': 'high'},
+                      {'effort_status': 'unsupported', 'effort': 'high'}, {'effort_label': 'High'},
+                      {'effort': 'high', 'effort_label': ''}):
+            self.assertFalse(valid_model_capability({**legacy, **patch}), patch)
+        option = {'value': 'model-a', 'label': 'A', 'efforts': ['low'], 'effort_labels': {'low': 'Light'}}
+        self.assertTrue(valid_model_capability({**legacy, 'options': [option]}))
+        for labels in ({}, {'high': 'High'}, {'low': ''}, None):
+            self.assertFalse(valid_model_capability({**legacy, 'options': [{**option, 'effort_labels': labels}]}))
 
     def test_reports_native_fields_without_claiming_a_permission_preset(self):
         state = {'history': {'latestThreadSettings': {

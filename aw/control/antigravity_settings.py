@@ -11,6 +11,15 @@ def selected_model(context):
     """Use the latest explicit native selection; never guess enum names."""
     if not isinstance(context, dict):return None
     trajectory = context.get('trajectory') or {}
+    selection = trajectory.get('modelSelection') if isinstance(trajectory, dict) else None
+    if isinstance(selection, dict):
+        if selection.get('source') == 'user':
+            return _plan_model(selection.get('config'))
+        if selection.get('source') != 'metadata':
+            return None
+        metadata = context.get('metadata') or {}
+        static = metadata.get('staticConfig') if isinstance(metadata, dict) else None
+        return _plan_model(static.get('cascadeConfig')) if isinstance(static, dict) else None
     steps = trajectory.get('steps') if isinstance(trajectory, dict) else None
     if isinstance(steps, list):
         for step in reversed(steps):
@@ -18,6 +27,10 @@ def selected_model(context):
             user = step.get('userInput')
             if isinstance(user, dict) and 'userConfig' in user:
                 return _plan_model(user['userConfig'])
+        # A bounded interaction tail can omit the last user selection. The
+        # initial metadata cannot override a newer selection we have not read.
+        if trajectory.get('partial'):
+            return None
     metadata = context.get('metadata') or {}
     static = metadata.get('staticConfig') if isinstance(metadata, dict) else None
     return _plan_model(static.get('cascadeConfig')) if isinstance(static, dict) else None

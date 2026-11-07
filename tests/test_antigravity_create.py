@@ -16,13 +16,21 @@ class Rpc:
         self.owner=PROJECT;self.model=MODEL;self.writes=[];self.targets={};self.lost=None;self.started=lambda:None
         self.steps=[{'userInput':{'userConfig':{'plannerConfig':{'planModel':MODEL,
                     'toolConfig':{'runCommand':{'autoExecutionPolicy':'do-not-copy'}}}}}}]
-        self.static={};self.target_mismatch=False
+        self.static={};self.target_mismatch=False;self.reads=[]
     def call(self,name,body):
         if name=='GetConversationMetadata':
             owner=self.owner if body['conversationId']==SOURCE else self.targets.get(body['conversationId'])
-            return {'metadata':{'projectId':owner,'staticConfig':self.static}}
+            return {'trajectoryId':SOURCE,'numSteps':len(self.steps),'metadata':{'projectId':owner,'staticConfig':self.static}}
         if name=='ReadProject':return {'project':copy.deepcopy(self.project)}
-        if name=='GetCascadeTrajectory':return {'trajectory':{'cascadeId':SOURCE,'steps':copy.deepcopy(self.steps)}}
+        if name=='GetAllCascadeTrajectories':return {'trajectorySummaries':{SOURCE:{
+            'trajectoryId':SOURCE,'stepCount':len(self.steps),'status':'CASCADE_RUN_STATUS_IDLE',
+            'lastUserInputStepIndex':max((i for i,s in enumerate(self.steps) if 'userInput' in s),default=0)}}}
+        if name=='GetCascadeTrajectorySteps':
+            self.reads.append((name,copy.deepcopy(body)))
+            return {'steps':copy.deepcopy(self.steps[body['stepOffset']:])}
+        if name=='GetTrajectoryTurns':
+            self.reads.append((name,copy.deepcopy(body)));index=body['stepIndices'][0]
+            return {'turns':[{'startStepIndex':index,'firstStep':{'type':'CORTEX_STEP_TYPE_USER_INPUT',**copy.deepcopy(self.steps[index])}}]}
         self.writes.append((name,copy.deepcopy(body)))
         if name=='StartCascade':
             sid=body['cascadeId'];self.targets[sid]='another-project' if self.target_mismatch else PROJECT
@@ -100,7 +108,7 @@ class CreationTests(unittest.TestCase):
                 def call(method,body):
                     nonlocal reads
                     response=native(method,body)
-                    if method=='GetCascadeTrajectory':
+                    if method=='GetTrajectoryTurns':
                         reads+=1
                         if reads==revoke_at:
                             self.path.write_text(json.dumps({'antigravity':{'scope':'selected'}}))
@@ -113,6 +121,17 @@ class CreationTests(unittest.TestCase):
                 else:
                     self.assertEqual(self.creation.execute(self,command)['state'],'unknown')
                     self.assertEqual([m for m,b in self.rpc.writes],['StartCascade'])
+
+    def test_long_source_reads_only_tail_and_single_model_input(self):
+        self.rpc.steps += [{'type':'CORTEX_STEP_TYPE_GENERIC','status':'CORTEX_STEP_STATUS_DONE'}] * 999
+        cap=self.creation.capability(SOURCE)
+        self.assertEqual(cap['model_name'],MODEL)
+        self.assertEqual(self.rpc.reads,[
+            ('GetCascadeTrajectorySteps',{'cascadeId':SOURCE,'stepOffset':984,'trajectoryVerbosity':2,'disableRehydration':True}),
+            ('GetTrajectoryTurns',{'cascadeId':SOURCE,'stepIndices':[0],'trajectoryVerbosity':3})])
+        self.rpc.steps[0]['userInput']['userConfig']['plannerConfig']['planModel']='MODEL_UNSPECIFIED'
+        self.assertIsNone(self.creation.capability(SOURCE))
+        self.assertFalse(self.rpc.writes)
 
     def test_uncertainty_keeps_new_id_and_never_retries(self):
         for method in ('StartCascade','SendUserCascadeMessage'):

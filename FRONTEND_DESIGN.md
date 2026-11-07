@@ -94,7 +94,14 @@ imply equal capabilities. Do not hide an integration gap by substituting a
 different native operation.
 
 Model, reasoning effort and permissions use independent anchored menus with
-a checkmark on the current choice. Selecting an allowed change applies it directly;
+a checkmark on the current choice. Model and effort triggers share a compact
+visual group; permissions remain a separate control. Show the native effort
+label, including when a busy session temporarily has no writable options. Hide
+effort for a model explicitly reported as not supporting it. An unknown current
+value is not “default”: neither another model's catalog nor a previous turn's
+effort establishes the current selection. Resolve an inherited default only
+when the provider has an authoritative native rule and value.
+Selecting an allowed change applies it directly;
 project-wide changes and broader access use a short confirmation inside the menu.
 New-conversation creation retains its destination-specific modal. Opening a
 picker selects the native current value without writing it. A current value

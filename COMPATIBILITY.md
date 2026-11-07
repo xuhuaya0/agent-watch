@@ -411,3 +411,16 @@ restoration of the original `next` and default, including the original absence
 of a reasoning-effort field. Permissions were unchanged, and no prompt, tool or
 permission write occurred. This verifies the tested model/effort pair and
 restoration, not every catalog combination or browser submission.
+
+### Current effort facts (2026-11-07)
+
+Read-only comparison with the installed macOS Codex owner snapshot confirmed
+an explicit Ultra effort; its native model picker uses Light, Medium, High,
+Extra High, Max and Ultra labels for the corresponding supported enum values.
+The bridge preserves a known value when a busy chat has no writable options.
+A null owner effort is not assumed to equal the catalog default or a previous
+turn's effort. In Windows DeepSeek, the inspected current model had no reasoning
+capability; its control snapshot now distinguishes this from an unknown value.
+DeepSeek's inherited model/default-effort resolution follows its native catalog
+and selection rules. These were read-only checks plus regression tests, not new
+model changes or browser acceptance. Windows Codex remains unverified.

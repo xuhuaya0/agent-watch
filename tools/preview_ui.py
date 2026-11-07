@@ -27,7 +27,7 @@ SCENARIOS = {
     'refresh': '刷新时保留输入', 'changed': '模型与权限版本变化', 'slow': '慢响应与切页',
     'readonly': '模型与权限只读', 'unknown_settings': '模型与权限未读取',
     'media': '消息链接与原设备图片', 'process': '三种应用的过程折叠',
-    'queued': '运行中回复队列',
+    'queued': '运行中回复队列', 'effort_states': '真实强度、未读取与不支持',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -114,10 +114,10 @@ class Preview:
         cap['settings'] = {'model':'Example Model ' + {'codex':'A','antigravity':'B','dsh':'C'}[tool],
                            'scope':'project' if tool == 'antigravity' else 'session'}
         if tool == 'codex':
-            cap['settings'].update(reasoning='高', permission='工作区可写 · 联网受限 · 由你审批 · 按需审批')
-            cap['model'] = {'current':'example-model-a','effort':'high','revision':'demo-model', 'options':[
-                {'value':'example-model-a','label':'Example Model A','efforts':['low','high'],'default_effort':'low'},
-                {'value':'example-model-b','label':'Example Model B','efforts':['medium','high'],'default_effort':'medium'},
+            cap['settings'].update(reasoning='High', permission='工作区可写 · 联网受限 · 由你审批 · 按需审批')
+            cap['model'] = {'current':'example-model-a','effort':'high','effort_status':'explicit','effort_label':'High','revision':'demo-model', 'options':[
+                {'value':'example-model-a','label':'Example Model A','efforts':['low','high'],'effort_labels':{'low':'Light','high':'High'},'default_effort':'low'},
+                {'value':'example-model-b','label':'Example Model B','efforts':['medium','high'],'effort_labels':{'medium':'Medium','high':'High'},'default_effort':'medium'},
                 {'value':'example-model-c','label':'Example Model C','efforts':[]}]}
             cap['policy'] = {'scope':'session-permissions','current':'demo-workspace','current_label':'示例：请求审批','revision':'demo-policy',
                 'options':[choice('demo-workspace','示例：请求审批','合成工作区权限及审批预设'),
@@ -139,7 +139,7 @@ class Preview:
         else:
             cap['settings'].update(permission='Workspace Write', reasoning='High')
             cap['model'] = {'scope':'session-and-default', 'current':'example-model-c', 'current_label':'Example Model C',
-                'effort':'high','revision':'demo-dsh-model', 'options':[
+                'effort':'high','effort_status':'explicit','effort_label':'High','revision':'demo-dsh-model', 'options':[
                     {'value':'example-model-c','label':'Example Model C','provider_label':'Example Provider',
                      'efforts':['low','high'],'effort_labels':{'low':'Low','high':'High'},'default_effort':'high'},
                     {'value':'example-model-d','label':'Example Model D','provider_label':'Example Provider',
@@ -149,6 +149,15 @@ class Preview:
                            choice('workspace-write','Workspace Write','可修改工作区内文件'),
                            choice('full-access','Full Access','完整文件访问') ]}
             cap['create'] = {'cwd':'C:/Example/Project','revision':'demo-create'}
+        if self.scenario == 'effort_states' and 'model' in cap:
+            model = cap['model']
+            if sid == 'cx-ready':
+                model.pop('effort');model.pop('effort_label');model['effort_status'] = 'unknown'
+                cap['settings'].pop('reasoning')
+            elif tool == 'dsh':
+                model.update(current='example-model-d',current_label='Example Model D',effort_status='unsupported')
+                model.pop('effort');model.pop('effort_label')
+                cap['settings'].update(model='Example Model D');cap['settings'].pop('reasoning')
         if task['state'] == 'running':
             if 'model' in cap:cap['model']['options'] = []
             if 'policy' in cap:cap['policy']['options'] = []
@@ -164,19 +173,25 @@ class Preview:
             cap['reply'] = False;cap.pop('policy', None)
             cap['requests'] = [{'id':'demo-approval','revision':'demo-v1','kind':'approval',
                                 'prompt':'合成工具请求：打印 DEMO-ONLY（不会执行）','choices':['approve','reject']}]
-        if self.scenario == 'changed' and 'policy' in cap:
+        if self.scenario == 'changed' and cap.get('policy',{}).get('options'):
             generation = int((self.clock()-self.started)//15)
             cap['policy']['revision'] = f'demo-policy-{generation}'
             selected = cap['policy']['options'][generation % 2]
             cap['policy']['current'] = selected['value']
             cap['settings']['permission'] = selected['label']
-            if 'model' in cap:
+            if 'model' in cap and cap['model']['options']:
                 cap['model']['revision'] = f'demo-model-{generation}'
                 selected_model = cap['model']['options'][generation % 2]
                 cap['model']['current'] = selected_model['value']
-                cap['model']['effort'] = selected_model['default_effort']
+                cap['model']['current_label'] = selected_model['label']
                 cap['settings']['model'] = selected_model['label']
-                cap['settings']['reasoning'] = selected_model['default_effort']
+                if selected_model['efforts']:
+                    cap['model'].update(effort=selected_model['default_effort'],effort_status='explicit',
+                        effort_label=selected_model['effort_labels'][selected_model['default_effort']])
+                    cap['settings']['reasoning'] = cap['model']['effort_label']
+                else:
+                    cap['model'].pop('effort',None);cap['model'].pop('effort_label',None)
+                    cap['model']['effort_status'] = 'unsupported';cap['settings'].pop('reasoning',None)
         if self.scenario in ('readonly', 'unknown_settings'):
             for field in ('model', 'policy', 'create'):cap.pop(field, None)
             if self.scenario == 'unknown_settings':cap.pop('settings', None)

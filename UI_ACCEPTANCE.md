@@ -80,6 +80,12 @@ command. Check concurrent cancellation/claim, ordered multiple replies, uncertai
 receipts, and immediate removal of the optimistic bubble when the native echo
 arrives. A waiting item must not be rendered twice or silently auto-retried.
 
+For UI-07, use `effort_states`: the idle Codex example has an unknown effort,
+the busy Codex example retains its known High value without writable choices,
+and the DeepSeek example has no reasoning support despite other models offering
+it. Check model and effort are visually adjacent, permissions stay separate,
+and opening any menu does not write a setting. Repeat at narrow width.
+
 ## 4. Keep verification levels separate
 
 | Level | What it establishes | What it cannot establish |

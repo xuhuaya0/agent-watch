@@ -79,10 +79,16 @@ def _model_options(catalog):
 def valid_model_capability(value):
     if (not isinstance(value, dict)
             or not {'current', 'current_label', 'revision', 'scope', 'options'} <= value.keys()
-                <= {'current', 'current_label', 'effort', 'revision', 'scope', 'options'}
+                <= {'current', 'current_label', 'effort', 'effort_status', 'effort_label', 'revision', 'scope', 'options'}
             or value.get('scope') != SCOPE or not text(value.get('current'), 160)
             or not text(value.get('current_label'), 200) or not text(value.get('revision'))
             or ('effort' in value and not text(value['effort'], 80))):
+        return False
+    status = value.get('effort_status')
+    if (('effort_status' in value and status not in ('explicit', 'default', 'unsupported', 'unknown'))
+            or status in ('explicit', 'default') and 'effort' not in value
+            or status in ('unsupported', 'unknown') and 'effort' in value
+            or 'effort_label' in value and ('effort' not in value or not text(value['effort_label'], 200))):
         return False
     rows = value['options']
     if not isinstance(rows, list) or len(rows) > 100:
@@ -219,6 +225,11 @@ class SessionSettings:
             'options': copy.deepcopy(options) if editable else []}
         if effort is not None:
             result['effort'] = effort
+            result['effort_label'] = option['effort_labels'][effort]
+            result['effort_status'] = ('explicit' if projection['next'] is not None
+                                      and 'reasoningEffort' in selected else 'default')
+        else:
+            result['effort_status'] = 'unknown' if option['efforts'] else 'unsupported'
         return result if valid_model_capability(result) else None
 
     def execute(self, provider, command):
