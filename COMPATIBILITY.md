@@ -498,3 +498,29 @@ its native title and actual final state. All original log/workspace hashes were
 unchanged; no native session, archive, pin or control operation was written.
 Shared folded-history pagination changes only the web reader: existing bounded
 history endpoints and their native access checks remain unchanged.
+
+### Uncertain reply confirmation (2026-11-07)
+
+Installed macOS Codex 26.1103.31037 / build 25241 uses an engine-generated
+`userMessage.clientId` to match the original `clientUserMessageId`. Its optimistic
+turn input is separate from this accepted item. Steering acceptance additionally
+requires `status=accepted`, a server message ID and a matching server client
+message ID. The desktop provider follows these native rules and validates the
+owner/session stream; it does not treat matching text or optimistic input as proof.
+A read-only check of an existing reply matched both the exact command identity
+and an independently recorded message hash. No new message, native setting or
+engine was created for that comparison.
+
+Pending identities and late-ack observations are bounded. A restarted worker can
+register its pending identities and request one native snapshot for a loaded
+session when necessary. Unrelated historical IDs cannot evict pending evidence.
+Absence, unsupported native fields, unavailable ownership or expired watches keep
+the reply unknown; they never cause a native retry. Existing receipt formats are
+compatible with the Hub's optional confirmation source, and terminal receipts
+cannot be downgraded by delayed uncertainty reports.
+
+This native confirmation path is verified for the inspected macOS desktop build.
+Windows Codex remains unverified. Antigravity, DeepSeek, the legacy shared
+app-server adapter and native queue submissions without an original command-ID
+association retain their existing receipt behavior. Shared browser fixture tests
+for those Harnesses verify presentation only.

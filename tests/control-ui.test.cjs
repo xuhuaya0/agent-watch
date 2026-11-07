@@ -188,6 +188,44 @@ test('uncertain delivery keeps the visible message without claiming success',asy
  ctx.apiFetch=async()=>{throw Error('offline')};ctx.fetch=async()=>{throw Error('offline')};await run(ctx,'sendReply()');
  const html=run(ctx,'outgoingHtml("a")');assert.match(html,/Visible even offline/);assert.match(html,/送达情况待确认/);assert.doesNotMatch(html,/已送达/);
 });
+test('native history removes an uncertain duplicate but keeps the unknown receipt until the same command is confirmed',async()=>{
+ for(const tool of ['codex','antigravity','dsh']){
+  const {ctx,node,feedback,outgoing,input}=setup();let posts=0;
+  ctx.apiFetch=async()=>{posts++;throw Error('must not send')};
+  ctx.data={...cap,capability:{...cap.capability,tool},commands:[{id:'sent',kind:'reply',state:'unknown',created:1000,detail:'无法确认原应用是否已接收，系统不会自动重发'}]};
+  ctx.fetch=async()=>({ok:true,json:async()=>ctx.data});
+  ctx.histories=new Map([['a',{loaded:true,messages:[]}]]);mountHistory(ctx);
+  run(ctx,'interaction.outgoing.set("a",{id:"sent",text:"One reply",createdAt:1000000,state:"unknown",previousHistoryIds:[]});setReplyDraft("newer draft")');
+  input.value='newer draft';input.selectionStart=3;ctx.document.activeElement=input;
+  await run(ctx,'refreshInteraction()');assert.match(outgoing.innerHTML,/送达情况待确认/);
+  ctx.histories.get('a').messages=[{id:'native-sent',role:'user',text:'One reply',timestamp:new Date(1001000).toISOString()}];mountHistory(ctx);
+  run(ctx,'renderOutgoing()');assert.equal(outgoing.innerHTML,'');assert.match(feedback.innerHTML,/结果未知/);
+  assert.doesNotMatch(feedback.innerHTML,/原生记录已确认|原应用已接收/);
+  assert.equal(run(ctx,'interaction.outgoing.get("a").state'),'unknown');
+  const structure=node.innerHTML;
+  ctx.data.commands=[{...ctx.data.commands[0],state:'delivered',confirmation:'native_record',detail:'已从原生会话记录确认接收；不代表 Agent 已完成执行'}];
+  await run(ctx,'refreshInteraction()');assert.equal(outgoing.innerHTML,'');assert.match(feedback.innerHTML,/最近回复.*原生记录已确认/);
+  assert.doesNotMatch(feedback.innerHTML,/结果未知|原应用已接收|Agent 已完成/);
+  assert.equal(node.innerHTML,structure);assert.equal(input.value,'newer draft');assert.equal(input.selectionStart,3);
+  assert.equal(run(ctx,'interactionDraft("a").text'),'newer draft');assert.equal(ctx.document.activeElement,input);assert.equal(posts,0);
+  // Reading an older page restores the local echo and moves its receipt with it.
+  ctx.histories.get('a').messages=[];mountHistory(ctx);run(ctx,'renderOutgoing()');
+  assert.match(outgoing.innerHTML,/One reply/);assert.match(outgoing.innerHTML,/原生记录已确认/);assert.equal(feedback.innerHTML,'');
+ }
+});
+test('confirmed receipts survive a fresh page and only their structured evidence changes the label',()=>{
+ for(const confirmation of ['native_record','late_ack',undefined]){
+  const {ctx}=setup();ctx.data={...cap,commands:[{id:'sent',kind:'reply',state:'delivered',confirmation,detail:''}]};
+  run(ctx,'interaction.byTask.set("a",data)');
+  assert.match(run(ctx,'interactionFeedbackHtml("a")'),confirmation==='native_record'?/原生记录已确认/:/原应用已接收/);
+  ctx.data.connected=false;ctx.data.capability=null;
+  assert.match(run(ctx,'interactionHtml("a")'),confirmation==='native_record'?/原生记录已确认/:/原应用已接收/);
+  ctx.data.commands[0].state='unknown';
+  assert.match(run(ctx,'interactionFeedbackHtml("a")'),/结果未知/);assert.doesNotMatch(run(ctx,'interactionFeedbackHtml("a")'),/原生记录已确认|原应用已接收/);
+ }
+ const {ctx}=setup();run(ctx,'interaction.outgoing.set("a",{id:"one",state:"unknown"});updateOutgoing("a",{id:"another",state:"delivered",confirmation:"native_record"})');
+ assert.equal(run(ctx,'interaction.outgoing.get("a").state'),'unknown');
+});
 test('matching collector summaries never hide the delivered echo while native history is absent',()=>{
  const {ctx}=setup();run(ctx,'workspace.detail={key:"a",activity_at:10,extra:{latest_turn:{notification:"Same message"}}};interaction.outgoing.set("a",{id:"c",text:"Same message",createdAt:1000,baselineAt:10,state:"delivered"})');
  assert.match(run(ctx,'outgoingHtml("a")'),/Same message/);
@@ -245,12 +283,12 @@ test('native history trimming the submitted trailing newline does not duplicate 
  assert.equal(run(ctx,'outgoingHtml("a")'),'');
  assert.equal(run(ctx,'historyContainsOutgoing("a",interaction.outgoing.get("a"))'),true);
 });
-test('native history hides pending duplicate echoes while failed and uncertain results stay visible',()=>{
+test('native history hides pending and uncertain duplicate echoes while failed sends stay visible',()=>{
  const {ctx}=setup();ctx.histories=new Map([['a',{loaded:true,messages:[{id:'new',role:'user',text:'Visible',timestamp:'2000-01-01T00:00:00Z'}]}]]);
  mountHistory(ctx);
  for(const state of ['sending','queued','dispatched','rejected','expired','cancelled','unknown']){
   ctx.state=state;run(ctx,'interaction.outgoing.set("a",{id:"reply",text:"Visible",createdAt:1000,state,previousHistoryIds:[]})');
-  if(['sending','queued','dispatched'].includes(state))assert.equal(run(ctx,'outgoingHtml("a")'),'');
+  if(['sending','queued','dispatched','unknown'].includes(state))assert.equal(run(ctx,'outgoingHtml("a")'),'');
   else assert.match(run(ctx,'outgoingHtml("a")'),/Visible/);
  }
 });

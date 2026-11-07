@@ -375,3 +375,28 @@ candidate scanner removed the blank session and recovered the real session's
 native title and state without altering native files. Native version and scope
 are recorded in COMPATIBILITY.md. Final checks passed 496 Python tests (one
 platform skip) and 179 JavaScript tests.
+
+### Reply confirmation after an uncertain transport result
+
+A native message could be present while the panel permanently retained an
+unknown receipt. The worker now keeps bounded pending command identities across
+Hub acknowledgements and worker restarts. It can publish a later positive native
+confirmation without executing the action again. Confirmation uses the native
+client-message identity or an exact late request acknowledgement; matching text,
+optimistic input and missing history are not acceptance evidence. The Hub keeps
+receipts monotonic and drains offline confirmations in batches. Local diagnostic
+logs contain fixed categories and phases, not prompts or native error payloads.
+
+The shared UI now keeps feedback visible when native history replaces the local
+echo. It updates the original command on confirmation and does not infer delivery
+from the rendered text. Chromium 128 synthetic acceptance passed 12 cases at
+1280×800 and 390×844 (UI-09/10/12): all three Harnesses, native-record and late-ack
+confirmation, persistent uncertainty, reload, unavailable capabilities and
+disconnection. Draft, selection, focus, expanded tools and reading position were
+preserved; no control action was submitted. These cross-Harness UI fixtures do
+not establish native confirmation support outside the Codex desktop provider.
+
+Separately, installed macOS Codex source and a read-only owner snapshot confirmed
+the original client-message identity for an existing reply; a random command ID
+did not match. This establishes native evidence reading, not a newly sent action.
+See COMPATIBILITY.md for the exact native version and unsupported cases.

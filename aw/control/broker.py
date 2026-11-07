@@ -271,6 +271,8 @@ class Broker:
                 db.execute("ALTER TABLE commands ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
                 for row in db.execute('SELECT id,action FROM commands WHERE action IS NOT NULL').fetchall():
                     db.execute('UPDATE commands SET kind=? WHERE id=?', (json.loads(row['action']).get('kind',''),row['id']))
+            if 'confirmation' not in {r[1] for r in db.execute('PRAGMA table_info(commands)')}:
+                db.execute('ALTER TABLE commands ADD COLUMN confirmation TEXT')
             # Never replay anything that might already have reached the native app.
             db.execute("UPDATE commands SET state='unknown',action=NULL,detail='服务重启，操作结果未知，请检查原应用' WHERE state='dispatched'")
         os.chmod(self.path, 0o600)
@@ -367,7 +369,7 @@ class Broker:
             self._expire(db)
             _, cap = self._owner(device, (tool, session))
             enabled = self._enabled(db, device)
-            rows = db.execute("SELECT id,state,detail,created,result,kind,action FROM commands WHERE device=? AND tool=? AND session=? ORDER BY CASE WHEN state='waiting' THEN 0 ELSE 1 END,created DESC LIMIT 25", (device, tool, session)).fetchall()
+            rows = db.execute("SELECT id,state,detail,created,result,kind,action,confirmation FROM commands WHERE device=? AND tool=? AND session=? ORDER BY CASE WHEN state='waiting' THEN 0 ELSE 1 END,created DESC LIMIT 25", (device, tool, session)).fetchall()
             commands = []
             for row in rows:
                 item = dict(row)
@@ -377,6 +379,8 @@ class Broker:
                 result = item.pop('result')
                 if result:
                     item['result'] = json.loads(result)
+                if item['confirmation'] is None:
+                    item.pop('confirmation')
                 commands.append(item)
             return {'connected': bool(cap) and enabled, 'capability': cap if enabled else None,
                     'reason': '此设备的面板交互已暂停，可在设置中恢复' if not enabled else '' if cap else '此会话尚未连接原应用的交互接口', 'commands': commands}
@@ -472,7 +476,12 @@ class Broker:
             raise ControlError('invalid_exchange', 400)
         caps = normalize_sessions(sessions)
         for r in receipts:
-            if not isinstance(r, dict) or not text(r.get('id')) or r.get('state') not in ('delivered', 'resolved', 'rejected', 'unknown', 'waiting') or not isinstance(r.get('detail', ''), str):
+            if (not isinstance(r, dict) or not set(r) <= {'id', 'state', 'detail', 'result', 'confirmation'}
+                    or not text(r.get('id')) or r.get('state') not in ('delivered', 'resolved', 'rejected', 'unknown', 'waiting')
+                    or not isinstance(r.get('detail', ''), str)):
+                raise ControlError('invalid_receipt', 400)
+            if 'confirmation' in r and (r['state'] != 'delivered' or not isinstance(r['confirmation'], str)
+                                         or r['confirmation'] not in ('native_record', 'late_ack')):
                 raise ControlError('invalid_receipt', 400)
             if 'result' in r:
                 result = r['result']
@@ -495,6 +504,8 @@ class Broker:
             deferred = set()
             for r in receipts:
                 row = db.execute('SELECT state,tool,kind,result,session,action,created FROM commands WHERE id=? AND device=? AND worker=?', (r['id'], device, worker)).fetchone()
+                if row and 'confirmation' in r and row['kind'] != 'reply':
+                    raise ControlError('invalid_receipt', 400)
                 if r['state'] == 'waiting':
                     # The worker positively reports it performed no native write.
                     # Unknown/dropped dispatches never take this path or retry.
@@ -518,7 +529,10 @@ class Broker:
                         if row['result'] and row['result'] != encoded(r['result']):
                             raise ControlError('creation_result_conflict',400)
                         db.execute('UPDATE commands SET result=? WHERE id=?', (encoded(r['result']),r['id']))
-                    db.execute("UPDATE commands SET state=?,action=NULL,detail=? WHERE id=? AND state IN ('dispatched','unknown')", (r['state'], r.get('detail', '')[:1000], r['id']))
+                    # A later positive observation can settle uncertainty, but
+                    # an existing terminal receipt and its evidence stay final.
+                    db.execute("UPDATE commands SET state=?,action=NULL,detail=?,confirmation=? WHERE id=? AND state IN ('dispatched','unknown')",
+                               (r['state'], r.get('detail', '')[:1000], r.get('confirmation'), r['id']))
                     accepted.append(r['id'])
                 elif not row:
                     # The receipt may outlive seven-day queue retention. There is

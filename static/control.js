@@ -97,9 +97,15 @@ function capturedOutgoing(id) {
 function receiptDetail(receipt) {
  const detail=receipt.detail||'';
  if(detail===CONTROL_STATES[receipt.state])return '';
+ if(receipt.state==='delivered' && (
+   receipt.confirmation==='native_record' && detail==='已从原生会话记录确认接收；不代表 Agent 已完成执行' ||
+   receipt.confirmation==='late_ack' && detail==='原应用的迟到回执已确认接收；不代表 Agent 已完成执行'))return '';
  if(receipt.state==='delivered' && (detail==='原应用已接收' || detail==='原应用已接收；不代表 Agent 已完成执行'))return '';
  if(receipt.state==='resolved' && detail==='原应用已结束该请求；请查看原应用的最终结果')return '请在原应用查看最终结果';
  return CONTROL_ERRORS[detail]||detail;
+}
+function controlStateLabel(receipt) {
+ return receipt?.state==='delivered'&&receipt.confirmation==='native_record'?'原生记录已确认':CONTROL_STATES[receipt?.state]||receipt?.state;
 }
 function historyContainsOutgoing(id,message) {
  const history=typeof histories!=='undefined'?histories.get(id):null;
@@ -132,18 +138,19 @@ function outgoingHtml(id) {
  // The native message may arrive before its control receipt. Once a new native
  // identity/time/text is rendered, show it just once. Recheck the mounted page
  // each time: pagination must not leave both the native row and its echo hidden.
- if(['sending','queued','dispatched','delivered'].includes(message.state)&&historyContainsOutgoing(id,message))return '';
+ if(['sending','queued','dispatched','delivered','unknown'].includes(message.state)&&historyContainsOutgoing(id,message))return '';
  // Empty/unavailable history falls back to the actual mounted capture. Its
  // model alone is insufficient: an older history page may hide this region.
  if(message.state==='delivered'&&visibleCaptureContainsOutgoing(id,message))return '';
  const labels={sending:'发送中',queued:'等待设备接收',dispatched:'正在送达',delivered:'已送达',rejected:'发送失败',expired:'已过期，未发送',cancelled:'已取消',unknown:'送达情况待确认'};
+ if(message.state==='delivered'&&message.confirmation==='native_record')labels.delivered=controlStateLabel(message);
  const warning=['rejected','expired','cancelled','unknown'].includes(message.state);
  const detail=receiptDetail(message);
  return `<article class="message user-message local-outgoing" data-command-id="${esc(message.id)}"><div class="message-label">${message.notification?'Agent Watch · 系统通知':'你'}<span>${esc(new Date(message.createdAt).toLocaleTimeString())}</span><span class="outgoing-state${warning?' warning':''}" role="status">${esc(labels[message.state]||message.state)}</span></div><div class="message-body outgoing-text">${esc(message.text)}</div>${detail?`<p class="capture-note">${esc(detail)}</p>`:''}</article>`;
 }
 function updateOutgoing(id,receipt) {
  const message=interaction.outgoing.get(id);
- if(message&&receipt?.id===message.id)Object.assign(message,{state:receipt.state,detail:receipt.detail||'',...(receipt.created?{serverCreatedAt:receipt.created}:{})});
+ if(message&&receipt?.id===message.id)Object.assign(message,{state:receipt.state,detail:receipt.detail||'',confirmation:receipt.confirmation,...(receipt.created?{serverCreatedAt:receipt.created}:{})});
 }
 function createdSessionHtml(id,receipt) {
  const result=receipt?.result;if(!result)return '';
@@ -158,9 +165,10 @@ function interactionFeedbackHtml(id,kind=null) {
  const latest=local?data?.commands?.find(c=>c.id===local.id):data?.commands?.find(c=>matches(c.kind));
  if(!kind&&latest?.kind==='reply'&&latest.state==='waiting')return '';
  if((kind?local:pending)?.uncertain)return '<p class="control-receipt warning" role="status">未收到服务器回执，正在核对；请勿重复发送。</p><button type="button" onclick="releaseUncertain()">已检查原应用，解除等待</button>';
- // A local reply carries its delivery receipt on the outgoing message itself.
+ // A visible local reply carries its receipt. Once native history replaces it,
+ // keep the receipt here; history presence alone never changes delivery state.
  const outgoing=interaction.outgoing.get(id);
- if(!kind && outgoing && outgoing.id===(local?.id||latest?.id))return '';
+ if(!kind && outgoing && outgoing.id===(local?.id||latest?.id)&&outgoingHtml(id))return '';
  // A rejected HTTP request never enters the broker's receipt list.
  if(!kind && !local && outgoing?.previousReceiptIds?.includes(latest?.id))return '';
  if(local&&!latest)return '<p class="control-receipt" role="status">正在发送…</p>';
@@ -169,7 +177,7 @@ function interactionFeedbackHtml(id,kind=null) {
  const detail=latest?receiptDetail(latest):'';
  const when=latest?.created?' · '+new Date(latest.created*1000).toLocaleTimeString():'';
  const settingConfirmed=latest?.state==='resolved'&&['model','policy'].includes(actionKind);
- const state=settingConfirmed?'原应用已确认':CONTROL_STATES[latest?.state]||latest?.state;
+ const state=settingConfirmed?'原应用已确认':controlStateLabel(latest);
  const status=settingConfirmed&&detail.startsWith('原应用已确认')?detail:state+(detail?' · '+detail:'');
  return latest?`<p class="control-receipt ${latest.state==='unknown'?'warning':''}" role="status">最近${label}${esc(when)}：${esc(status)}</p>${createdSessionHtml(id,latest)}`:'';
 }
@@ -226,6 +234,9 @@ function renderOutgoing() {
  if(!id||!outgoing)return;
  const markup=outgoingHtml(id);
  if(outgoing.renderedEcho!==markup){outgoing.innerHTML=markup;outgoing.renderedEcho=markup;}
+ // History can replace/restore the echo without a new capability snapshot.
+ const control=document.getElementById('session-control'),feedback=control?.dataset.task===id?control.querySelector('.interaction-feedback'):null;
+ if(feedback){const receipt=interactionFeedbackHtml(id);if(feedback.renderedReceipt!==receipt){feedback.innerHTML=receipt;feedback.renderedReceipt=receipt;}}
 }
 function renderInteraction(force=false) {
  if(typeof renderSessionActions==='function')renderSessionActions();

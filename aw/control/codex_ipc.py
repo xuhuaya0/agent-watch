@@ -40,6 +40,9 @@ class DesktopRpc:
         self.sock = self.connect(path)
         self.callback = on_event
         self.pending = {}
+        self.reply_requests = {}
+        self.reply_confirmed = {}
+        self.reply_watched = set()
         self.lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.client_id = 'initializing-client'
@@ -87,6 +90,7 @@ class DesktopRpc:
         waiter = {'event': threading.Event()}
         with self.lock:
             self.pending[key] = waiter
+            self._track_reply(key, method, params, owner)
         try:
             msg = {'type': 'request', 'requestId': key, 'sourceClientId': self.client_id,
                    'method': method, 'version': VERSIONS[method], 'params': params,
@@ -95,6 +99,8 @@ class DesktopRpc:
                 msg['targetClientId'] = owner
             self.send(msg)
             if not waiter['event'].wait(timeout + 1) or 'response' not in waiter:
+                if not getattr(self, 'connected', True):
+                    raise ConnectionError('desktop IPC disconnected')
                 raise TimeoutError('desktop IPC response unavailable')
             result = waiter['response']
             if result.get('resultType') != 'success':
@@ -105,6 +111,58 @@ class DesktopRpc:
         finally:
             with self.lock:
                 self.pending.pop(key, None)
+
+    def _prune_replies(self):
+        now = time.monotonic()
+        for cache in (self.reply_requests, self.reply_confirmed):
+            for key, value in list(cache.items()):
+                if value['until'] <= now:
+                    cache.pop(key, None)
+            while len(cache) > 128:
+                disposable = next((key for key, value in cache.items()
+                    if (value['session_id'], value['command_id']) not in getattr(self, 'reply_watched', set())), None)
+                cache.pop(disposable if disposable is not None else next(iter(cache)))
+
+    def watch_reply_receipt(self, session, identity):
+        with self.lock:
+            if len(self.reply_watched) < 128:
+                self.reply_watched.add((session, identity))
+
+    def _track_reply(self, key, method, params, owner):
+        self._prune_replies()
+        if method not in ('thread-follower-start-turn', 'thread-follower-steer-turn') or not owner:
+            return
+        request = ((params.get('turnStart') or {}).get('request') or {}
+                   if method == 'thread-follower-start-turn' else params)
+        identity, session = request.get('clientUserMessageId'), params.get('conversationId')
+        if isinstance(identity, str) and identity and isinstance(session, str) and session:
+            self.reply_requests[key] = {'command_id': identity, 'session_id': session,
+                                        'owner': owner, 'until': time.monotonic() + 24 * 60 * 60}
+            self._prune_replies()
+
+    def _remember_reply(self, message):
+        self._prune_replies()
+        request = self.reply_requests.get(message.get('requestId'))
+        result = message.get('result')
+        if (request and message.get('resultType') == 'success'
+                and message.get('handledByClientId') == request['owner']
+                and isinstance(result, dict) and result.get('result') is not None):
+            self.reply_confirmed[(request['session_id'], request['command_id'])] = request
+
+    def reply_receipt(self, session, identity):
+        with self.lock:
+            self._prune_replies()
+            if (session, identity) in self.reply_confirmed:
+                return {'state': 'delivered', 'evidence': 'late_ack'}
+        return None
+
+    def retire_reply_receipt(self, session, identity):
+        with self.lock:
+            self.reply_watched.discard((session, identity))
+            self.reply_confirmed.pop((session, identity), None)
+            for key, value in list(self.reply_requests.items()):
+                if (value['session_id'], value['command_id']) == (session, identity):
+                    self.reply_requests.pop(key, None)
 
     def follow(self, sid, owner, following=True):
         self.send({'type': 'broadcast', 'method': 'thread-stream-following-changed',
@@ -131,6 +189,7 @@ class DesktopRpc:
                     raise ValueError('invalid IPC message')
                 if message.get('type') == 'response':
                     with self.lock:
+                        self._remember_reply(message)
                         waiter = self.pending.get(message.get('requestId'))
                         if waiter:
                             waiter['response'] = message
@@ -212,6 +271,9 @@ class CodexDesktop:
         self.catalog = catalog
         self.native_settings = {}
         self.settings_reads = {}
+        self.reply_confirmed = {}
+        self.reply_watched = {}
+        self.reply_refresh_sessions = set()
         self.states, self.owners = {}, {}
         self.picker_context_owners = {}
         self.next_probe = {}
@@ -262,12 +324,18 @@ class CodexDesktop:
                         raise ValueError('invalid conversation')
                     requests = copy.deepcopy(state['requests'])
                     history = project(state)
+                    from .codex_receipts import snapshot_ids
+                    wanted = {identity for (session, identity) in self.reply_watched if session == sid}
+                    identities = snapshot_ids(state, wanted)
                 elif change['type'] == 'patches':
                     state = self.states[sid]
                     if state['revision'] != change['baseRevision'] or revision <= state['revision']:
                         raise ValueError('missing desktop state patches')
                     requests = patch_requests(state['requests'], change['patches'])
                     history = patch_history(state.get('history', {}), change['patches'])
+                    from .codex_receipts import patch_ids
+                    wanted = {identity for (session, identity) in self.reply_watched if session == sid}
+                    identities = patch_ids(change['patches'], wanted)
                 else:
                     raise ValueError('unsupported change')
                 if previous_history is not None and self.catalog is not None:
@@ -292,6 +360,11 @@ class CodexDesktop:
                 self.states[sid] = {'requests': requests, 'history': history, 'revision': revision,
                                     'picker_context_required': self.picker_context_owners.get(sid) == self.owners[sid],
                                     'received': time.monotonic()}
+                for identity in identities:
+                    key = (sid, identity)
+                    if key in self.reply_watched:
+                        self.reply_confirmed[key] = self.reply_watched[key]
+                self._prune_reply_receipts()
             except (ValueError, KeyError, IndexError, TypeError):
                 self.states.pop(sid, None)
             self.condition.notify_all()
@@ -301,6 +374,11 @@ class CodexDesktop:
             if self.rpc:
                 self.rpc.close()
             self.rpc = self.rpc_factory(self.socket_path, self.event)
+            with self.condition:
+                self._prune_reply_receipts()
+                if hasattr(self.rpc, 'watch_reply_receipt'):
+                    for session, identity in self.reply_watched:
+                        self.rpc.watch_reply_receipt(session, identity)
         ordered_ids = self.scope()
         ids = set(ordered_ids)
         with self.condition:
@@ -508,6 +586,91 @@ class CodexDesktop:
         if not self.history_reader:
             raise ControlError('history_unavailable')
         return self.history_reader.read(sid, cursor)
+
+    def _prune_reply_receipts(self):
+        now = time.monotonic()
+        for key, until in list(self.reply_watched.items()):
+            if until <= now:
+                self.reply_watched.pop(key, None)
+                if self.rpc and hasattr(self.rpc, 'retire_reply_receipt'):
+                    self.rpc.retire_reply_receipt(*key)
+        for key in list(self.reply_confirmed):
+            if key not in self.reply_watched:
+                self.reply_confirmed.pop(key, None)
+        self.reply_refresh_sessions.intersection_update(session for session, _ in self.reply_watched)
+
+    def _watch_reply_receipt(self, intent):
+        from .codex_receipts import valid_intent
+        if not valid_intent(intent):
+            return False
+        key = (intent['session_id'], intent['command_id'])
+        with self.condition:
+            self._prune_reply_receipts()
+            if key in self.reply_watched:
+                return True
+            if len(self.reply_watched) >= 128:
+                return False
+            self.reply_watched[key] = time.monotonic() + 24 * 60 * 60
+            if self.rpc and hasattr(self.rpc, 'watch_reply_receipt'):
+                self.rpc.watch_reply_receipt(*key)
+        return True
+
+    def restore_reply_receipts(self, intents):
+        # Worker startup only registers bounded identities. Any needed snapshot
+        # is requested once, later, within the worker's readback polling budget.
+        for intent in intents[:128]:
+            self._watch_reply_receipt(intent)
+
+    def prepare_reply_receipt(self, command):
+        from .codex_receipts import prepare
+        intent = prepare(command)
+        return intent if intent and self._watch_reply_receipt(intent) else None
+
+    def check_reply_receipt(self, intent):
+        from .codex_receipts import valid_intent
+        if not valid_intent(intent) or intent['session_id'] not in self.scope():
+            return None
+        if not self._watch_reply_receipt(intent):
+            return None
+        sid, identity = intent['session_id'], intent['command_id']
+        if self.history_reader:
+            try:
+                self.history_reader.path(sid)  # Archive/scope still apply to evidence reads.
+            except (ControlError, ValueError, TypeError, KeyError, AttributeError):
+                return None
+        with self.condition:
+            self._prune_reply_receipts()
+            if (sid, identity) in self.reply_confirmed:
+                return {'state': 'delivered', 'evidence': 'native_record'}
+            rpc = self.rpc
+        if rpc and hasattr(rpc, 'reply_receipt'):
+            result = rpc.reply_receipt(sid, identity)
+            if result:
+                return result
+        with self.condition:
+            owner = self.owners.get(sid)
+            refresh = (rpc is self.rpc and rpc and getattr(rpc, 'connected', False) and owner
+                       and time.monotonic() - self.owner_checked.get(sid, 0) <= 30
+                       and sid not in self.reply_refresh_sessions)
+            if refresh:
+                self.reply_refresh_sessions.add(sid)
+                # Use the same validated owner and native read-only subscription.
+                # Unrelated histories cannot evict a registered receipt identity.
+                rpc.follow(sid, owner)
+        return None
+
+    def retire_reply_receipt(self, intent):
+        from .codex_receipts import valid_intent
+        if not valid_intent(intent):
+            return
+        key = (intent['session_id'], intent['command_id'])
+        with self.condition:
+            self.reply_confirmed.pop(key, None)
+            self.reply_watched.pop(key, None)
+            self._prune_reply_receipts()
+            rpc = self.rpc
+        if rpc and hasattr(rpc, 'retire_reply_receipt'):
+            rpc.retire_reply_receipt(*key)
 
     def read_attachment(self, sid, attachment_id):
         if not self.history_reader:

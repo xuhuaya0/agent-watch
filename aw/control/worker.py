@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from .broker import normalize_sessions, validate_action, valid_created_session, ControlError
 from .delivery import ReplyDeferred, guard_reply
+from .diagnostics import Diagnostics
+from .receipts import ReplyReceipts
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -24,6 +26,7 @@ class Worker:
         self.pending_reads = []
         self.state_file = Path(state_file)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.diagnostics = Diagnostics(self.state_file)
         # A queue identity must never be reused for another device, Hub, or key.
         binding=hashlib.sha256(json.dumps([config['hub_url'].rstrip('/'), config['device_id'], config['token']], ensure_ascii=False).encode()).hexdigest()
         if self.state_file.exists():
@@ -36,6 +39,9 @@ class Worker:
         for r in self.state['receipts']:
             if r['state'] == 'executing':
                 r.update(state='unknown', detail='采集端重启，无法确认操作结果；请检查原应用')
+                self.diagnostics.record('restart_unknown', 'recovery', r)
+        self.reply_receipts = ReplyReceipts(self.state, providers, self.diagnostics)
+        self.reply_receipts.restore()  # Register pending IDs; never send a native action.
         self.save()
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
@@ -109,19 +115,31 @@ class Worker:
         for provider in self.providers.values():
             try:
                 sessions.extend(provider.snapshot())
-            except Exception:
+            except Exception as error:
                 # A disconnected native provider advertises no actionable session.
+                self.diagnostics.record('exception', 'snapshot', error=error)
                 continue
         sessions = self.gated_sessions(sessions)
         normalize_sessions(sessions)
         self.has_sessions = bool(sessions)
-        response = self.exchange({'device_id':self.config['device_id'], 'worker_id':self.state['worker_id'],
-                                  'sessions':sessions, 'receipts':self.state['receipts'], 'read_results':self.read_results})
+        if self.reply_receipts.reconcile():
+            self.save()  # A read-confirmed receipt must survive a failed Hub exchange.
+        # Read confirmations can accumulate while the Hub is offline. Drain
+        # bounded batches after reconnect instead of exceeding its wire limit.
+        outgoing_receipts = self.state['receipts'][:20]
+        outgoing_receipt_ids = {r['id'] for r in outgoing_receipts}
+        try:
+            response = self.exchange({'device_id':self.config['device_id'], 'worker_id':self.state['worker_id'],
+                                      'sessions':sessions, 'receipts':outgoing_receipts, 'read_results':self.read_results})
+        except Exception as error:
+            self.diagnostics.record('exception', 'exchange', error=error)
+            raise
         if not isinstance(response, dict) or response.get('ok') is not True:
             raise ValueError('invalid control response')
         accepted = response.get('receipts', [])
         if not isinstance(accepted,list) or any(not isinstance(x,str) for x in accepted):
             raise ValueError('invalid receipts response')
+        accepted = set(accepted) & outgoing_receipt_ids
         self.state['receipts'] = [r for r in self.state['receipts'] if r['id'] not in accepted]
         self.save()
         accepted_reads = response.get('read_receipts', [])
@@ -148,7 +166,8 @@ class Worker:
                 self.read_results = self.read_results[-4:]
                 self.pending_reads.pop(0)
             return bool(self.read_results)
-        if any(r['id'] == command['id'] for r in self.state['receipts']):
+        if (any(r['id'] == command['id'] for r in self.state['receipts'])
+                or command['id'] in self.reply_receipts.pending):
             return
         receipt = {'id':command['id'], 'state':'executing', 'detail':''}
         self.state['receipts'].append(receipt)
@@ -162,6 +181,7 @@ class Worker:
                 self.state['reply_gates'].pop(key, None)
             else:
                 self.state['reply_gates'][key] = previous
+        phase = 'preflight'
         try:
             provider = self.providers.get(command['tool'])
             if not provider:
@@ -174,6 +194,8 @@ class Worker:
             validate_action(current, command['action'])
             guard_reply(current, command['action'])
             if command['action']['kind'] == 'reply':
+                self.reply_receipts.prepare(command)
+                self.save()  # Native evidence baseline is durable before dispatch.
                 self.completion_marker(current)
                 delivery = current.get('delivery')
                 if delivery and not delivery.get('native_queue'):
@@ -184,6 +206,7 @@ class Worker:
                     # or this worker may crash before seeing the acknowledgement.
                     # Persist the completion barrier before the native write.
                     self.save()
+            phase = 'native_execute'
             result = provider.execute(command)
             if result == 'model_updated' and command['action']['kind'] == 'model':
                 detail = ('原应用已确认此会话的模型，并请求保存为后续默认模型；默认值持久化未确认'
@@ -225,10 +248,13 @@ class Worker:
             if result not in ('delivered', 'resolved', 'unknown'):
                 raise ValueError('invalid native receipt')
             receipt.update(state=result, detail='原应用已接收；不代表 Agent 已完成执行' if result=='delivered' else '原应用已结束该请求；请查看原应用的最终结果' if result=='resolved' else '无法确认原应用是否已接收，请检查原应用')
+            if result == 'unknown':
+                self.diagnostics.record('unknown_result', phase, command)
         except ReplyDeferred:
             undo_gate_intent()  # Positive no-write result, including a fresh race.
             receipt.update(state='waiting', detail='等待当前运行结束')
         except ControlError as error:
+            self.diagnostics.record('exception', phase, command, error)
             # Only provider preflight failures establish that no native write
             # happened. A router disconnect/error after dispatch is uncertain.
             no_write = error.code in {
@@ -242,9 +268,12 @@ class Worker:
             else:
                 undo_gate_intent()
                 receipt.update(state='rejected', detail=error.code)
-        except Exception:
-            # Error details may contain credentials or prompt text. Keep them local
-            # and return no raw process output or exception representation.
+        except Exception as error:
+            # Record only a fixed category/phase; exception text can contain input.
+            self.diagnostics.record('exception', phase, command, error)
             receipt.update(state='unknown', detail='无法确认原应用是否已接收，系统不会自动重发')
-        self.save()
+        finally:
+            if receipt['state'] not in ('unknown', 'executing'):
+                self.reply_receipts.retire(command['id'])
+            self.save()
         return True  # Flush the durable receipt on the next step without sleeping.

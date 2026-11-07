@@ -81,7 +81,7 @@ test('outgoing echo reconciles a new native message despite browser clock skew',
  assert.equal(run('historyContainsOutgoing("chat",interaction.outgoing.get("chat"))'),true);
 });
 
-test('an old identical user message or unconfirmed dispatch cannot hide the local reply',()=>{
+test('old identical messages cannot hide an echo and new native text cannot confirm an unknown receipt',()=>{
  const {ctx,run}=setup();ctx.histories.set('chat',{loaded:true,messages:[{id:'old',role:'user',text:'Same reply',timestamp:'2026-01-01T10:00:00Z'}]});
  mountHistory(ctx);
  run(`interaction.outgoing.set('chat',{id:'command',text:'Same reply',state:'delivered',createdAt:Date.parse('2026-01-01T10:01:00Z'),previousHistoryIds:['old'],historyBaselineAt:Date.parse('2026-01-01T10:00:00Z')})`);
@@ -89,7 +89,10 @@ test('an old identical user message or unconfirmed dispatch cannot hide the loca
  ctx.histories.get('chat').messages.push({id:'new',role:'user',text:'Same reply',timestamp:'2026-01-01T10:01:02Z'});
  mountHistory(ctx);
  run('interaction.outgoing.get("chat").state="unknown"');
- assert.match(run('outgoingHtml("chat")'),/local-outgoing/);
+ ctx.data.commands=[{id:'command',kind:'reply',state:'unknown'}];
+ assert.equal(run('outgoingHtml("chat")'),'');
+ assert.match(run('interactionFeedbackHtml("chat")'),/结果未知/);
+ assert.equal(run('interaction.outgoing.get("chat").state'),'unknown');
 });
 
 test('composer labels running submission as queue for all Harnesses',()=>{

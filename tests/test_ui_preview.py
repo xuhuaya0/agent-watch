@@ -116,6 +116,28 @@ class PreviewTests(unittest.TestCase):
         self.assertTrue(older['messages'])
         self.assertTrue({m['id'] for m in older['messages']}.isdisjoint(m['id'] for m in refreshed['messages']))
 
+    def test_delayed_receipts_keep_native_history_and_command_identity_without_accepting_writes(self):
+        for scenario, confirmation in [('receipt_reconciliation', 'native_record'),
+                                       ('receipt_late_ack', 'late_ack'), ('receipt_unconfirmed', None)]:
+            now = [1800000000]
+            fixture = Preview(scenario, clock=lambda: now[0])
+            for sid in ('cx-ready', 'ag-ready', 'ds-ready'):
+                path = '/api/control/tasks/' + sid
+                initial = fixture.route('GET', path)[2]['commands'][0]
+                history = fixture.route('GET', '/api/history/tasks/' + sid)[2]
+                self.assertEqual(initial['state'], 'unknown')
+                self.assertNotIn('confirmation', initial)
+                self.assertEqual(history['messages'][-1]['id'], 'receipt-user-' + sid)
+                now[0] += 9
+                updated = fixture.route('GET', path)[2]['commands'][0]
+                self.assertEqual(updated['id'], initial['id'])
+                self.assertEqual(updated['created'], initial['created'])
+                self.assertEqual(updated['state'], 'delivered' if confirmation else 'unknown')
+                self.assertEqual(updated.get('confirmation'), confirmation)
+                self.assertEqual(fixture.route('GET', '/api/history/tasks/' + sid)[2], history)
+                self.assertEqual(fixture.route('POST', path, {'action': {'kind': 'reply', 'text': 'do-not-send'}})[0], 409)
+                self.assertNotIn('do-not-send', str(fixture.__dict__))
+
     def test_history_pagination_fixture_spans_process_pages_without_missing_or_duplicated_records(self):
         fixture = Preview('history_pagination')
         for sid in ('cx-ready', 'ag-ready', 'ds-ready'):

@@ -136,6 +136,13 @@ Every data view and action must account for the following states:
 | Uncertain delivery | Never auto-resend; explain how to check the original application |
 | Stale native state | Invalidate an old request/revision and require a fresh choice; never silently apply it to new state |
 
+An uncertain reply can later become delivered only through a validated late
+native acknowledgement or a provider's read-only native-record confirmation.
+Keep that evidence source distinct from the original transport receipt. Matching
+an on-screen message can remove a duplicate local echo, but cannot by itself
+change the command state. When native history replaces the echo, its receipt
+must remain visible and accept subsequent updates without moving the reader.
+
 Open an unvisited chat at its latest message and restore a returning reader's
 position per chat. An explicit send or “有新内容” action may bring the newest
 message into view. Polling and loading an older page preserve the message being

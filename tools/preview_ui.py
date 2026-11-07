@@ -31,6 +31,9 @@ SCENARIOS = {
     'history_pagination': '折叠后的历史分页',
     'history_pagination_failure': '历史分页中途失败与续读',
     'history_pagination_slow': '历史分页慢响应与切页',
+    'receipt_reconciliation': '原生正文先到、回执稍后核对',
+    'receipt_late_ack': '原应用迟到回执',
+    'receipt_unconfirmed': '有原生正文但回执仍未知',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -110,6 +113,18 @@ class Preview:
         self.authenticated = self.scenario not in ('login', 'setup')
         self.read_at, self.acked = {}, set()
         self.history_failures = set()
+        self.receipt_started = {}
+
+    def receipt(self, sid):
+        started = self.receipt_started.setdefault(sid, self.clock())
+        confirmed = self.scenario != 'receipt_unconfirmed' and self.clock() - started >= 8
+        confirmation = 'late_ack' if self.scenario == 'receipt_late_ack' else 'native_record'
+        return {'id': 'demo-receipt-' + sid, 'kind': 'reply', 'created': started - 1,
+                'state': 'delivered' if confirmed else 'unknown',
+                'detail': ('原应用的迟到回执已确认接收；不代表 Agent 已完成执行' if confirmation == 'late_ack'
+                           else '已从原生会话记录确认接收；不代表 Agent 已完成执行') if confirmed
+                          else '无法确认原应用是否已接收，系统不会自动重发',
+                **({'confirmation': confirmation} if confirmed else {})}
 
     def tasks(self):
         if self.scenario == 'empty':return []
@@ -289,10 +304,20 @@ class Preview:
             if self.scenario == 'queued':
                 commands = [{'id':'demo-waiting-1','kind':'reply','created':self.started,
                              'state':'waiting','text':'完成当前步骤后，再检查边界情况。','detail':'等待当前运行结束'}]
+            if self.scenario.startswith('receipt_'):
+                commands = [self.receipt(sid)]
             return 200, 'application/json', {'connected':connected,'capability':self.capability(task) if connected else None,
                                             'commands':commands,'reason':'' if connected else '演示：原应用控制桥已离线'}
         if method == 'GET' and path.startswith('/api/history/tasks/') and task:
             if self.scenario == 'offline':return 409, 'application/json', {'error':'history_unavailable'}
+            if self.scenario.startswith('receipt_'):
+                receipt = self.receipt(sid)
+                page = reader_history(False, 0)
+                page['messages'].append({'id': 'receipt-user-' + sid, 'role': 'user',
+                    'text': '请确认这条合成回复的送达记录。',
+                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(receipt['created'] + 1))})
+                page['next_cursor'] = None
+                return 200, 'application/json', page
             if self.scenario == 'media':
                 return 200, 'application/json', {'ready':True, 'messages':[
                     {'id':'u1', 'role':'user', 'text':'请查看合成链接和图片。'},
