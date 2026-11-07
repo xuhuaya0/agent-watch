@@ -55,13 +55,17 @@ function splitList(tasks) {
   return parts;
 }
 function machineAbbr(t) {
+  const displayName=name=>(name || 'PC').replace(/\.local$/i,'');
   const shortName=name=>{
-    const clean=(name || 'PC').replace(/\.local$/i,'').replace(/[^\p{L}\p{N}]/gu,'');
+    const clean=displayName(name).replace(/[^\p{L}\p{N}]/gu,'');
+    for(const [model,label] of [['macbookair','Air'],['macbookpro','Pro'],['macmini','Mini'],
+      ['macstudio','Studio'],['macpro','Mac Pro'],['imac','iMac'],['macbook','Book']])
+      if(clean.toLowerCase().includes(model))return label;
     return /mac/i.test(clean)?'Mac':clean.length<=6?clean:clean.slice(0,3);
   };
-  let short=shortName(t.machine);
+  const short=shortName(t.machine);
   if(workspace.tasks.some(x=>deviceKey(x)!==deviceKey(t) && shortName(x.machine)===short))
-    short += (t.machine_id || t.machine || '').slice(-2);
+    return displayName(t.machine);
   return short || 'PC';
 }
 function relativeTime(t) {

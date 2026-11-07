@@ -1,5 +1,20 @@
 # Web audit baseline
 
+### Recognizable device labels
+
+The shared session-list badge now derives Mini, Air, Pro and other Mac model
+labels from reported hostnames instead of showing Mac plus internal ID digits.
+Collisions fall back to hostnames; fixed columns, identity colors, full-name
+tooltips and accessible session labels remain unchanged. This is presentation
+only and does not rename devices or change native Harness state.
+
+Code checks passed 569 Python tests (one platform skip) and 188 JavaScript tests.
+Edge synthetic preview checks passed at 1280x800 and 390x844 for Mini/Air across
+Codex, Antigravity and DeepSeek, plus two same-model devices with long titles.
+Badges remained 64 px wide, names escaped/truncated without page overflow, and
+keyboard selection opened the intended conversation. No browser warnings/errors
+were observed. These checks used synthetic device names, not native operations.
+
 This is the bounded audit baseline recorded on 2026-11-05, against
 [FRONTEND_DESIGN.md](FRONTEND_DESIGN.md) and
 [UI_ACCEPTANCE.md](UI_ACCEPTANCE.md). It covers the defects found by reviewing

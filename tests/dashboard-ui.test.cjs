@@ -15,6 +15,28 @@ const task=(id,more={})=>({key:id,ui_key:id,title:'Task '+id,state:'done',tool:'
 function seed(ctx,tasks){ctx.seed=tasks;vm.runInContext('workspace.tasks=seed',ctx);}
 const run=(ctx,s)=>vm.runInContext(s,ctx);
 
+test('Mac badges use recognizable model names across harnesses without identity suffixes',()=>{
+ const {ctx}=context();
+ const models=[['Desk-Mac-mini.local','Mini'],['Travel-MacBook-Air.local','Air'],
+  ['Work MacBook Pro','Pro'],['Mac Studio','Studio'],['Mac Pro','Mac Pro'],['iMac','iMac']];
+ seed(ctx,models.map(([machine],i)=>task(String(i),{machine,machine_id:'device-'+i,tool:['codex','antigravity','dsh'][i%3]})));
+ assert.deepEqual(Array.from(run(ctx,'workspace.tasks.map(machineAbbr)')),models.map(([,label])=>label));
+ run(ctx,'workspace.tasks=workspace.tasks.filter(t=>t.key==="1")');
+ assert.equal(run(ctx,'machineAbbr(workspace.tasks[0])'),'Air');
+});
+test('colliding device badges use host names, preserve identity colors and escape markup',()=>{
+ const {ctx}=context();
+ seed(ctx,[task('a',{machine:'Office-MacBook-Air.local',machine_id:'first-11'}),
+  task('b',{machine:'Travel-MacBook-Air.local',machine_id:'second-22'})]);
+ const tones=Array.from(run(ctx,'workspace.tasks.map(machineTone)'));
+ assert.deepEqual(Array.from(run(ctx,'workspace.tasks.map(machineAbbr)')),['Office-MacBook-Air','Travel-MacBook-Air']);
+ run(ctx,'workspace.tasks[1].machine="Travel <MacBook Air>.local"');
+ assert.match(run(ctx,'rowHtml(workspace.tasks[1])'),/Travel &lt;MacBook Air&gt;/);
+ assert.deepEqual(Array.from(run(ctx,'workspace.tasks.map(machineTone)')),tones);
+ seed(ctx,[task('a',{machine:'Example-PC-A',machine_id:'one'}),task('b',{machine:'Example-PC-B',machine_id:'two'})]);
+ assert.deepEqual(Array.from(run(ctx,'workspace.tasks.map(machineAbbr)')),['Example-PC-A','Example-PC-B']);
+});
+
 test('Pinned remains stable while Recent is newest first',()=>{
  const {ctx}=context();seed(ctx,[task('old',{activity_at:1}),task('p2',{activity_at:90,extra:{native_pin:{known:true,pinned:true,order:2}}}),task('new',{activity_at:80}),task('p1',{extra:{native_pin:{known:true,pinned:true,order:1}}})]);
  assert.equal(run(ctx,'splitList(visibleTasks()).pinned.map(t=>t.key).join(",")'),'p1,p2');

@@ -40,7 +40,10 @@ the continuation cursor on interruption, and explain when another batch is neede
 
 The session list remains compact: fixed-width device badge, separate fixed-width
 Harness badge, title, unread indication and time. Device and Harness are distinct
-identities; keep their colors and positions stable. The saved native title is
+identities; keep their colors and positions stable. Device badges prefer recognizable model names found in the reported
+hostname (for example Mini, Air and Pro). Colliding abbreviations use the reported
+hostname without its local-domain suffix; never append internal device-ID digits.
+Keep the full hostname in the tooltip and accessible session label. The saved native title is
 primary, never an arbitrary latest message, generated file name or child-agent
 record. Child agents belong under their parent detail.
 
