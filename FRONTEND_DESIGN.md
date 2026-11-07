@@ -32,6 +32,11 @@ detail with an explicit way back; they do not squeeze three columns together.
 Keep user messages and assistant results prominent. Combine intervening tool
 records and commentary into execution groups, collapsed by default; preserve
 each group's expansion through refresh.
+History pagination counts the resulting readable messages and collapsed groups,
+not raw tool records. Follow underlying pages to reach useful earlier dialogue;
+extending an existing group alone is not visible progress. Keep every tool record
+available inside its group. Bound each read batch, preserve completed pages and
+the continuation cursor on interruption, and explain when another batch is needed.
 
 The session list remains compact: fixed-width device badge, separate fixed-width
 Harness badge, title, unread indication and time. Device and Harness are distinct

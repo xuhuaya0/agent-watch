@@ -347,3 +347,31 @@ The run also found and fixed a confirmation race caused by delayed native state
 notifications. Regression coverage includes delayed and split notifications,
 fresh gate withdrawal, and owner/scope/runtime/request/model changes. The final
 suite passed 487 Python tests (one platform skip) and 167 JavaScript tests.
+
+### Folded history pagination and DeepSeek inventory
+
+The history reader previously stopped after one raw transport page, so a click
+could merely add tools to an existing collapsed group without exposing earlier
+dialogue. Shared pagination now targets 20 visible messages/groups after folding,
+crosses process-only pages and completes the leading process boundary. A batch
+is limited to 16 pages, 2 MiB of retained new records and a 30-second request
+deadline. Reaching a limit offers continuation; a later-page failure preserves
+completed pages and the next cursor. Tool records remain available, and opening
+a tool does not alter the pagination budget.
+
+Chromium 128 synthetic browser acceptance passed 12 cases at 1280×800 and
+390×844 across Codex, Antigravity and DeepSeek (UI-03/09/10/12). A single earlier
+click crossed three raw pages, with all records retained without duplication.
+Expanded tool groups/records and reply drafts survived. Scrolling and typing
+during a delayed response retained the arrival-time anchor and input focus;
+switching chats stopped continuation and returning resumed at the saved cursor.
+Failure recovery retained prior pages. No page errors or horizontal overflow
+were observed. The browser used an isolated profile and synthetic loopback data;
+it did not access production or send a real control command.
+
+Separately, a Windows DeepSeek read-only comparison found an initialization-only
+session and a real session obscured by an incorrectly selected backup log. The
+candidate scanner removed the blank session and recovered the real session's
+native title and state without altering native files. Native version and scope
+are recorded in COMPATIBILITY.md. Final checks passed 496 Python tests (one
+platform skip) and 179 JavaScript tests.

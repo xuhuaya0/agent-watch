@@ -68,6 +68,14 @@ the message position, input focus, caret and an expanded execution group. Load a
 older page while reading, switch chats and return, then exercise “有新内容” when offered. In `offline`,
 repeat the return with a captured reply while its full detail loads.
 
+For folded history pagination, use `history_pagination` with all three Harnesses:
+one earlier-history click must cross consecutive process-only transport pages
+and expose older dialogue, retaining all tool details and expansion state. At
+both viewport sizes, repeat with `history_pagination_failure` (continue from the
+failed cursor without discarding completed pages) and `history_pagination_slow`
+(scroll/type during the response; navigate away and verify no further old-chat
+requests). Check bounded-batch continuation and repeated cursors in logic tests.
+
 The preview supplies reproducible data, not every race condition. Code-level
 tests cover delayed response ordering and stale request identities; a focused
 browser exercise verifies their observable effects. If a particular failure

@@ -28,6 +28,9 @@ SCENARIOS = {
     'readonly': '模型与权限只读', 'unknown_settings': '模型与权限未读取',
     'media': '消息链接与原设备图片', 'process': '三种应用的过程折叠',
     'queued': '运行中回复队列', 'effort_states': '真实强度、未读取与不支持',
+    'history_pagination': '折叠后的历史分页',
+    'history_pagination_failure': '历史分页中途失败与续读',
+    'history_pagination_slow': '历史分页慢响应与切页',
 }
 SPECS = [
     ('cx-ready', 'codex', 'done', 300, '整理发布说明'),
@@ -71,6 +74,32 @@ def reader_history(older, update):
     return {'ready': True, 'messages': messages, 'next_cursor': None if older else 'earlier'}
 
 
+def pagination_history(cursor):
+    """Raw transport pages deliberately cut through long folded process runs."""
+    def process(prefix, start, stop):
+        return [dict(id=f'{prefix}-{index}', role='assistant' if index % 3 == 0 else 'tool',
+                     **({'phase': 'commentary'} if index % 3 == 0 else {}),
+                     text=f'合成过程 {prefix} 第 {index} 项，展开后仍可完整阅读。')
+                for index in range(start, stop)]
+    def conversation(prefix, label):
+        return [dict(id=f'{prefix}-{index}', role='user' if index % 2 == 0 else 'assistant',
+                     text=f'{label} {index // 2 + 1}：' + ('请核对示例。' if index % 2 == 0 else '示例已核对。'))
+                for index in range(20)]
+    pages = {
+        None: (process('latest-process', 30, 59) + [dict(id='latest-result', role='assistant', text='最新结果：长过程已经完成。')], 'process-latest-2'),
+        'process-latest-2': (process('latest-process', 0, 30), 'conversation-latest'),
+        'conversation-latest': (conversation('current-conversation', '当前对话') + [dict(id='latest-request', role='user', text='请执行最新这一组检查。')], 'process-older-1'),
+        'process-older-1': (process('older-process', 30, 60), 'process-older-2'),
+        'process-older-2': (process('older-process', 0, 30), 'conversation-older'),
+        'conversation-older': (conversation('earlier-conversation', '更早对话') + [dict(id='older-request', role='user', text='请执行更早这一组检查。')], 'origin'),
+        'origin': ([dict(id='origin-request', role='user', text='最早请求。'), dict(id='origin-result', role='assistant', text='最早结果。')], None),
+    }
+    if cursor not in pages:
+        return None
+    messages, next_cursor = pages[cursor]
+    return {'ready': True, 'messages': messages, 'next_cursor': next_cursor}
+
+
 class Preview:
     def __init__(self, scenario='normal', clock=time.time):
         self.clock, self.started, self.lock = clock, clock(), threading.RLock()
@@ -80,6 +109,7 @@ class Preview:
         self.scenario = scenario if scenario in SCENARIOS else 'normal'
         self.authenticated = self.scenario not in ('login', 'setup')
         self.read_at, self.acked = {}, set()
+        self.history_failures = set()
 
     def tasks(self):
         if self.scenario == 'empty':return []
@@ -269,6 +299,13 @@ class Preview:
                     {'id':'a1', 'role':'assistant', 'text':'[代码已提交](https://example.test/commit/example)\n\n![原设备图片](</example/image (1).png>)\n\n![缺失图片](/example/missing.png)\n\n[本地文件](/example/report.txt)\n\n```text\n![代码中的示例](/example/not-a-reference.png)\n```',
                      'attachments':[{'id':'A'*32, 'source':'/example/image (1).png', 'name':'image (1).png', 'mime':'image/png', 'width':640, 'height':360},
                                     {'source':'/example/missing.png', 'name':'missing.png', 'error':'attachment_unavailable'}]}], 'next_cursor':None}
+            if self.scenario.startswith('history_pagination'):
+                cursor = parse_qs(parsed.query).get('cursor', [None])[0]
+                if self.scenario == 'history_pagination_failure' and cursor == 'process-older-2' and sid not in self.history_failures:
+                    self.history_failures.add(sid)
+                    return 503, 'application/json', {'error': 'history_timeout'}
+                page = pagination_history(cursor)
+                return (200, 'application/json', page) if page else (409, 'application/json', {'error': 'history_cursor_expired'})
             if self.scenario == 'refresh':
                 cursor = parse_qs(parsed.query).get('cursor', [None])[0]
                 if cursor not in (None, 'earlier'):
@@ -321,6 +358,10 @@ def handler(preview):
             self.rfile.read(length)
             if preview.scenario == 'slow' and self.command == 'GET' and self.path == '/api/settings':
                 time.sleep(2)  # Browser acceptance: navigate away before this response.
+            if (preview.scenario == 'history_pagination_slow' and self.command == 'GET'
+                    and urlsplit(self.path).path.startswith('/api/history/tasks/')
+                    and parse_qs(urlsplit(self.path).query).get('cursor') == ['process-older-2']):
+                time.sleep(1)
             with preview.lock:status,kind,data = preview.route(self.command,self.path)
             encoded = data if isinstance(data, bytes) else (json.dumps(data,ensure_ascii=False) if kind == 'application/json' else data).encode()
             self.send_response(status);self.send_header('Content-Type',kind+'; charset=utf-8')

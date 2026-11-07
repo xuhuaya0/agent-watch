@@ -475,3 +475,26 @@ a successful permission change as unknown. Permission confirmation now waits for
 the selected state before reading it back, with at most one additional read if a
 later normalization update invalidates that read. It never repeats the write;
 changed ownership, scope, runtime, requests or model state still prevent success.
+
+### DeepSeek blank sessions and active logs (2026-11-07)
+
+Read-only native comparison on Windows DeepSeek Harness 0.2.2.0 (session/API
+packages 0.2.2-rc.1, v4 logs) verified two inventory corrections. The native blank
+flag changes only after `turn/start`; workspace registration, a title or pin
+alone does not establish a visible conversation. The collector now follows that
+rule, retaining started image-only, empty-text and untitled sessions. Native
+archive and subagent filtering still apply; `session-` is not a debug-name filter.
+
+Only canonical `session.vN.jsonl` / `session.vN.jsonl.zstd` filenames participate
+in log selection. Backups and temporary files are ignored, and the highest
+numeric generation wins. Mixed encodings, duplicate IDs across directories and
+unsupported future generations are reported instead of guessed. The current
+reader's versioned-log scope remains v1–v4; legacy unversioned `session.jsonl`
+is outside this check.
+
+Against the installed native session list, the blank initialization session was
+excluded and the real session previously replaced by a corrupt backup regained
+its native title and actual final state. All original log/workspace hashes were
+unchanged; no native session, archive, pin or control operation was written.
+Shared folded-history pagination changes only the web reader: existing bounded
+history endpoints and their native access checks remain unchanged.

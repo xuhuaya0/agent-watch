@@ -116,6 +116,33 @@ class PreviewTests(unittest.TestCase):
         self.assertTrue(older['messages'])
         self.assertTrue({m['id'] for m in older['messages']}.isdisjoint(m['id'] for m in refreshed['messages']))
 
+    def test_history_pagination_fixture_spans_process_pages_without_missing_or_duplicated_records(self):
+        fixture = Preview('history_pagination')
+        for sid in ('cx-ready', 'ag-ready', 'ds-ready'):
+            cursor, seen, cursors = None, set(), []
+            while True:
+                path = '/api/history/tasks/' + sid + ('?cursor=' + cursor if cursor else '')
+                page = fixture.route('GET', path)[2]
+                self.assertTrue(page['ready'])
+                ids = {item['id'] for item in page['messages']}
+                self.assertTrue(seen.isdisjoint(ids))
+                seen.update(ids)
+                cursor = page['next_cursor']
+                if cursor is None:
+                    break
+                self.assertNotIn(cursor, cursors)
+                cursors.append(cursor)
+            self.assertIn('earlier-conversation-0', seen)
+            self.assertIn('latest-process-58', seen)
+            self.assertIn('older-process-59', seen)
+            self.assertEqual(len(cursors), 6)
+        self.assertEqual(fixture.route('GET', '/api/history/tasks/cx-ready?cursor=unknown')[0], 409)
+        fixture.select('history_pagination_failure')
+        path = '/api/history/tasks/cx-ready?cursor=process-older-2'
+        self.assertEqual(fixture.route('GET', path)[0], 503)
+        self.assertEqual(fixture.route('GET', path)[0], 200)
+        self.assertEqual(fixture.route('POST', '/api/control/tasks/cx-ready')[0], 409)
+
     def test_codex_model_and_full_permissions_follow_capability_contract_without_native_writes(self):
         from aw.control.codex_settings import valid_model_capability
         from aw.control.codex_policy import valid_capability

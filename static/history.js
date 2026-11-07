@@ -1,15 +1,20 @@
 // History reads never start a turn and never share the write command queue.
 const histories = new Map();
-const HISTORY_ERRORS = {history_compression_unavailable:'此设备需要更新历史读取依赖。',history_too_large:'记录过大，暂时无法在面板中展开，请在原应用查看。',history_unavailable:'此设备暂时无法读取历史，请确认采集端与桥接已更新并在线。',native_session_archived:'会话已在原应用中归档。',native_session_unavailable:'原会话已不可用。',history_cursor_expired:'历史记录已变更，请重新加载。',history_timeout:'设备读取超时，请重试。',control_paused:'设备交互连接已暂停。',history_busy:'正在读取其他会话，请稍后重试。',history_record_too_large:'部分原始记录过大，暂时无法读取这一页。'};
+// Count what remains visible after process records collapse, while bounding each
+// reader action independently of a provider's raw-record transport pages.
+const HISTORY_VISIBLE_ITEMS = 20, HISTORY_MAX_PAGES = 16;
+const HISTORY_BATCH_BYTES = 2 * 1024 * 1024, HISTORY_BATCH_MS = 30000;
+const HISTORY_ERRORS = {history_compression_unavailable:'此设备需要更新历史读取依赖。',history_too_large:'记录过大，暂时无法在面板中展开，请在原应用查看。',history_unavailable:'此设备暂时无法读取历史，请确认采集端与桥接已更新并在线。',native_session_archived:'会话已在原应用中归档。',native_session_unavailable:'原会话已不可用。',history_cursor_expired:'历史记录已变更，请重新加载。',history_timeout:'设备读取超时，请重试。',control_paused:'设备交互连接已暂停。',history_busy:'正在读取其他会话，请稍后重试。',history_record_too_large:'部分原始记录过大，暂时无法读取这一页。',history_no_progress:'历史分页未能继续向前，请重新加载。'};
 function historyState(id) {
- if(!histories.has(id))histories.set(id,{messages:[],loaded:false,busy:false,next:null,version:null,generation:0,error:'',older:false,updated:false,openedTools:new Set(),openedToolGroups:new Set()});
+ if(!histories.has(id))histories.set(id,{messages:[],loaded:false,busy:false,next:null,version:null,generation:0,error:'',older:false,updated:false,partial:false,retryOlder:false,openedTools:new Set(),openedToolGroups:new Set()});
  return histories.get(id);
 }
 function historyControlsHtml(state) {
  const controls = [];
- if (state.error) controls.push(`<p class="history-notice" role="status">${esc(HISTORY_ERRORS[state.error] || '历史读取失败')} <button type="button" onclick="loadHistory(true)">重试</button></p>`);
+ if (state.error) controls.push(`<p class="history-notice" role="status">${esc(HISTORY_ERRORS[state.error] || '历史读取失败')} <button type="button" onclick="loadHistory(${state.retryOlder?'false':'true'})">${state.retryOlder?'继续读取':'重试'}</button></p>`);
  if (state.updated) controls.push('<button type="button" class="history-older" onclick="showNewHistory()">有新内容 ↓</button>');
- if (state.loaded && state.next) controls.push(`<button type="button" class="history-older" onclick="loadHistory(false)"${state.busy?' disabled':''}>${state.busy?'读取中…':'加载更早的记录'}</button>`);
+ if (state.partial && !state.error) controls.push('<p class="capture-note" role="status">已读取部分记录，可继续向前查看对话。</p>');
+ if (state.loaded && state.next && state.error!=='history_no_progress') controls.push(`<button type="button" class="history-older" onclick="loadHistory(false)"${state.busy?' disabled':''}>${state.busy?'读取中…':state.partial?'继续读取更早对话':'加载更早的记录'}</button>`);
  if (state.busy && !state.loaded) controls.push('<p class="capture-note" role="status">正在读取历史…</p>');
  return controls.join('');
 }
@@ -30,6 +35,20 @@ function historyMessageBody(message, sessionId) {
 
 function historyIsProcess(message) {
  return message.role==='tool' || (message.role==='assistant' && message.phase==='commentary');
+}
+function historyVisibleItems(messages) {
+ let count=0,process=false;
+ for(const message of messages) {
+  const next=historyIsProcess(message);
+  if(!next || !process)count++;
+  process=next;
+ }
+ return count;
+}
+function mergeHistoryMessages(older, newer) {
+ const merged=new Map();
+ for(const message of [...older,...newer])if(!merged.has(message.id))merged.set(message.id,message);
+ return Array.from(merged.values());
 }
 function placeHistoryRows(parent, rows) {
  const wanted=new Set(rows);
@@ -184,37 +203,82 @@ async function loadHistory(reset=true,background=false) {
  const id=workspace.selected,task=workspace.tasks.find(t=>taskId(t)===id);
  if(!['codex','antigravity','dsh'].includes(task?.tool))return;
  const s=historyState(id);if(s.busy)return;
- const cursor=reset?null:s.next;if(!reset&&!cursor)return;
- s.busy=true;s.error='';const generation=++s.generation;renderHistory();
- const started=Date.now();
- let prepended=false;
+ let cursor=reset?null:s.next;if(!reset&&!cursor)return;
+ s.busy=true;s.error='';s.retryOlder=false;const generation=++s.generation;renderHistory();
+ const started=Date.now(),visited=new Set(),abort=new AbortController();
+ const timeout=setTimeout(()=>abort.abort(),HISTORY_BATCH_MS);
+ const initial=reset?[]:s.messages,baseline=historyVisibleItems(initial),known=new Set(initial.map(m=>m.id));
+ let messages=initial,received=false,pages=0,bytes=0,body=false,partial=false,error='';
+ const active=()=>workspace.selected===id&&workspace.page==='sessions'&&s.generation===generation;
  try {
-  let data;
   for(;;) {
-   const response=await apiFetch('/api/history/tasks/'+encodeURIComponent(id)+(cursor?'?cursor='+encodeURIComponent(cursor):''));
-   if(response.status===401){showAuthView(false);return;}
-   data=await response.json();if(!response.ok||data.error)throw new Error(data.error||'history_unavailable');
-   if(data.ready)break;
-   if(Date.now()-started>30000)throw new Error('history_timeout');
-   if(workspace.selected!==id||workspace.page!=='sessions')return;
-   await new Promise(resolve=>setTimeout(resolve,750));
+   // An obsolete read may finish caching its current page, but must never keep
+   // scanning the old conversation after the reader navigates elsewhere.
+   if(!active())break;
+   if(visited.has(cursor))throw new Error('history_no_progress');
+   visited.add(cursor);
+   let data;
+   for(;;) {
+    if(!active())return;
+    if(abort.signal.aborted || Date.now()-started>=HISTORY_BATCH_MS)throw new Error('history_timeout');
+    const response=await apiFetch('/api/history/tasks/'+encodeURIComponent(id)+(cursor?'?cursor='+encodeURIComponent(cursor):''),{signal:abort.signal});
+    if(response.status===401){showAuthView(false);return;}
+    data=await response.json();if(!response.ok||data.error)throw new Error(data.error||'history_unavailable');
+    if(s.generation!==generation)return;
+    if(data.ready)break;
+    if(!active())return;
+    if(Date.now()-started>=HISTORY_BATCH_MS)throw new Error('history_timeout');
+    await new Promise(resolve=>setTimeout(resolve,750));
+   }
+   if(!Array.isArray(data.messages) || (data.next_cursor!=null && (typeof data.next_cursor!=='string'||!data.next_cursor)))
+    throw new Error('history_unavailable');
+   const cost=new TextEncoder().encode(JSON.stringify(data.messages)).length;
+   if(cost>HISTORY_BATCH_BYTES)throw new Error('history_unavailable');
+   if(received && bytes+cost>HISTORY_BATCH_BYTES){partial=true;break;}
+   pages++;bytes+=cost;
+   body ||= data.messages.some(message=>!known.has(message.id)&&!historyIsProcess(message));
+   for(const message of data.messages)known.add(message.id);
+   messages=mergeHistoryMessages(data.messages,messages);received=true;
+   cursor=data.next_cursor??null;
+   if(cursor && visited.has(cursor))throw new Error('history_no_progress');
+   if(!cursor)break;
+   // A process page extending the already-visible first group adds zero
+   // visible items. Also finish its leading boundary before calling this a page.
+   const enough=historyVisibleItems(messages)-baseline>=HISTORY_VISIBLE_ITEMS
+    && body && messages.length && !historyIsProcess(messages[0]);
+   if(enough)break;
+   if(pages>=HISTORY_MAX_PAGES || bytes>=HISTORY_BATCH_BYTES || Date.now()-started>=HISTORY_BATCH_MS) {
+    partial=true;break;
+   }
   }
-  if(s.generation!==generation)return;
-  if(!Array.isArray(data.messages))throw new Error('history_unavailable');
-  if(background && s.loaded && workspace.selected===id && workspace.page==='sessions') {
-   const list=document.getElementById('session-history')?.lastElementChild;
-   const anchor=list&&historyReadingAnchor(document.getElementById('session-detail'),list,true);
-   const visibleIds=anchor?.ids;
-   // A live page may have moved past the record on screen. Let the reader
-   // choose when to replace this page with the latest window.
-   if(visibleIds?.length && !data.messages.some(message=>visibleIds.includes(message.id))){s.updated=true;return;}
+ } catch(e) {error=abort.signal.aborted?'history_timeout':e.message;}
+ finally {
+  clearTimeout(timeout);
+  if(s.generation===generation) {
+   let replace=received;
+   if(replace && background && s.loaded && active()) {
+    const list=document.getElementById('session-history')?.lastElementChild;
+    const anchor=list&&historyReadingAnchor(document.getElementById('session-detail'),list,true);
+    // Live pagination must preserve the record actually on screen when the
+    // response arrives, including any scrolling during the request.
+    if(anchor?.ids?.length && !messages.some(message=>anchor.ids.includes(message.id))) {
+     replace=false;s.updated=true;
+    }
+   }
+   if(replace) {
+    s.messages=messages;s.next=cursor;s.loaded=true;s.older=!reset;s.updated=false;s.partial=partial;
+   }
+   s.error=error;
+   // Resume from the last successful page after a transport failure. An
+   // expired or looping cursor requires an explicit fresh reload instead.
+   s.retryOlder=Boolean(error && error!=='history_cursor_expired' && error!=='history_no_progress'
+    && (received || !reset) && s.next);
+   s.busy=false;if(workspace.selected!==id&&!s.loaded)s.version=null;
+   if(workspace.selected===id) {
+    renderHistory(replace&&!reset);
+    if(typeof renderInteraction==='function')renderInteraction();
+    if(workspace.page==='sessions' && (s.messages.length || ((s.loaded || s.error) && workspace.detail)) && typeof settleChatOpening==='function')settleChatOpening();
+   }
   }
-  s.messages=reset?data.messages:[...data.messages,...s.messages].filter((m,i,all)=>all.findIndex(x=>x.id===m.id)===i);
-  s.next=data.next_cursor;s.loaded=true;s.older=!reset;s.updated=false;
-  prepended=!reset;
- } catch(e) {s.error=e.message;}
- finally {s.busy=false;if(workspace.selected!==id&&!s.loaded)s.version=null;if(workspace.selected===id){renderHistory(prepended);
-  if(typeof renderInteraction==='function')renderInteraction();
-  if(workspace.page==='sessions' && (s.messages.length || ((s.loaded || s.error) && workspace.detail)) && typeof settleChatOpening==='function')settleChatOpening();
- }}
+ }
 }

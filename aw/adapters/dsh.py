@@ -26,6 +26,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -69,6 +70,8 @@ def new_state() -> Dict:
         "model": "",
         "subagents": {},            # childId -> label
         "delegation_depth": 0,
+        "origin": None,
+        "has_turn": False,
     }
 
 
@@ -107,6 +110,7 @@ def reduce_event(st: Dict, ev: Dict) -> None:
         st["id"] = ev.get("id")
         st["cwd"] = ev.get("cwd", "")
         st["delegation_depth"] = ev.get("delegationDepth", 0) or 0
+        st["origin"] = ev.get("origin")
         ca = ev.get("createdAt")
         st["created_at"] = ca / 1000.0 if ca else None
         if st["last_event_at"] is None and st["created_at"]:
@@ -124,6 +128,9 @@ def reduce_event(st: Dict, ev: Dict) -> None:
             if txt:
                 st["last_prompt"] = txt
     elif t == "turn/start":
+        # Native sessionListMetadata.blank becomes false on this event, even
+        # when the prompt is image-only, empty or has no generated title yet.
+        st["has_turn"] = True
         st["last_assistant"] = ""
         st["last_assistant_phase"] = ""
         st["open_turn"] = {"turn": d.get("turn"), "start": ts, "prompt": st["last_prompt"]}
@@ -339,6 +346,39 @@ def _load_workspaces(root: str):
     return by_path, archived, listed
 
 
+def _session_logs(root: str):
+    """Select committed native generations, never backups or temporary files.
+
+    Native persistence selects the highest numeric generation per directory and
+    rejects mixed physical encodings or duplicate IDs across project directories.
+    Preserve those ambiguities as errors instead of choosing by glob order/mtime.
+    """
+    candidates = {}
+    for path in glob.glob(os.path.join(root, "sessions", "*", "*", "session.v*.jsonl*")):
+        match = re.fullmatch(r"session\.v([1-9][0-9]*)\.jsonl(\.zstd)?", os.path.basename(path))
+        if not match or not os.path.isfile(path):
+            continue
+        version = int(match[1])
+        if version > 2**53 - 1:
+            continue  # The native filename parser requires a safe integer.
+        sid = os.path.basename(os.path.dirname(path))
+        candidates.setdefault(sid, []).append((version, bool(match[2]), path))
+    paths, errors = {}, {}
+    for sid, rows in candidates.items():
+        directories = {os.path.normcase(os.path.abspath(os.path.dirname(row[2]))) for row in rows}
+        if len(directories) != 1:
+            errors[sid] = "会话 ID 出现在多个目录，无法确定原生日志"
+        elif len({row[1] for row in rows}) != 1:
+            errors[sid] = "会话日志混用压缩与非压缩格式，无法确定原生日志"
+        else:
+            latest = max(rows, key=lambda row: row[0])
+            if latest[0] > 4:
+                errors[sid] = "尚不支持此 DeepSeek 会话日志版本"
+            else:
+                paths[sid] = latest[2]
+    return paths, errors
+
+
 def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
     now = now or time.time()
     acfg = cfg["adapters"]["dsh"]
@@ -351,9 +391,7 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
     all_sessions = cfg.get("include_all_sessions", True)
 
     # every session dir: top-level "session-<uuid>" and subagent children "<uuid>"
-    paths = {}
-    for path in glob.glob(os.path.join(root, "sessions", "*", "*", "session.v*.jsonl*")):
-        paths[os.path.basename(os.path.dirname(path))] = path
+    paths, path_errors = _session_logs(root)
 
     def load(sid: str) -> Optional[SessionLog]:
         path = paths.get(sid)
@@ -395,6 +433,11 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
         return (state, since, start, prompt, detail), subs
 
     tasks: List[Task] = []
+    for sid, detail in path_errors.items():
+        if sid.startswith("session-") and sid not in archived:
+            tasks.append(Task(tool="dsh", session_id=sid, title=sid, state=ERROR,
+                              state_since=now, last_event_at=now, detail=detail,
+                              machine=cfg["machine"]))
     for sid, path in paths.items():
         if not sid.startswith("session-") or sid in archived:
             continue
@@ -414,6 +457,10 @@ def scan(cfg: Dict, now: Optional[float] = None) -> List[Task]:
                               machine=cfg["machine"]))
             continue
         st = log.state
+        # workspace membership and a session-* directory do not establish a
+        # conversation: the native sidebar also omits blank setup sessions.
+        if not st["has_turn"] or st.get("origin") == "subagent":
+            continue
         (state, since, turn_start, prompt, detail), subs = derive_tree(sid)
         cwd = st.get("cwd") or ""
         project = ws_titles.get(os.path.normcase(os.path.normpath(cwd)), os.path.basename(cwd.rstrip("\\/"))) if cwd else ""

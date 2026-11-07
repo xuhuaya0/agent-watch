@@ -34,7 +34,7 @@ function setup(){
  const detailView=new HistoryElement();detailView.root=true;
  detailView.replaceChildren(pane,elements['session-control']);
  pane.replaceChildren(elements['session-history'],elements['latest-messages'],elements['chat-outgoing']);
- const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id],createElement:tag=>new HistoryElement(tag)},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,Date,showAuthView(){}});
+ const ctx=vm.createContext({workspace:{selected:'a',page:'sessions',tasks:[{ui_key:'a',tool:'codex',activity_at:1}]},document:{getElementById:id=>elements[id],createElement:tag=>new HistoryElement(tag)},taskId:t=>t.ui_key,activityAt:t=>t.activity_at,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),markdown:s=>String(s).replaceAll('<','&lt;'),icon:()=>'<svg aria-hidden="true"></svg>',setTimeout,clearTimeout,AbortController,Date,TextEncoder,showAuthView(){}});
  vm.runInContext(fs.readFileSync('static/history.js','utf8'),ctx);return{ctx,elements,run:s=>vm.runInContext(s,ctx)};
 }
 function combinedReader(tool='codex'){
@@ -176,7 +176,7 @@ test('empty history arriving ahead of the full detail waits for the captured con
 test('all three harnesses load older history through the same reader',async()=>{
  for(const tool of ['codex','antigravity','dsh']) {
   const {ctx,elements,run}=setup();run(`workspace.tasks[0].tool=${JSON.stringify(tool)}`);
-  ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'1',role:'assistant',text:'Earlier answer'}],next_cursor:'older'})});
+  ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:Array.from({length:20},(_,i)=>({id:String(i),role:'assistant',text:'Earlier answer'})),next_cursor:'older'})});
   await run('loadHistory(true)');assert.equal(elements['latest-messages'].hidden,true);
   assert.match(elements['session-history'].innerHTML,/Earlier answer/);
   assert.match(elements['session-history'].innerHTML,/加载更早的记录/);
@@ -408,7 +408,7 @@ test('a live window cannot discard the tool being read even when the surrounding
  const {ctx,elements,run}=setup();expandedProcess(run);
  const {pane,list}=processReadingLayout(elements),reading=list.tools[1];pane.scrollTop=390;
  const before=reading.getBoundingClientRect().top;
- ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'t3',role:'tool',text:'Third output'},{id:'answer',role:'assistant',text:'Final answer'}],next_cursor:'new'})});
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'t3',role:'tool',text:'Third output'},{id:'answer',role:'assistant',text:'Final answer'}],next_cursor:null})});
  await run('loadHistory(true,true)');
  assert.equal(list.tools[1],reading);assert.equal(reading.getBoundingClientRect().top,before);
  assert.equal(pane.scrollTop,390);assert.equal(run("historyState('a').updated"),true);
@@ -419,7 +419,7 @@ test('a collapsed process header survives a live-window trim by its remaining me
  const group=elements['session-history'].toolGroups[0];group.open=false;ctx.group=group;run('rememberHistoryToolGroup(group)');
  const {pane,list}=processReadingLayout(elements);pane.scrollTop=110;
  const before=group.firstElementChild.getBoundingClientRect().top;
- ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'t2',role:'tool',text:'Second output'},{id:'t3',role:'tool',text:'Third output'},{id:'answer',role:'assistant',text:'Final answer'}],next_cursor:'new'})});
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'t2',role:'tool',text:'Second output'},{id:'t3',role:'tool',text:'Third output'},{id:'answer',role:'assistant',text:'Final answer'}],next_cursor:null})});
  await run('loadHistory(true,true)');
  assert.equal(list.toolGroups[0],group);assert.equal(group.open,false);
  assert.equal(group.firstElementChild.getBoundingClientRect().top,before);
@@ -465,7 +465,7 @@ test('live refresh retains a page when the visible message has left the latest n
  const {ctx,elements,run}=setup();initialMessages(run);
  const {pane,list}=readingLayout(elements);pane.scrollTop=250;
  const reading=list.children[1];
- ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'latest',role:'assistant',text:'latest'}],next_cursor:'new'})});
+ ctx.apiFetch=async()=>({ok:true,json:async()=>({ready:true,messages:[{id:'latest',role:'assistant',text:'latest'}],next_cursor:null})});
  await run('loadHistory(true,true)');
  assert.equal(list.children[1],reading);assert.equal(pane.scrollTop,250);
  assert.match(elements['session-history'].innerHTML,/有新内容/);
@@ -485,4 +485,131 @@ test('typing in the fixed composer preserves its focus and the visible transcrip
  await run('loadHistory(true,true)');
  assert.equal(ctx.document.activeElement,input);assert.equal(input.selectionStart,3);assert.equal(input.value,'Unsent reply');
  assert.equal(reading.getBoundingClientRect().top,before);assert.equal(pane.scrollTop,425);
+});
+
+test('all harnesses page by collapsed visible entries and cross pure-process pages on one older click',async()=>{
+ for(const tool of ['codex','antigravity','dsh']) {
+  const {ctx,elements,run}=setup();run(`workspace.tasks[0].tool=${JSON.stringify(tool)};
+   Object.assign(historyState('a'),{loaded:true,next:'p1',messages:[{id:'t90',role:'tool',text:'Last process'},{id:'a90',role:'assistant',text:'Current result'}]});renderHistory()`);
+  const group=elements['session-history'].toolGroups[0];
+  const process=(start,end)=>Array.from({length:end-start+1},(_,i)=>({id:'t'+(start+i),role:(start+i)%2?'tool':'assistant',phase:(start+i)%2?undefined:'commentary',text:'Process '+(start+i)}));
+  const body=Array.from({length:20},(_,i)=>({id:'body'+i,role:i%2?'assistant':'user',text:'Earlier conversation '+i}));
+  const pages={p1:{messages:process(60,90),next_cursor:'p2'},p2:{messages:process(30,60),next_cursor:'p3'},p3:{messages:body,next_cursor:'still-older'}};
+  const requests=[];ctx.apiFetch=async url=>{const cursor=new URL('http://example.test'+url).searchParams.get('cursor');requests.push(cursor);return {ok:true,json:async()=>({ready:true,...pages[cursor]})};};
+  await run('loadHistory(false)');
+  assert.deepEqual(requests,['p1','p2','p3'],tool);
+  assert.equal(run("historyState('a').messages.length"),82,tool);
+  assert.equal(run("new Set(historyState('a').messages.map(m=>m.id)).size"),82,tool);
+  assert.equal(run("historyState('a').next"),'still-older',tool);
+  assert.equal(run("historyVisibleItems(historyState('a').messages)"),22,tool);
+  assert.equal(elements['session-history'].toolGroups[0],group,tool);
+  assert.equal(group.open,false,tool);assert.equal(group.historyProcessIds.length,61,tool);
+ }
+});
+test('initial history uses the same visible budget and retains complete tool detail',async()=>{
+ const {ctx,elements,run}=setup();let count=0;
+ ctx.apiFetch=async()=>({ok:true,json:async()=>{
+  count++;
+  if(count<3)return {ready:true,messages:Array.from({length:30},(_,i)=>({id:`t${count}-${i}`,role:'tool',text:'Retained output'})),next_cursor:'p'+count};
+  return {ready:true,messages:Array.from({length:20},(_,i)=>({id:'m'+i,role:i%2?'assistant':'user',text:'Readable '+i})),next_cursor:'remaining'};
+ }});
+ await run('loadHistory(true)');
+ assert.equal(count,3);assert.equal(run("historyState('a').messages.length"),80);
+ assert.equal(elements['session-history'].toolGroups.length,1);
+ assert.equal(elements['session-history'].tools.length,60);
+ assert.equal(elements['session-history'].toolGroups[0].open,false);
+});
+test('a leading process boundary is finished even after the visible item budget is reached',async()=>{
+ const {ctx,run}=setup();let count=0;
+ ctx.apiFetch=async()=>({ok:true,json:async()=>++count===1?{ready:true,messages:[
+  {id:'leading',role:'tool',text:'Earlier process'},...Array.from({length:20},(_,i)=>({id:'m'+i,role:'assistant',text:'Result '+i}))],next_cursor:'boundary'}:
+  {ready:true,messages:[{id:'request',role:'user',text:'Original request'}],next_cursor:'remaining'}});
+ await run('loadHistory(true)');assert.equal(count,2);
+ assert.equal(run("historyState('a').messages[0].id"),'request');
+ assert.equal(run("historyState('a').next"),'remaining');
+});
+test('expanded process records never change the default collapsed pagination budget',async()=>{
+ const {ctx,elements,run}=setup();run(`Object.assign(historyState('a'),{loaded:true,next:'p1',messages:[{id:'t90',role:'tool',text:'Output'},{id:'answer',role:'assistant',text:'Answer'}]});renderHistory()`);
+ const group=elements['session-history'].toolGroups[0],record=elements['session-history'].tools[0];group.open=true;record.open=true;
+ let count=0;ctx.apiFetch=async()=>({ok:true,json:async()=>++count===1?{ready:true,messages:[{id:'t89',role:'tool',text:'Previous output'}],next_cursor:'p2'}:
+  {ready:true,messages:[{id:'question',role:'user',text:'Earlier question'}],next_cursor:null}});
+ await run('loadHistory(false)');assert.equal(count,2);
+ assert.equal(elements['session-history'].toolGroups[0],group);assert.equal(group.open,true);assert.equal(record.open,true);
+});
+test('filtered empty pages advance safely and repeated cursors stop without an infinite read',async()=>{
+ const {ctx,elements,run}=setup();let count=0;
+ ctx.apiFetch=async()=>({ok:true,json:async()=>{count++;return count===1?{ready:true,messages:[],next_cursor:'empty'}:
+  {ready:true,messages:[{id:'m',role:'user',text:'Keep this record'}],next_cursor:'empty'};}});
+ await run('loadHistory(true)');assert.equal(count,2);
+ assert.equal(run("historyState('a').messages[0].id"),'m');
+ assert.equal(run("historyState('a').error"),'history_no_progress');
+ assert.equal(run("historyState('a').retryOlder"),false);
+ assert.match(elements['session-history'].innerHTML,/历史分页未能继续向前/);
+ assert.doesNotMatch(elements['session-history'].innerHTML,/onclick="loadHistory\(false\)"/);
+});
+test('long process-only history stops at the page bound and resumes from the retained cursor',async()=>{
+ const {ctx,elements,run}=setup();let count=0;
+ ctx.apiFetch=async()=>({ok:true,json:async()=>{count++;return {ready:true,messages:[{id:'t'+count,role:'tool',text:'Output'}],next_cursor:'p'+count};}});
+ await run('loadHistory(true)');assert.equal(count,16);
+ assert.equal(run("historyState('a').partial"),true);assert.equal(run("historyState('a').next"),'p16');
+ assert.equal(run("historyState('a').messages.length"),16);
+ assert.match(elements['session-history'].innerHTML,/继续读取更早对话/);
+ const requested=[];ctx.apiFetch=async url=>{requested.push(url);return {ok:true,json:async()=>({ready:true,messages:[{id:'old-user',role:'user',text:'Start'}],next_cursor:null})};};
+ await run('loadHistory(false)');assert.match(requested[0],/cursor=p16/);
+ assert.equal(run("historyState('a').messages.length"),17);assert.equal(run("historyState('a').partial"),false);
+});
+test('a byte-limited batch keeps the first unread cursor and never drops the unaccepted page',async()=>{
+ const {ctx,run}=setup();let count=0;
+ const big=Array.from({length:30},(_,i)=>({id:'large'+i,role:'tool',text:'x'.repeat(42000)}));
+ ctx.apiFetch=async()=>({ok:true,json:async()=>++count===1?{ready:true,messages:big,next_cursor:'unread'}:
+  {ready:true,messages:big.map(m=>({...m,id:'older-'+m.id})),next_cursor:'too-far'}});
+ await run('loadHistory(true)');assert.equal(count,2);
+ assert.equal(run("historyState('a').messages.length"),30);
+ assert.equal(run("historyState('a').next"),'unread');assert.equal(run("historyState('a').partial"),true);
+});
+test('the total action deadline bounds automatic page traversal and retains successful pages',async()=>{
+ const {ctx,run}=setup();let now=0,calls=0;ctx.Date={now:()=>now};
+ ctx.apiFetch=async()=>({ok:true,json:async()=>{now=31000;calls++;return {ready:true,messages:[{id:'t',role:'tool',text:'Output'}],next_cursor:'resume'};}});
+ await run('loadHistory(true)');assert.equal(calls,1);
+ assert.equal(run("historyState('a').partial"),true);assert.equal(run("historyState('a').next"),'resume');
+});
+test('a later page failure keeps earlier pages and retries the failed cursor instead of resetting history',async()=>{
+ const {ctx,elements,run}=setup();run(`Object.assign(historyState('a'),{loaded:true,next:'p1',messages:[{id:'answer',role:'assistant',text:'Answer'}]})`);
+ const requests=[];ctx.apiFetch=async url=>{const cursor=new URL('http://example.test'+url).searchParams.get('cursor');requests.push(cursor);return cursor==='p1'?{ok:true,json:async()=>({ready:true,messages:[{id:'t',role:'tool',text:'Output'}],next_cursor:'p2'})}:{ok:false,json:async()=>({error:'history_timeout'})};};
+ await run('loadHistory(false)');assert.deepEqual(requests,['p1','p2']);
+ assert.equal(run("historyState('a').messages.map(m=>m.id).join(',')"),'t,answer');assert.equal(run("historyState('a').next"),'p2');
+ assert.equal(run("historyState('a').retryOlder"),true);assert.match(elements['session-history'].innerHTML,/onclick="loadHistory\(false\)">继续读取/);
+ ctx.apiFetch=async url=>{assert.match(url,/cursor=p2/);return {ok:true,json:async()=>({ready:true,messages:[{id:'request',role:'user',text:'Question'}],next_cursor:null})};};
+ await run('loadHistory(false)');assert.equal(run("historyState('a').messages.map(m=>m.id).join(',')"),'request,t,answer');assert.equal(run("historyState('a').error"),'');
+});
+test('switching conversations stops automatic continuation without overwriting the other view',async()=>{
+ const {ctx,elements,run}=setup();let requests=0,release;
+ ctx.apiFetch=()=>{requests++;return new Promise(resolve=>release=resolve);};
+ const loading=run('loadHistory(true)');run("workspace.selected='b'");elements['session-history'].innerHTML='Other conversation';
+ release({ok:true,json:async()=>({ready:true,messages:[{id:'t',role:'tool',text:'Output'}],next_cursor:'never-fetch'})});await loading;
+ assert.equal(requests,1);assert.equal(elements['session-history'].innerHTML,'Other conversation');
+ assert.equal(run("historyState('a').messages.length"),1);assert.equal(run("historyState('a').busy"),false);
+});
+
+test('the action deadline aborts a hung fetch and retains successful pages for retry',async()=>{
+ const {ctx,run}=setup();let deadline,calls=0,waiting;
+ ctx.setTimeout=(fn,delay)=>{assert.equal(delay,30000);deadline=fn;return 7;};
+ const cleared=[];ctx.clearTimeout=id=>cleared.push(id);
+ ctx.apiFetch=async(url,options)=>{
+  if(++calls===1)return {ok:true,json:async()=>({ready:true,messages:[{id:'t',role:'tool',text:'Output'}],next_cursor:'hung'})};
+  return new Promise((resolve,reject)=>{waiting=true;options.signal.addEventListener('abort',()=>reject(new Error('Aborted')),{once:true});});
+ };
+ const loading=run('loadHistory(true)');while(!waiting)await new Promise(resolve=>setImmediate(resolve));deadline();await loading;
+ assert.equal(calls,2);assert.equal(run("historyState('a').messages.length"),1);
+ assert.equal(run("historyState('a').next"),'hung');assert.equal(run("historyState('a').retryOlder"),true);
+ assert.equal(run("historyState('a').error"),'history_timeout');assert.deepEqual(cleared,[7]);
+});
+
+test('navigation during a queued-read polling delay does not send another GET',async()=>{
+ const {ctx,run}=setup();let poll,calls=0;
+ ctx.setTimeout=(fn,delay)=>delay===750?(poll=fn,7):setTimeout(fn,delay);
+ ctx.apiFetch=async()=>{calls++;return {ok:true,json:async()=>({ready:false})};};
+ const loading=run('loadHistory(true)');while(!poll)await new Promise(resolve=>setImmediate(resolve));
+ run("workspace.selected='b'");poll();await loading;
+ assert.equal(calls,1);assert.equal(run("historyState('a').busy"),false);
 });
