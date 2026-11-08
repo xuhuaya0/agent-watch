@@ -1,4 +1,4 @@
-"""Session-bound raster attachments discovered in native messages, never paths from HTTP."""
+"""Session-bound raster/HTML attachments discovered in native messages, never HTTP paths."""
 import base64
 import hashlib
 import os
@@ -9,6 +9,7 @@ import stat
 import struct
 import time
 import threading
+from urllib.parse import urlsplit, unquote
 
 from .broker import ControlError
 
@@ -17,6 +18,32 @@ MAX_PIXELS = 16000000
 ID = re.compile(r'[A-Za-z0-9_-]{32}')
 ERRORS = {'attachment_unavailable', 'attachment_changed', 'attachment_too_large', 'attachment_unsupported'}
 EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+HTML_EXTENSIONS = {'.html', '.htm'}
+
+
+def local_path(source):
+    if source.lower().startswith('file:'):
+        try:
+            url = urlsplit(source)
+        except ValueError:
+            return Path('')
+        if url.netloc or url.query or url.fragment: return Path('')
+        source = unquote(url.path)
+        if source.startswith(('//', '\\\\')): return Path('')
+        if os.name == 'nt' and re.match(r'^/[a-zA-Z]:/', source): source = source[1:]
+    return Path(source)
+
+
+def media_info(data, html=False):
+    if html:
+        try:
+            text = data.decode('utf-8-sig')
+        except UnicodeError:
+            raise ControlError('attachment_unsupported') from None
+        if '\x00' in text:
+            raise ControlError('attachment_unsupported')
+        return 'text/html', None, None
+    return image_info(data)
 
 
 def image_info(data):
@@ -59,13 +86,13 @@ def image_info(data):
     return kind, width, height
 
 
-def image_references(text):
+def image_references(text, include_html=False):
     """Only image syntax counts as a reference; ordinary file links grant no read."""
     if not isinstance(text, str):
         return []
     text = re.sub(r'```[^\n]*\n[\s\S]*?(?:```|$)|`[^`\n]*`', '', text[:200000])
     found = []
-    for match in re.finditer(r'!\[[^\]\n]{0,500}\]\(', text):
+    for match in re.finditer(r'!?\[[^\]\n]{0,500}\]\(', text):
         tail = text[match.end():]
         if tail.startswith('<'):
             end = tail.find('>')
@@ -91,7 +118,8 @@ def image_references(text):
                 continue
             source = re.sub(r'\s+[\"\'][^\n]*[\"\']\s*$', '', tail[:end]).strip()
             source = re.sub(r'\\([()])', r'\1', source)
-        found.append(source)
+        if match.group().startswith('!') or include_html and Path(source).suffix.lower() in HTML_EXTENSIONS:
+            found.append(source)
     for match in re.finditer(r'<image\b[^>]{0,2500}\bpath=([\"\'])(.*?)\1[^>]*>', text):
         found.append(match.group(2))
     return list(dict.fromkeys(source for source in found if source and len(source) <= 2048))[:8]
@@ -118,19 +146,21 @@ class Attachments:
             now = self.clock()
             self.entries = {key: value for key, value in self.entries.items() if now - value['at'] < 600}
 
-    def describe(self, sid, text, native_path):
+    def describe(self, sid, text, native_path, stored=()):
         with self.lock:
-            return self._describe(sid, text, native_path)
+            return self._describe(sid, text, native_path, stored)
 
-    def _describe(self, sid, text, native_path):
+    def _describe(self, sid, text, native_path, stored=()):
         self.prune()
         result = []
-        for source in image_references(text):
-            path = Path(source)
+        references = [(source, local_path(source), None) for source in image_references(text, include_html=True)]
+        # Provider-only immutable object references, derived from native message blocks.
+        references.extend((item['source'], item['path'], item) for item in stored)
+        for source, path, expected in references[:8]:
             if (not path.is_absolute() or source.startswith(('//', '\\\\')) or '\x00' in source
-                    or '\n' in source or path.suffix.lower() not in EXTENSIONS):
+                    or '\n' in source or not expected and path.suffix.lower() not in EXTENSIONS | HTML_EXTENSIONS):
                 continue
-            descriptor = {'source': source, 'name': path.name[:200]}
+            descriptor = {'source': source, 'name': (expected.get('name') or '图片附件')[:200] if expected else path.name[:200]}
             try:
                 target = path.resolve(strict=True)
                 info = target.stat()
@@ -148,8 +178,11 @@ class Attachments:
                     if (len(data) != opened.st_size or len(data) > MAX_BYTES
                             or _fingerprint(os.fstat(stream.fileno())) != fingerprint):
                         raise ControlError('attachment_changed')
-                    mime, width, height = image_info(data)
+                    mime, width, height = media_info(data, not expected and path.suffix.lower() in HTML_EXTENSIONS)
                 digest = hashlib.sha256(data).digest()
+                if expected and (digest.hex() != expected['sha256'] or mime != expected['mime']
+                        or (width, height, len(data)) != (expected['width'], expected['height'], expected['bytes'])):
+                    raise ControlError('attachment_changed')
                 native = native_path.stat()
                 binding = (sid, source, fingerprint, native.st_dev, native.st_ino, digest)
                 existing = next(((key, value) for key, value in self.entries.items() if value['binding'] == binding), None)
@@ -160,8 +193,9 @@ class Attachments:
                     if len(self.entries) >= 256:
                         self.entries.pop(next(iter(self.entries)))
                     identity = secrets.token_urlsafe(24)
-                    self.entries[identity] = {'binding': binding, 'target': target, 'at': self.clock(), 'mime': mime}
-                descriptor.update(id=identity, mime=mime, width=width, height=height)
+                    self.entries[identity] = {'binding': binding, 'target': target, 'source_path': path, 'at': self.clock(), 'mime': mime}
+                descriptor.update(id=identity, mime=mime)
+                if width is not None: descriptor.update(width=width, height=height)
             except ControlError as error:
                 descriptor['error'] = error.code
             except (OSError, ValueError):
@@ -183,7 +217,7 @@ class Attachments:
             native = native_path.stat()
             if (native.st_dev, native.st_ino) != (device, inode):
                 raise ControlError('attachment_changed')
-            if Path(source).resolve(strict=True) != entry['target']:
+            if entry['source_path'].resolve(strict=True) != entry['target']:
                 raise ControlError('attachment_changed')
             fd = os.open(entry['target'], os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
             with os.fdopen(fd, 'rb') as stream:
@@ -194,7 +228,7 @@ class Attachments:
                 if (len(data) > MAX_BYTES or _fingerprint(os.fstat(stream.fileno())) != fingerprint
                         or hashlib.sha256(data).digest() != digest):
                     raise ControlError('attachment_changed')
-            mime, _, _ = image_info(data)
+            mime, _, _ = media_info(data, entry['mime'] == 'text/html')
             if mime != entry['mime']:
                 raise ControlError('attachment_changed')
             return {'media': {'mime': mime, 'data': base64.b64encode(data).decode('ascii')}}
@@ -209,7 +243,7 @@ def validate_media(value):
         raise ControlError('invalid_attachment_result', 400)
     try:
         data = base64.b64decode(value['data'], validate=True)
-        mime, _, _ = image_info(data)
+        mime, _, _ = media_info(data, value['mime'] == 'text/html')
     except (ValueError, ControlError):
         raise ControlError('invalid_attachment_result', 400) from None
     if len(data) > MAX_BYTES or mime != value['mime']:
@@ -227,10 +261,13 @@ def clean_descriptors(value):
                        or len(item[key]) > size for key, size in (('source', 2048), ('name', 200)))):
             raise ControlError('invalid_attachment_result', 400)
         if 'id' in item:
+            is_html = item.get('mime') == 'text/html'
+            dimensions_bad = (any(key in item for key in ('width', 'height')) if is_html else
+                any(type(item.get(key)) is not int or not 1 <= item[key] <= 16000 for key in ('width', 'height'))
+                or item.get('width', 0) * item.get('height', 0) > MAX_PIXELS)
             if (not isinstance(item['id'], str) or not ID.fullmatch(item['id'])
-                    or item.get('mime') not in ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
-                    or any(type(item.get(key)) is not int or not 1 <= item[key] <= 16000 for key in ('width', 'height'))
-                    or item['width'] * item['height'] > MAX_PIXELS or 'error' in item):
+                    or item.get('mime') not in ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/html')
+                    or dimensions_bad or 'error' in item):
                 raise ControlError('invalid_attachment_result', 400)
         elif item.get('error') not in ERRORS:
             raise ControlError('invalid_attachment_result', 400)

@@ -452,3 +452,21 @@ Codex case retained a new draft after rejection. Checks used current preview
 assets with a delayed read-only mock endpoint; no native message was sent.
 Uncertain receipt and IME edge cases were covered by code tests, not repeated
 native-browser acceptance in this change.
+
+
+### Session images and static HTML
+
+All three Harnesses share the same image and HTML attachment presentation. Native
+image tags with a matching descriptor render inline; explicit local HTML links
+open an initially collapsed static preview. An empty iframe sandbox, server-side
+HTML cleaning and CSP prevent scripts, forms, navigation and external resource
+loads. The shared reader retains the existing session-bound IDs and change checks.
+
+Edge synthetic checks passed at 1280x800 and 390x844 for all three Harnesses:
+image display, missing image fallback, explicit HTML opening/collapse, keyboard
+toggle, and switching sessions. HTML text, table and inline CSS rendered; injected
+script, external image and refresh navigation did not run; no horizontal overflow
+or browser errors were observed. Native Windows Antigravity PNG bytes separately
+matched an existing transcript reference. DeepSeek native storage/schema review
+and Windows fixture tests are distinct from an unperformed real image conversation
+acceptance. This change does not run native commands or send test messages.

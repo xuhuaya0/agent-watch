@@ -493,9 +493,11 @@ def api_task_attachment(key):
     result = CONTROL.history(*control_task(key), attachment=request.args['id'])
     if result.get('media') and result.get('ready'):
         media = result['media']
-        response = Response(validate_media(media), mimetype=media['mime'])
+        data = validate_media(media)
+        from aw.control.html_preview import preview_html, CSP
+        response = Response(preview_html(data) if media['mime'] == 'text/html' else data, mimetype=media['mime'])
         response.headers['Content-Disposition'] = 'inline; filename="attachment"'
-        response.headers['Content-Security-Policy'] = "default-src 'none'; sandbox"
+        response.headers['Content-Security-Policy'] = CSP if media['mime'] == 'text/html' else "default-src 'none'; sandbox"
         response.headers['X-Content-Type-Options'] = 'nosniff'
     else:
         response = jsonify({'ok': True, **result})

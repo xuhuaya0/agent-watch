@@ -140,6 +140,8 @@ class DeepSeek:
         from .dsh_settings import SessionSettings
         self.permissions = Permissions()
         self.settings = SessionSettings(self.permissions)
+        from .attachments import Attachments
+        self.attachments = Attachments()
         self.config, self.gateway_factory = config, gateway_factory
         self.gateway = None
         self.refresh_lock = threading.RLock()
@@ -332,6 +334,16 @@ class DeepSeek:
     def read_history(self, sid, cursor=None):
         from .dsh_history import read_history
         return read_history(self, sid, cursor)
+
+    def read_attachment(self, sid, identity):
+        from .dsh_history import attachment_log
+        if not self.session_snapshot(sid):
+            raise ControlError('native_session_unavailable')
+        gateway = self.gateway
+        result = self.attachments.read(sid, identity, attachment_log(self, sid))
+        if not self.session_snapshot(sid) or gateway is not self.gateway:
+            raise ControlError('native_session_unavailable')
+        return result
 
     def reply_completion(self, sid):
         """Read a bounded native turn/end marker only while a reply gate needs it."""

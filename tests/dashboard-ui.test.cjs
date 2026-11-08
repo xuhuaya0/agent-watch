@@ -122,6 +122,18 @@ test('local image loading requires a matching session attachment descriptor and 
  ctx.media.attachments=[{source:'/example/image (1).png',name:'image.png',error:'attachment_unavailable'}];
  assert.match(run(ctx,'markdown(text,media)'),/原设备图片暂不可用/);
 });
+test('native image tags require a session descriptor and HTML previews use empty sandbox without eager loading',()=>{
+ const {ctx}=context();ctx.media={sessionId:'device/dsh/example',attachments:[
+  {id:'B'.repeat(32),source:'/example/report.html',name:'Report',mime:'text/html'},
+  {id:'A'.repeat(32),source:'/example/image.png',name:'Image',mime:'image/png',width:640,height:480}]};
+ ctx.text='<image path="/example/image.png">';
+ assert.match(run(ctx,'markdown(text,media)'),/data-attachment-id="A{32}"/);
+ assert.doesNotMatch(run(ctx,'markdown(text,{})'),/data-attachment-id|<image /);
+ ctx.text='[Report](/example/report.html)';const result=run(ctx,'markdown(text,media)');
+ assert.match(result,/data-attachment-kind="html"/);assert.match(result,/<iframe sandbox="" referrerpolicy="no-referrer"/);
+ assert.match(result,/aria-expanded="false"/);assert.doesNotMatch(result,/srcdoc=|allow-scripts|allow-same-origin|href=/);
+ assert.doesNotMatch(run(ctx,'markdown(text,{})'),/<iframe|data-attachment-id/);
+});
 test('local image bytes use the authenticated session route and failures leave a retryable message',async()=>{
  const {ctx}=context();let requested='';
  ctx.URL=class extends URL {static createObjectURL(){return 'blob:synthetic-image'}static revokeObjectURL(){}};
