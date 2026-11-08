@@ -554,6 +554,15 @@ cover repeated parent turns, nested errors, stalled children and preservation
 of real parent errors/questions and descendant approvals. This validates the
 DeepSeek collector projection, not a change to native approval behavior.
 
+### Antigravity cold-host discovery
+
+Antigravity native-host restart checks also found an initially empty summary
+index: reading existing conversation metadata populates that index. Discovery
+now performs that read first, while retaining the before/after summary and
+metadata consistency checks. A Windows read-only probe confirmed existing
+conversations become readable without sending messages. Cold-index recovery
+and concurrent identity-change rejection have regression coverage.
+
 ### Mac first-install wizard
 
 The Mac installer uses a private managed Python 3.13 environment and an

@@ -51,12 +51,16 @@ def read_state(rpc, sid):
     A growing/replaced trajectory, truncated tail, or unrecognised pending-step
     shape fails closed. No retry here can accidentally apply an old interaction.
     """
+    # After a native host restart, its summary index can be empty until this
+    # read loads an existing conversation. Looking up the summary first would
+    # leave cold sessions permanently undiscoverable. Keep both summary checks
+    # and validate the metadata against them before exposing any interaction.
+    meta = rpc.call('GetConversationMetadata', {'conversationId': sid})
     before = summary(rpc, sid)
     tid = before['trajectoryId']; total = count(before.get('stepCount', 0))
     user_index = count(before.get('lastUserInputStepIndex', 0))
     if total and user_index >= total or not total and user_index:
         unavailable()
-    meta = rpc.call('GetConversationMetadata', {'conversationId': sid})
     if (not isinstance(meta, dict) or meta.get('trajectoryId') != tid
             or count(meta.get('numSteps', 0)) != total):
         unavailable()

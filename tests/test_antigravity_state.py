@@ -53,6 +53,37 @@ class Rpc:
 
 
 class BoundedStateTests(unittest.TestCase):
+    def test_cold_native_index_loads_existing_metadata_before_discovery(self):
+        class ColdRpc(Rpc):
+            loaded = False
+
+            def call(self, method, body):
+                if method == 'GetConversationMetadata':
+                    self.loaded = True
+                elif method == 'GetAllCascadeTrajectories' and not self.loaded:
+                    return {}
+                return super().call(method, body)
+
+        rpc = ColdRpc()
+        row, _ = NativeInteractions(rpc).inspect(SID)
+        self.assertTrue(row['reply'])
+        self.assertEqual(row['delivery']['state'], 'idle')
+        self.assertEqual(len(rpc.calls), 5)
+        self.assertTrue(all(method.startswith('Get') for method, _ in rpc.calls))
+
+    def test_metadata_changed_while_cold_index_loads_still_fails_closed(self):
+        class ChangedRpc(Rpc):
+            def call(self, method, body):
+                result = super().call(method, body)
+                if method == 'GetConversationMetadata':
+                    self.summary['trajectoryId'] = SID
+                return result
+
+        rpc = ChangedRpc()
+        with self.assertRaises(ControlError):
+            NativeInteractions(rpc).inspect(SID)
+        self.assertFalse(any(method.startswith('Handle') for method, _ in rpc.calls))
+
     def test_long_idle_conversation_uses_only_summary_and_tail_with_native_epoch(self):
         rpc = Rpc(); row, _ = NativeInteractions(rpc).inspect(SID)
         self.assertTrue(row['reply']); self.assertEqual(row['delivery']['state'], 'idle')
